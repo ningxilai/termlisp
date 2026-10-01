@@ -1639,5 +1639,41 @@ the test fixes the type to Maybe with a signature-annotated binding."
     (should-error (tl-graph-rewrite g (list r1 r2))
                   :type 'termlisp-eval-error)))
 
+(ert-deftest graph/render-node ()
+  (let* ((g (tl-graph-build '(f a (g b)))))
+    (should (equal (tl-node->sexp (tl-graph-root g)) '(f a (g b))))))
+
+(ert-deftest graph/rewrite-sexp ()
+  (let ((r (tl-make-grule 'global :normalize 0
+                          '(:global $k $c)
+                          '(:bind (quote current-global-map) $k $c))))
+    (should (equal (tl-graph-rewrite-sexp '(:global "C-c f" foo) (list r))
+                   '(:bind (quote current-global-map) "C-c f" foo)))))
+
+(ert-deftest graph/rewrite-sexp-unchanged ()
+  (should (equal (tl-graph-rewrite-sexp '(f a b) nil) '(f a b))))
+
+(ert-deftest graph/rewrite-with-guard ()
+  (let ((r (tl-make-grule 'g :normalize 0
+                          '(:set $v $val)
+                          '(:custom $v $val)
+                          (lambda (b) (eq (tl-node-head (cdr (assq '$v b))) 'foo)))))
+    (should (equal (tl-graph-rewrite-sexp '(:set foo 1) (list r))
+                   '(:custom foo 1)))
+    (should (equal (tl-graph-rewrite-sexp '(:set bar 1) (list r))
+                   '(:set bar 1)))))
+
+(ert-deftest graph/multiphase-rewrite-sexp ()
+  "A two-phase rule set reduces fully to primitives."
+  (let ((rules (list (tl-make-grule 'global :desugar 0
+                                    '(:global $k $c)
+                                    '(:bind (quote current-global-map) $k $c))
+                     (tl-make-grule 'hook-into :desugar 0
+                                    '(:hook-into $h)
+                                    '(:add-hook $h (function foo))))))
+    (should (equal (tl-graph-rewrite-sexp '(:seq (:global "C-c f" foo) (:hook-into text-mode-hook)) rules)
+                   '(:seq (:bind (quote current-global-map) "C-c f" foo)
+                          (:add-hook text-mode-hook (function foo)))))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

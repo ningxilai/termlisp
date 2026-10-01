@@ -36,6 +36,12 @@ MEMO is the node's rewritten replacement, or nil."
                         node))))
       (tl-make-graph (build sexp) table))))
 
+(defun tl-node->sexp (node)
+  "Render NODE (and its children) back to an s-expression."
+  (if (tl-node-children node)
+      (cons (tl-node-head node) (mapcar #'tl-node->sexp (tl-node-children node)))
+    (tl-node-head node)))
+
 (cl-defstruct (tl-grule (:constructor tl-make-grule (name phase priority pattern template &optional guard)))
   "A term-graph rewrite rule.
 NAME identifies the rule; PHASE and PRIORITY order its application.
@@ -141,6 +147,10 @@ Signals `termlisp-eval-error' when FUEL (default 10000) is exhausted."
             (signal 'termlisp-eval-error '("TGR fuel exhausted")))
           (setq remaining (1- remaining))
           (setq progress (tl-graph--step graph prules)))))))
+
+(defun tl-graph-rewrite-sexp (sexp rules &optional fuel)
+  "Build a graph from SEXP, strictly reduce it with RULES, and render it back."
+  (tl-node->sexp (tl-graph-root (tl-graph-rewrite (tl-graph-build sexp) rules fuel))))
 
 (defun tl-graph-normal-form-p (graph rules)
   "Return non-nil if no rule applies anywhere in GRAPH."
