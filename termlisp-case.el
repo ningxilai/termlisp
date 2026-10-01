@@ -247,5 +247,123 @@ index of the winning clause."
       (setq index (1+ index)))
     (tl-ct-build-rows rows)))
 
+(defun tl-case--con-match-p (value head arity)
+  "Return non-nil when VALUE is the constructor HEAD applied to ARITY args.
+A zero-arity constructor is the atom HEAD (a non-application node), matching
+`tl-pat-match's treatment of a `(pcon HEAD)' with no subpatterns; a positive
+arity requires an application node with exactly ARITY children."
+  (if (= arity 0)
+      (and (not (tl-node-application value))
+           (eq (tl-node-head value) head))
+    (and (tl-node-application value)
+         (eq (tl-node-head value) head)
+         (= (length (tl-node-children value)) arity))))
+
+(defun tl-case--replace-nth (list n replacement)
+  "Return LIST with element N replaced by the elements of REPLACEMENT."
+  (append (cl-subseq list 0 n) replacement (nthcdr (1+ n) list)))
+
+(defun tl-case--remove-nth (list n)
+  "Return LIST with element N removed."
+  (append (cl-subseq list 0 n) (nthcdr (1+ n) list)))
+
+(defun tl-case-match (tree clauses node)
+  "Match NODE against the decision TREE built from CLAUSES.
+Return `(INDEX . BINDINGS)' for the first matching clause, or nil when no
+clause matches.  BINDINGS is the alist produced by `tl-pat-match' for the
+winning clause's original pattern, so whole-subterm and nonlinear bindings
+are recovered exactly."
+  (tl-case-match-tree tree clauses
+                      (cons node (tl-node-children node))
+                      node))
+
+(defun tl-case-match-tree (tree clauses scrutinees root)
+  "Walk TREE over SCRUTINEES, recovering bindings against ROOT.
+SCRUTINEES is the flat vector of values addressed by the tree's columns;
+descending a constructor splices its children into the vector and a constant
+consumes its column, mirroring `tl-ct-row-refine'."
+  (pcase tree
+    (`(ct-case ,column ,alts)
+     (tl-case-match-alts alts clauses column scrutinees
+                         (nth column scrutinees) root))
+    (`(ct-leaf ,index)
+     (let ((r (tl-pat-match (car (nth index clauses)) root nil)))
+       (when r (cons index (cdr r)))))
+    (`(ct-fail) nil)
+    (_ (signal 'termlisp-error (list (format "Bad case tree: %S" tree))))))
+
+(defun tl-case-match-alts (alts clauses column scrutinees value root)
+  "Dispatch VALUE over ALTS for COLUMN, continuing on the matching branch."
+  (catch 'matched
+    (dolist (alt alts)
+      (pcase alt
+        (`(ct-con ,head ,arity ,sub)
+         (when (tl-case--con-match-p value head arity)
+           (throw 'matched
+                  (tl-case-match-tree
+                   sub clauses
+                   (tl-case--replace-nth scrutinees column
+                                         (tl-node-children value))
+                   root))))
+        (`(ct-const ,const ,sub)
+         (when (and (not (tl-node-application value))
+                    (equal (tl-node-head value) const))
+           (throw 'matched
+                  (tl-case-match-tree
+                   sub clauses (tl-case--remove-nth scrutinees column) root))))
+        (`(ct-default ,sub)
+         (throw 'matched
+                (tl-case-match-tree sub clauses scrutinees root)))
+        (_ (signal 'termlisp-error
+                   (list (format "Bad case alternative: %S" alt))))))))
+
+(defun tl-case--pvar-p (x)
+  "Return non-nil if X is a template variable (a symbol named \"$...\")."
+  (and (symbolp x)
+       (> (length (symbol-name x)) 0)
+       (eq (aref (symbol-name x) 0) ?$)))
+
+(defun tl-case--splice-p (x)
+  "Return non-nil if X is a `(:splice $name)' template element."
+  (and (consp x) (eq (car x) :splice) (tl-case--pvar-p (cadr x))))
+
+(defun tl-case--template-list (templates bindings)
+  "Instantiate TEMPLATES in order, splicing `(:splice $name)' elements."
+  (let (out)
+    (dolist (template templates)
+      (if (tl-case--splice-p template)
+          (let ((cell (assq (cadr template) bindings)))
+            (unless cell
+              (signal 'termlisp-error
+                      (list (format "Unbound splice variable: %S"
+                                    (cadr template)))))
+            (dolist (node (cdr cell))
+              (push (tl-node->sexp node) out)))
+        (push (tl-case-template template bindings) out)))
+    (nreverse out)))
+
+(defun tl-case-template (template bindings)
+  "Instantiate TEMPLATE into an s-expression using BINDINGS.
+A `$name' symbol becomes the s-expression of its bound node; a cons recurses
+into its elements; `(:splice $name)' splices the s-expressions of the bound
+node list into the surrounding list; any other atom is literal."
+  (cond
+   ((tl-case--pvar-p template)
+    (let ((cell (assq template bindings)))
+      (unless cell
+        (signal 'termlisp-error
+                (list (format "Unbound template variable: %S" template))))
+      (tl-node->sexp (cdr cell))))
+   ((tl-case--splice-p template)
+    (let ((cell (assq (cadr template) bindings)))
+      (unless cell
+        (signal 'termlisp-error
+                (list (format "Unbound splice variable: %S"
+                              (cadr template)))))
+      (mapcar #'tl-node->sexp (cdr cell))))
+   ((consp template)
+    (cons (car template) (tl-case--template-list (cdr template) bindings)))
+   (t template)))
+
 (provide 'termlisp-case)
 ;;; termlisp-case.el ends here
