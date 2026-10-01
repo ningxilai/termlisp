@@ -26,14 +26,26 @@ MEMO is the node's rewritten replacement, or nil."
   "A term graph: ROOT node plus a sharing TABLE (sexp-key -> node)."
   root table)
 
+(defconst tl-graph-opaque-heads '(quote function)
+  "Heads whose subterms are never rewritten or descended into (opaque data).")
+
 (defun tl-graph-build (sexp)
-  "Build a term graph from SEXP, sharing structurally identical subterms."
+  "Build a term graph from SEXP, sharing structurally identical subterms.
+A subterm whose head is in `tl-graph-opaque-heads' becomes a single opaque
+leaf holding the whole subterm, so deep quoted data is neither traversed
+nor rebuilt."
   (let ((table (make-hash-table :test #'equal)))
     (cl-labels ((build (x)
                   (or (gethash x table)
-                      (let ((node (if (consp x)
-                                      (tl-make-node (car x) (mapcar #'build (cdr x)) t)
-                                    (tl-make-node x nil nil))))
+                      (let ((node (cond
+                                   ((and (consp x)
+                                         (memq (car x) tl-graph-opaque-heads))
+                                    (tl-make-node x nil nil))
+                                   ((consp x)
+                                    (tl-make-node (car x)
+                                                  (mapcar #'build (cdr x))
+                                                  t))
+                                   (t (tl-make-node x nil nil)))))
                         (puthash x node table)
                         node))))
       (tl-make-graph (build sexp) table))))
@@ -64,6 +76,23 @@ A proper alist so guards may safely iterate its entries.")
        (> (length (symbol-name x)) 0)
        (eq (aref (symbol-name x) 0) ?$)))
 
+(defun tl-graph--rest-p (x)
+  "Return non-nil if X is a `(:rest $name)' pattern element."
+  (and (consp x) (eq (car x) :rest) (tl-graph--pvar-p (cadr x))))
+
+(defun tl-graph--splice-p (x)
+  "Return non-nil if X is a `(:splice $name)' template element."
+  (and (consp x) (eq (car x) :splice) (tl-graph--pvar-p (cadr x))))
+
+(defun tl-graph--bind-rest (pattern nodes bindings)
+  "Extend BINDINGS with the rest variable of PATTERN bound to NODES.
+If the variable is already bound, the existing list must be `equal'."
+  (let* ((var (cadr pattern))
+         (cell (assq var bindings)))
+    (cond ((null cell) (cons (cons var nodes) bindings))
+          ((equal (cdr cell) nodes) bindings)
+          (t nil))))
+
 (defun tl-graph-match (pattern node bindings)
   "Match PATTERN against NODE, extending BINDINGS.  Return bindings or nil."
   (cond
@@ -81,20 +110,58 @@ A proper alist so guards may safely iterate its entries.")
       (or bindings tl-graph--match-ok)))))
 
 (defun tl-graph-match-seq (patterns nodes bindings)
-  "Match PATTERNS against NODES in order, extending BINDINGS."
+  "Match PATTERNS against NODES in order, extending BINDINGS.
+A final `(:rest $name)' element captures the remaining NODES as a list."
   (let ((ok t))
     (while (and patterns ok)
-      (if (null nodes)
-          (setq ok nil)
+      (cond
+       ((tl-graph--rest-p (car patterns))
+        (unless (null (cdr patterns))
+          (signal 'termlisp-eval-error
+                  '("A :rest pattern must be the last list element")))
+        (setq bindings (tl-graph--bind-rest (car patterns) nodes bindings))
+        (unless bindings (setq ok nil))
+        (setq patterns nil nodes nil))
+       ((null nodes) (setq ok nil))
+       (t
         (setq bindings (tl-graph-match (car patterns) (car nodes) bindings))
         (unless bindings (setq ok nil))
-        (setq patterns (cdr patterns) nodes (cdr nodes))))
+        (setq patterns (cdr patterns) nodes (cdr nodes)))))
     (when (and ok (null patterns) (null nodes))
       (or bindings tl-graph--match-ok))))
 
+(defun tl-graph-instantiate-list (templates bindings)
+  "Instantiate TEMPLATES in order, splicing `(:splice $name)' elements."
+  (let (out)
+    (dolist (template templates)
+      (if (tl-graph--splice-p template)
+          (let ((cell (assq (cadr template) bindings)))
+            (unless cell
+              (signal 'termlisp-eval-error
+                      (list (format "Unbound splice variable: %S"
+                                    (cadr template)))))
+            (dolist (node (cdr cell)) (push node out)))
+        (push (tl-graph-instantiate template bindings) out)))
+    (nreverse out)))
+
+(defun tl-graph--function-template-p (template)
+  "Return non-nil if TEMPLATE is a function template.
+A literal `(lambda ...)' form is data, not a template, even though
+`functionp' accepts it."
+  (and (functionp template)
+       (not (symbolp template))
+       (not (and (consp template) (eq (car template) 'lambda)))))
+
 (defun tl-graph-instantiate (template bindings)
-  "Instantiate TEMPLATE into a node, reusing nodes bound in BINDINGS."
+  "Instantiate TEMPLATE into a node, reusing nodes bound in BINDINGS.
+TEMPLATE may be a variable, a list template, or a function of BINDINGS
+returning either a node or a further template sexp."
   (cond
+   ((tl-graph--function-template-p template)
+    (let ((result (funcall template bindings)))
+      (if (tl-node-p result)
+          result
+        (tl-graph-instantiate result bindings))))
    ((tl-graph--pvar-p template)
     (let ((cell (assq template bindings)))
       (if cell
@@ -103,8 +170,7 @@ A proper alist so guards may safely iterate its entries.")
                 (list (format "Unbound template variable: %S" template))))))
    ((consp template)
     (tl-make-node (car template)
-                  (mapcar (lambda (sub) (tl-graph-instantiate sub bindings))
-                          (cdr template))
+                  (tl-graph-instantiate-list (cdr template) bindings)
                   t))
    (t (tl-make-node template nil nil))))
 
@@ -129,9 +195,6 @@ Signals `termlisp-eval-error' if the rewrite makes no progress."
 (defconst tl-graph-phases
   '(:surface :normalize :desugar :context :control :load :action :backend)
   "Reduction phases, applied in order.  Rules only move forward.")
-
-(defconst tl-graph-opaque-heads '(quote function)
-  "Heads whose subterms are never rewritten (opaque data).")
 
 (defun tl-graph--preorder (node &optional seen)
   "Return NODE and its descendants in pre-order, without revisiting nodes.

@@ -1725,5 +1725,102 @@ the test fixes the type to Maybe with a signature-annotated binding."
     (should (equal (tl-graph-rewrite-sexp '(function (a)) (list r))
                    '(function (a))))))
 
+(ert-deftest graph/match-rest ()
+  "A `(:rest $v)' pattern captures all remaining children as a node list."
+  (let* ((g (tl-graph-build '(:option a b c)))
+         (b (tl-graph-match '(:option (:rest $args)) (tl-graph-root g) nil)))
+    (should b)
+    (let ((args (cdr (assq '$args b))))
+      (should (= (length args) 3))
+      (should (equal (mapcar #'tl-node->sexp args) '(a b c))))))
+
+(ert-deftest graph/match-rest-empty ()
+  "A `(:rest $v)' pattern matches zero remaining children."
+  (let* ((g (tl-graph-build '(:option)))
+         (b (tl-graph-match '(:option (:rest $args)) (tl-graph-root g) nil)))
+    (should b)
+    (should (null (cdr (assq '$args b))))))
+
+(ert-deftest graph/match-rest-not-last-errors ()
+  "A `(:rest $v)' pattern must be the final element of a list pattern."
+  (let ((g (tl-graph-build '(:option a b))))
+    (should-error (tl-graph-match '(:option (:rest $args) $x) (tl-graph-root g) nil)
+                  :type 'termlisp-eval-error)))
+
+(ert-deftest graph/splice-template ()
+  "A `(:splice $v)' template splices a captured node list."
+  (let ((r (tl-make-grule 'unseq :normalize 0
+                          '(:option (:rest $args))
+                          '(:seq (:splice $args)))))
+    (should (equal (tl-graph-rewrite-sexp '(:option a b c) (list r))
+                   '(:seq a b c)))
+    (should (equal (tl-graph-rewrite-sexp '(:option) (list r))
+                   '(:seq)))))
+
+(ert-deftest graph/function-template-sexp ()
+  "A function template may return a template sexp of the bindings."
+  (let ((r (tl-make-grule 'dup :normalize 0
+                          '(:double $x)
+                          (lambda (_b) '(:pair $x $x)))))
+    (should (equal (tl-graph-rewrite-sexp '(:double a) (list r))
+                   '(:pair a a)))))
+
+(ert-deftest graph/function-template-node ()
+  "A function template may return a node directly."
+  (let ((r (tl-make-grule 'swap :normalize 0
+                          '(:reverse $x $y)
+                          (lambda (b)
+                            (tl-make-node :pair
+                                          (list (cdr (assq '$y b))
+                                                (cdr (assq '$x b)))
+                                          t)))))
+    (should (equal (tl-graph-rewrite-sexp '(:reverse a b) (list r))
+                   '(:pair b a)))))
+
+(ert-deftest graph/function-template-chunks ()
+  "Rest patterns, guards and function templates combine for chunking."
+  (let ((r (tl-make-grule 'chunk :normalize 0
+                          '(:option (:rest $args))
+                          (lambda (b)
+                            (let ((args (cdr (assq '$args b))))
+                              (cons :seq
+                                    (cl-loop for (a c) on args by #'cddr
+                                             collect (list :option
+                                                           (tl-node->sexp a)
+                                                           (tl-node->sexp c))))))
+                          (lambda (b) (> (length (cdr (assq '$args b))) 2)))))
+    (should (equal (tl-graph-rewrite-sexp '(:option a 1 b 2) (list r))
+                   '(:seq (:option a 1) (:option b 2))))
+    (should (equal (tl-graph-rewrite-sexp '(:option a 1) (list r))
+                   '(:option a 1)))))
+
+(ert-deftest graph/splice-unbound-errors ()
+  (let ((r (tl-make-grule 'bad :normalize 0
+                          '(:x $a)
+                          '(:seq (:splice $missing)))))
+    (should-error (tl-graph-rewrite-sexp '(:x a) (list r))
+                  :type 'termlisp-eval-error)))
+
+(ert-deftest graph/literal-lambda-is-data ()
+  "A literal `(lambda ...)' inside a template is data, not a function template."
+  (let ((r (tl-make-grule 'wrap :normalize 0
+                          '(:wrap $x)
+                          (lambda (_b) '(:handler (lambda () $x))))))
+    (should (equal (tl-graph-rewrite-sexp '(:wrap a) (list r))
+                   '(:handler (lambda () a))))))
+
+(ert-deftest graph/opaque-leaf ()
+  "A quoted subterm is built as one opaque leaf, not traversed."
+  (let* ((g (tl-graph-build '(f (quote (a b)))))
+         (n (car (tl-node-children (tl-graph-root g)))))
+    (should-not (tl-node-application n))
+    (should (equal (tl-node-head n) '(quote (a b))))))
+
+(ert-deftest graph/deep-quoted-does-not-overflow ()
+  "A long quoted list is neither traversed nor rebuilt."
+  (let ((sexp (cons 'quote (number-sequence 1 5000))))
+    (should (equal (tl-node->sexp (tl-graph-root (tl-graph-build sexp)))
+                   sexp))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
