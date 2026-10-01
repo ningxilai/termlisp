@@ -504,5 +504,16 @@
      env)
     (should (= (termlisp-eval "(sum 5000 0)" env) 12502500))))
 
+(ert-deftest acceptance/examples ()
+  (let ((env (termlisp-load-prelude)))
+    (should (eq (termlisp-eval-file
+                 (expand-file-name "examples/bool.tlsp" termlisp--directory)
+                 env)
+                'booleans-work)))
+  (should (equal (termlisp-value->string
+                  (termlisp-eval-file
+                   (expand-file-name "examples/nat.tlsp" termlisp--directory)))
+                 "(Succ (Succ (Succ Zero)))")))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
