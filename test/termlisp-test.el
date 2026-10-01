@@ -1554,5 +1554,44 @@ the test fixes the type to Maybe with a signature-annotated binding."
   (let ((n (tl-make-node 'f nil)))
     (should (eq (tl-node-state n) :idle))))
 
+(ert-deftest graph/match-variable ()
+  (let ((g (tl-graph-build '(f a))))
+    (should (tl-graph-match '$x (tl-graph-root g) nil))))
+
+(ert-deftest graph/match-structure ()
+  (let* ((g (tl-graph-build '(:global "C-c f" foo)))
+         (b (tl-graph-match '(:global $key $cmd) (tl-graph-root g) nil)))
+    (should b)
+    (should (equal (tl-node-head (cdr (assq '$key b))) '"C-c f"))
+    (should (eq (tl-node-head (cdr (assq '$cmd b))) 'foo))))
+
+(ert-deftest graph/match-nonlinear ()
+  (let* ((g (tl-graph-build '(pair a a)))
+         (b (tl-graph-match '(pair $x $x) (tl-graph-root g) nil)))
+    (should b))
+  (let* ((g (tl-graph-build '(pair a b))))
+    (should-not (tl-graph-match '(pair $x $x) (tl-graph-root g) nil))))
+
+(ert-deftest graph/rule-rewrite-in-place ()
+  (let* ((g (tl-graph-build '(:global "C-c f" foo)))
+         (r (tl-make-grule 'global :normalize 0
+                           '(:global $key $cmd)
+                           '(:bind (quote current-global-map) $key $cmd))))
+    (should (tl-graph-apply (tl-graph-root g) r))
+    (let ((root (tl-graph-root g)))
+      (should (eq (tl-node-head root) :bind))
+      (should (eq (tl-node-head (car (tl-node-children root))) 'quote)))))
+
+(ert-deftest graph/rule-no-match ()
+  (let* ((g (tl-graph-build '(foo bar)))
+         (r (tl-make-grule 'x :normalize 0 '(:global $k $c) '(:bind $k $c))))
+    (should-not (tl-graph-apply (tl-graph-root g) r))))
+
+(ert-deftest graph/non-progressing-error ()
+  (let* ((g (tl-graph-build '(foo)))
+         (r (tl-make-grule 'id :normalize 0 '$x '$x)))
+    (should-error (tl-graph-apply (tl-graph-root g) r)
+                  :type 'termlisp-eval-error)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
