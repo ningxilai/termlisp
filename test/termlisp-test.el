@@ -1429,5 +1429,18 @@ the test fixes the type to Maybe with a signature-annotated binding."
   (let ((env (termlisp-load-prelude)))
     (should (eq (termlisp-eval "(and (not (and True False)) (or True False))" env) 'True))))
 
+(ert-deftest acceptance/examples-all ()
+  (let ((env (termlisp-load-prelude)))
+    (should (= (termlisp-eval-file
+                (expand-file-name "examples/lists.tlsp" termlisp--directory)
+                env)
+               3)))
+  (let ((env (termlisp-load-prelude (termlisp-make-env '(:elaborate t)))))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval-file
+                     (expand-file-name "examples/classes.tlsp" termlisp--directory)
+                     env))
+                   "(Just 5)"))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
