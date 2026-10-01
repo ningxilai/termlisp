@@ -1,0 +1,3 @@
+[submodule "vendor/cats"]
+	path = vendor/cats
+	url = https://github.com/Fuco1/emacs-cats
