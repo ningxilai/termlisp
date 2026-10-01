@@ -12,8 +12,11 @@
 
 **Progress (as of 2026-10-01):** Tasks 1–3 DONE and merged (class/instance declarations; constraint collection; constraint solving + constrained schemes). Tasks 5–6 DONE and merged (`termlisp-elaborate.el` type-directed dictionary passing; prelude `Functor`/`Applicative`/`Monad` classes + Maybe/List/State/Reader instances; `:elaborate` option; 188 tests, `make compile` clean). The elaborator is sound: it never rewrites a non-method call and never inserts a wrong dictionary — it only *under*-elaborates.
 
-**Remaining (Task 4 + follow-ups):**
-- **Task 4 — type-directed `do`**: `(do (x <- (Just 1)) (return (+ x 1)))` (no explicit monad name) is not yet supported; `tl-desugar-do` still requires a dictionary. Explicit-dictionary `do` works.
+**Task 4 DONE and merged:** `(do (x <- e) ... (return v))` (no monad operand) now desugars to the `bind`/`return` class methods and the elaborator inserts the instance dictionary; `(do (x <- (Just 1)) (y <- (Just 2)) (return (+ x y)))` → `(Just 3)`. 190 tests.
+
+**Remaining follow-ups:**
+- Nested type-directed `do` (e.g. `(Pair (do (return 1)) ...)`) is not elaborated (explicit-dict nested `do` works).
+- `tl-do-has-dict-p` misclassifies a type-directed `do` whose first statement is a bare monadic expression.
 - Polymorphic functions with a *generalized* constraint are not dictionary-threaded (e.g. `(define (add1-in m) (fmap ... m))` errors at runtime); full support requires transforming polymorphic functions to take dictionary parameters.
 - Method referenced as a bare value (not in application position) is not elaborated.
 - Ambiguous (non-ground) constraints are silently accepted and fail only at runtime; a proper implementation should reject ambiguous type variables.
