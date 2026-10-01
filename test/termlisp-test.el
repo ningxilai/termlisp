@@ -1146,5 +1146,51 @@
                  env)
                 'cfg))))
 
+(ert-deftest monad-laws/maybe ()
+  (let ((env (termlisp-load-prelude)))
+    ;; left identity: bind (return a) f = f a
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(monad-bind MaybeDict (monad-return MaybeDict 5) (lambda (x) (Just (+ x 1))))" env))
+                   "(Just 6)"))
+    ;; right identity: bind m return = m
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(monad-bind MaybeDict (Just 5) (lambda (x) (monad-return MaybeDict x)))" env))
+                   "(Just 5)"))
+    ;; associativity
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(monad-bind MaybeDict (monad-bind MaybeDict (Just 2) (lambda (x) (Just (+ x 1)))) (lambda (y) (Just (* y 10))))" env))
+                   (termlisp-value->string
+                    (termlisp-eval "(monad-bind MaybeDict (Just 2) (lambda (x) (monad-bind MaybeDict (Just (+ x 1)) (lambda (y) (Just (* y 10))))))" env))))))
+
+(ert-deftest monad-laws/list ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(monad-bind ListDict (monad-return ListDict 5) (lambda (x) (Cons x (Cons x Nil))))" env))
+                   "(Cons 5 (Cons 5 Nil))"))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(monad-bind ListDict (Cons 1 (Cons 2 Nil)) (lambda (x) (monad-return ListDict x)))" env))
+                   "(Cons 1 (Cons 2 Nil))"))))
+
+(ert-deftest monad-laws/state ()
+  (let ((env (termlisp-load-prelude)))
+    ;; right identity: bind m return = m (run both with state 7)
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "((monad-bind StateDict (state-put 3) (lambda (x) (monad-return StateDict x))) 7)" env))
+                   (termlisp-value->string
+                    (termlisp-eval "((state-put 3) 7)" env))))
+    ;; fmap over state
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "((monad-fmap StateDict (lambda (x) (+ x 1)) (state-return 5)) 0)" env))
+                   "(Pair 6 0)"))))
+
+(ert-deftest monad-laws/reader ()
+  (let ((env (termlisp-load-prelude)))
+    ;; left identity
+    (should (eq (termlisp-eval "((monad-bind ReaderDict (monad-return ReaderDict 5) (lambda (x) (reader-return (+ x 1)))) cfg)" env)
+                6))
+    ;; fmap over reader
+    (should (eq (termlisp-eval "((monad-fmap ReaderDict (lambda (x) x) (reader-ask)) cfg)" env)
+                'cfg))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
