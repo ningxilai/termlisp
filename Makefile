@@ -2,7 +2,7 @@ EMACS ?= emacs
 
 .PHONY: test compile clean
 
-test:
+test: clean
 	$(EMACS) -Q --batch -L . -L test -l test/termlisp-test.el \
 	  -f ert-run-tests-batch-and-exit
 
@@ -11,4 +11,4 @@ compile:
 	  -f batch-byte-compile termlisp*.el
 
 clean:
-	rm -f *.elc test/*.elc
+	rm -f *.elc test/*.elc vendor/cats/*.elc

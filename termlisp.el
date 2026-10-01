@@ -1,5 +1,8 @@
 ;;; termlisp.el --- Lazy term-rewriting language -*- lexical-binding: t; -*-
 
+;; This file is part of termlisp.
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 ;; Embedded library API for term-lisp.
 
@@ -11,11 +14,12 @@
 
 (add-to-list 'load-path (expand-file-name "vendor/cats" termlisp--root))
 
+;; These soft requires must become hard requires in a later task, once all
+;; modules exist.
 (dolist (feature '(termlisp-base termlisp-reader termlisp-unify
                    termlisp-machine termlisp-pattern termlisp-builtins
                    termlisp-eval))
-  (when (locate-library (symbol-name feature))
-    (require feature)))
+  (require feature nil t))
 
 (provide 'termlisp)
 ;;; termlisp.el ends here
