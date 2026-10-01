@@ -147,3 +147,17 @@
 (instance (Monad List) ListDict)
 (instance (Monad State) StateDict)
 (instance (Monad Reader) ReaderDict)
+
+;; List library
+(define (head (Cons x xs)) x)
+(define (tail (Cons x xs)) xs)
+(define (length Nil) 0)
+(define (length (Cons x xs)) (+ 1 (length xs)))
+(define (append Nil ys) ys)
+(define (append (Cons x xs) ys) (Cons x (append xs ys)))
+(define (map-list f Nil) Nil)
+(define (map-list f (Cons x xs)) (Cons (f x) (map-list f xs)))
+(define (filter f Nil) Nil)
+(define (filter f (Cons x xs)) (if (f x) (Cons x (filter f xs)) (filter f xs)))
+(define (foldr f z Nil) z)
+(define (foldr f z (Cons x xs)) (f x (foldr f z xs)))

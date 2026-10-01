@@ -1396,5 +1396,29 @@ the test fixes the type to Maybe with a signature-annotated binding."
     (should-error (termlisp-eval "(return 7)" env)
                   :type 'termlisp-type-error)))
 
+(ert-deftest prelude/list-head-tail ()
+  (let ((env (termlisp-load-prelude)))
+    (should (eq (termlisp-eval "(head (Cons A (Cons B Nil)))" env) 'A))
+    (should (equal (termlisp-value->string (termlisp-eval "(tail (Cons A (Cons B Nil)))" env))
+                   "(Cons B Nil)"))))
+
+(ert-deftest prelude/list-length-append ()
+  (let ((env (termlisp-load-prelude)))
+    (should (= (termlisp-eval "(length (Cons A (Cons B (Cons C Nil))))" env) 3))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(append (Cons A Nil) (Cons B (Cons C Nil)))" env))
+                   "(Cons A (Cons B (Cons C Nil)))"))))
+
+(ert-deftest prelude/list-map-filter-foldr ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(map-list (lambda (x) (+ x 1)) (Cons 1 (Cons 2 Nil)))" env))
+                   "(Cons 2 (Cons 3 Nil))"))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(filter (lambda (x) (eq x 1)) (Cons 1 (Cons 2 Nil)))" env))
+                   "(Cons 1 Nil)"))
+    (should (= (termlisp-eval "(foldr (lambda (x acc) (+ x acc)) 0 (Cons 1 (Cons 2 (Cons 3 Nil))))" env)
+               6))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
