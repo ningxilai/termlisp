@@ -7,7 +7,7 @@ test: clean
 	  -f ert-run-tests-batch-and-exit
 
 compile:
-	$(EMACS) -Q --batch -L . -L test \
+	$(EMACS) -Q --batch -L . -L test -L vendor/cats \
 	  -f batch-byte-compile termlisp*.el
 
 clean:

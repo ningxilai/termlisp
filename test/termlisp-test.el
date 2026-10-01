@@ -1003,5 +1003,27 @@
      (termlisp-typecheck-def env "(define (weird (or (Succ n) (Pair n m))) n)")
      :type 'termlisp-type-error)))
 
+(require 'termlisp-data-reader)
+
+(ert-deftest reader/pure-and-run ()
+  (let ((m (cats-pure (tl-data-reader) 42)))
+    (should (= (tl-run-reader m :env) 42))))
+
+(ert-deftest reader/ask ()
+  (should (eq (tl-run-reader (tl-reader-ask) :env) :env)))
+
+(ert-deftest reader/fmap ()
+  (let ((m (cats-fmap (lambda (x) (1+ x)) (cats-pure (tl-data-reader) 41))))
+    (should (= (tl-run-reader m :env) 42))))
+
+(ert-deftest reader/bind ()
+  (let ((m (cats-bind (tl-reader-ask)
+                      (lambda (r) (cats-pure (tl-data-reader) (list r r))))))
+    (should (equal (tl-run-reader m :cfg) '(:cfg :cfg)))))
+
+(ert-deftest reader/local ()
+  (let ((m (tl-reader-local (lambda (_) :inner) (tl-reader-ask))))
+    (should (eq (tl-run-reader m :outer) :inner))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
