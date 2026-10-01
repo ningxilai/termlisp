@@ -203,11 +203,92 @@ application."
                            (tl-tcon-args ty))))
       ty)))
 
-(defun tl-generalize (type env-tvars)
-  "Generalize TYPE into a scheme, quantifying tvars not in ENV-TVARS."
-  (let* ((ftv (tl-free-tvars type))
-         (vars (cl-remove-if (lambda (v) (memq v env-tvars)) ftv)))
-    (tl-tscheme vars type)))
+(defun tl-generalized-vars (type env-tvars)
+  "Return the type variables of TYPE that are not in ENV-TVARS."
+  (cl-remove-if (lambda (v) (memq v env-tvars)) (tl-free-tvars type)))
+
+(defun tl-as-tcon (x)
+  "Return X as a type constructor, treating a bare symbol as nullary.
+A type-constructor variable bound in name position yields a bare
+symbol (e.g. the `Maybe' of `Functor Maybe'); this normalizes it."
+  (if (symbolp x) (tl-tcon x nil) x))
+
+(defun tl-match-instance (head ty)
+  "Match instance HEAD against type TY.  Return `(t . SUB)' on success.
+Instance-head variables are rigid patterns; variables in TY may be
+bound by SUB.  Returns nil when HEAD does not match TY."
+  (let ((sub nil) (work (list (cons head ty))) (ok t))
+    (while (and work ok)
+      (let* ((pair (pop work))
+             (h (tl-as-tcon (car pair)))
+             (t2 (tl-as-tcon (tl-deref (cdr pair) sub))))
+        (cond
+         ((tl-tvar-p h)
+          (let ((hd (tl-deref h sub)))
+            (if (tl-tvar-p hd)
+                (push (cons hd t2) sub)
+              (unless (equal hd t2) (setq ok nil)))))
+         ((and (tl-tcon-p h) (tl-tcon-p t2)
+               (eq (tl-tcon-name h) (tl-tcon-name t2))
+               (= (length (tl-tcon-args h)) (length (tl-tcon-args t2))))
+          (let ((ah (tl-tcon-args h)) (at (tl-tcon-args t2)))
+            (while ah (push (cons (car ah) (car at)) work)
+                   (setq ah (cdr ah) at (cdr at)))))
+         ((equal h t2))
+         (t (setq ok nil)))))
+    (and ok (cons t sub))))
+
+(defun tl-solve-constraint (env c bindings)
+  "Solve constraint C in ENV under BINDINGS.  Return `(ok . bindings)'.
+For a resolvable instance, recursively solve its context."
+  (let* ((ty (tl-apply-bindings (tl-constraint-type c) bindings))
+         (insts (gethash (tl-constraint-class c) (tl-env-instance-env env)))
+         (found nil)
+         (ok t))
+    (while (and insts (not found) ok)
+      (let ((m (tl-match-instance (tl-instance-head (car insts)) ty)))
+        (when m
+          (setq found t)
+          (let ((sub (cdr m)))
+            (dolist (c2 (tl-instance-context (car insts)))
+              (let ((r (tl-solve-constraint
+                        env
+                        (tl-constraint (tl-constraint-class c2)
+                                       (tl-type-subst (tl-constraint-type c2) sub))
+                        bindings)))
+                (unless (car r) (setq ok nil))
+                (setq bindings (cdr r)))))))
+      (setq insts (cdr insts)))
+    (if (and found ok) (cons t bindings) (cons nil nil))))
+
+(defun tl-close-constraints (env gen-vars constraints bindings)
+  "Zonk CONSTRAINTS under BINDINGS, solving the non-generalizable ones.
+GEN-VARS are the type variables being generalized.  Constraints whose
+type mentions a GEN-VARS variable are returned (deduplicated); the
+rest are solved in ENV, signalling `termlisp-type-error' on an
+unsolved ground constraint."
+  (let ((kept nil))
+    (dolist (c constraints)
+      (let* ((ty (tl-apply-bindings (tl-constraint-type c) bindings))
+             (c* (tl-constraint (tl-constraint-class c) ty)))
+        (if (cl-intersection gen-vars (tl-free-tvars ty))
+            (push c* kept)
+          (unless (car (tl-solve-constraint env c* bindings))
+            (when (null (tl-free-tvars ty))
+              (signal 'termlisp-type-error
+                      (list (format "No instance for %S %S"
+                                    (tl-constraint-class c) ty))))))))
+    (cl-remove-duplicates (nreverse kept) :test #'equal)))
+
+(defun tl-generalize (type env-tvars &optional constraints)
+  "Generalize TYPE, quantifying tvars not in ENV-TVARS, keeping CONSTRAINTS
+whose type mentions a quantified variable."
+  (let* ((vars (tl-generalized-vars type env-tvars))
+         (kept (cl-remove-if-not
+                (lambda (c)
+                  (cl-intersection vars (tl-free-tvars (tl-constraint-type c))))
+                constraints)))
+    (tl-tscheme vars type (cl-remove-duplicates kept :test #'equal))))
 
 (defun tl-env-free-tvars (env)
   "Free type variables of the type environment of ENV."
@@ -229,16 +310,30 @@ that constraints do not leak between top-level forms.")
   "Record constraint C in the current `tl-infer-constraints'."
   (push c tl-infer-constraints))
 
-(defun tl-instantiate (scheme)
-  "Instantiate SCHEME (a `tl-tscheme') with fresh type variables.
-Returns the instantiated type only; constraints on SCHEME are not
-freshened or emitted here (callers that need them, such as method
-lookup, do so explicitly)."
+(defun tl-instantiate-scheme (scheme)
+  "Instantiate SCHEME with fresh type variables.
+Return `(TYPE . CONSTRAINTS)', freshening the type and any constraints
+with the same substitution.  A non-scheme is returned as
+`(SCHEME . nil)'."
   (if (tl-tscheme-p scheme)
       (let ((sub (mapcar (lambda (v) (cons v (tl-fresh-tvar)))
                          (tl-tscheme-vars scheme))))
-        (tl-type-subst (tl-tscheme-type scheme) sub))
-    scheme))
+        (cons (tl-type-subst (tl-tscheme-type scheme) sub)
+              (mapcar (lambda (c)
+                        (tl-constraint (tl-constraint-class c)
+                                       (tl-type-subst (tl-constraint-type c) sub)))
+                      (tl-tscheme-constraints scheme))))
+    (cons scheme nil)))
+
+(defun tl-instantiate (scheme)
+  "Instantiate SCHEME, returning only the instantiated type."
+  (car (tl-instantiate-scheme scheme)))
+
+(defun tl-instantiate-constraints (scheme)
+  "Return SCHEME's constraints instantiated with fresh type variables.
+Callers that also need the instantiated type must use
+`tl-instantiate-scheme' so both share one substitution."
+  (cdr (tl-instantiate-scheme scheme)))
 
 (defun tl-skolemize-scheme (scheme)
   "Replace SCHEME's quantified variables with rigid type constants."
@@ -351,17 +446,13 @@ error."
     (cond
      (cell (cons (cdr cell) nil))
      ((and base (gethash sym (tl-env-type-env base)))
-      (cons (tl-instantiate (gethash sym (tl-env-type-env base))) nil))
+      (let ((r (tl-instantiate-scheme (gethash sym (tl-env-type-env base)))))
+        (dolist (c (cdr r)) (tl-emit-constraint c))
+        (cons (car r) nil)))
      ((and base (gethash sym (tl-env-method-env base)))
-      (let* ((sc (gethash sym (tl-env-method-env base)))
-             (sub (mapcar (lambda (v) (cons v (tl-fresh-tvar)))
-                          (tl-tscheme-vars sc)))
-             (ty (tl-type-subst (tl-tscheme-type sc) sub)))
-        (dolist (c (tl-tscheme-constraints sc))
-          (tl-emit-constraint
-           (tl-constraint (tl-constraint-class c)
-                          (tl-type-subst (tl-constraint-type c) sub))))
-        (cons ty nil)))
+      (let ((r (tl-instantiate-scheme (gethash sym (tl-env-method-env base)))))
+        (dolist (c (cdr r)) (tl-emit-constraint c))
+        (cons (car r) nil)))
      ((gethash sym tl-builtin-types)
       (cons (tl-instantiate (gethash sym tl-builtin-types)) nil))
      (t (cons (tl-fresh-tvar) nil)))))
@@ -562,14 +653,19 @@ Return `(LOCAL-BINDINGS . SUBST)'."
                   (signal 'termlisp-type-error
                           (list (format "Clause of %S has inconsistent type" name))))
                 (setq bindings (cdr u)))))))
-      (let ((final (tl-apply-bindings placeholder bindings)))
+      (let* ((final (tl-apply-bindings placeholder bindings))
+             (env-tvars (tl-env-free-tvars env))
+             (gen-vars (tl-generalized-vars final env-tvars)))
         (if sig
             (let ((u (tl-unify-types final (tl-skolemize-scheme sig) nil)))
               (unless (car u)
                 (signal 'termlisp-type-error
                         (list (format "Definition of %S does not match its signature" name))))
+              (tl-close-constraints env nil tl-infer-constraints
+                                    (tl-compose-bindings bindings (cdr u)))
               (puthash name sig tyenv))
-          (puthash name (tl-generalize final (tl-env-free-tvars env)) tyenv))))))
+          (let ((kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
+            (puthash name (tl-generalize final env-tvars kept) tyenv)))))))
 
 (defun tl-syntactic-value-p (expr)
   "Return non-nil if EXPR is a syntactic value (value restriction)."
@@ -580,20 +676,25 @@ Return `(LOCAL-BINDINGS . SUBST)'."
   "Infer a constant binding NAME = EXPR."
   (let* ((tl-infer-constraints nil)
          (r (tl-infer (cons nil env) expr)))
-    (let ((ty (tl-apply-bindings (car r) (cdr r))))
+    (let* ((ty (tl-apply-bindings (car r) (cdr r)))
+           (bindings (cdr r))
+           (env-tvars (tl-env-free-tvars env)))
       (if (gethash name (tl-env-sig-env env))
           (let* ((sig (gethash name (tl-env-type-env env)))
                  (u (tl-unify-types ty (tl-skolemize-scheme sig) nil)))
             (unless (car u)
               (signal 'termlisp-type-error
                       (list (format "Definition of %S does not match its signature" name))))
+            (tl-close-constraints env nil tl-infer-constraints
+                                  (tl-compose-bindings bindings (cdr u)))
             (puthash name sig (tl-env-type-env env))
             ty)
-        (puthash name
-                 (if (tl-syntactic-value-p expr)
-                     (tl-generalize ty (tl-env-free-tvars env))
-                   (tl-tscheme nil ty))
-                 (tl-env-type-env env))
+        (if (tl-syntactic-value-p expr)
+            (let* ((gen-vars (tl-generalized-vars ty env-tvars))
+                   (kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
+              (puthash name (tl-generalize ty env-tvars kept) (tl-env-type-env env)))
+          (tl-close-constraints env nil tl-infer-constraints bindings)
+          (puthash name (tl-tscheme nil ty) (tl-env-type-env env)))
         ty))))
 
 (defun tl-register-signature (env form)
@@ -667,7 +768,9 @@ Return `(LOCAL-BINDINGS . SUBST)'."
      ((and (consp form) (eq (car form) 'define)) (tl-typecheck-define env form))
      ((and (consp form) (eq (car form) 'class)) (tl-register-class env form))
      ((and (consp form) (eq (car form) 'instance)) (tl-register-instance env form))
-     (t (car (tl-infer (cons nil env) form))))))
+     (t (let ((r (tl-infer (cons nil env) form)))
+          (tl-close-constraints env nil tl-infer-constraints (cdr r))
+          (car r))))))
 
 (defun termlisp-typecheck-def (env string)
   "Typecheck all top-level forms in STRING into ENV.  Return ENV."

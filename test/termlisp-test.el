@@ -1029,6 +1029,27 @@
       (should (tl-constraint-p (car tl-infer-constraints)))
       (should (eq (tl-constraint-class (car tl-infer-constraints)) 'Functor)))))
 
+(ert-deftest class/solve-instance ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(class Functor (f) nil (fmap ((-> a b) -> (f a) -> (f b))))")
+    (termlisp-eval "(datatype Maybe (Nothing) (Just a))" env)
+    (termlisp-typecheck-def env "(instance (Functor Maybe))")
+    (should (termlisp-typecheck "(fmap (lambda (x) x) (Just 1))" env))))
+
+(ert-deftest class/unsolved-constraint-errors ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(class Functor (f) nil (fmap ((-> a b) -> (f a) -> (f b))))")
+    (termlisp-eval "(datatype NotFunctor (Mk a))" env)
+    (should-error (termlisp-typecheck "(fmap (lambda (x) x) (Mk 1))" env)
+                  :type 'termlisp-type-error)))
+
+(ert-deftest class/generalized-constraint ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(class Functor (f) nil (fmap ((-> a b) -> (f a) -> (f b))))")
+    (termlisp-typecheck-def env "(define (twice g x) (fmap g (fmap g x)))")
+    (let ((sc (gethash 'twice (tl-env-type-env env))))
+      (should (= (length (tl-tscheme-constraints sc)) 1)))))
+
 (ert-deftest typecheck/do ()
   (let ((env (termlisp-make-env)))
     (termlisp-typecheck-file
