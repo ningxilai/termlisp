@@ -1,5 +1,4 @@
 (datatype Nat (Zero) (Succ Nat))
-(define (pred (Succ n)) n)
 (define (plus Zero b) b)
 (define (plus (Succ a) b) (Succ (plus a b)))
 (plus (Succ (Succ Zero)) (Succ Zero))
