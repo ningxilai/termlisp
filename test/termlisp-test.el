@@ -691,6 +691,15 @@
     (should (memq a (tl-free-tvars ty)))
     (should (= (length (tl-free-tvars ty)) 1))))
 
+(ert-deftest type/free-tvars-head-position ()
+  "A variable in head position is a free variable."
+  (let* ((f (tl-fresh-tvar))
+         (a (tl-fresh-tvar))
+         (vars (tl-free-tvars (tl-tcon f (list a)))))
+    (should (memq f vars))
+    (should (memq a vars))
+    (should (= (length vars) 2))))
+
 (ert-deftest type/parse-malformed ()
   (should-error (tl-type-parse '(a ->)) :type 'termlisp-type-error)
   (should-error (tl-type-parse '(-> a)) :type 'termlisp-type-error)
@@ -724,6 +733,25 @@
          (sub (list (cons a (tl-tint)))))
     (should (equal (tl-type-subst ty sub) (tl-tarrow (tl-tint) (tl-tint))))))
 
+(ert-deftest type/subst-head-position ()
+  "A variable in the head of an application is substituted."
+  (let* ((f (tl-fresh-tvar))
+         (g (tl-fresh-tvar))
+         (a (tl-fresh-tvar))
+         (ty (tl-tcon f (list a)))
+         (sub (list (cons f g))))
+    (should (eq (tl-tcon-name (tl-type-subst ty sub)) g))
+    (should (eq (car (tl-tcon-args (tl-type-subst ty sub))) a))))
+
+(ert-deftest type/subst-is-shallow ()
+  "Substitution replaces a variable once, without chasing further bindings."
+  (let* ((a (tl-fresh-tvar))
+         (b (tl-fresh-tvar))
+         (ty (tl-tcon 'Wrap (list a)))
+         (sub (list (cons a b) (cons b (tl-tint)))))
+    (should (equal (tl-type-subst ty sub)
+                   (tl-tcon 'Wrap (list b))))))
+
 (ert-deftest type/generalize-instantiate ()
   (let* ((a (tl-fresh-tvar))
          (ty (tl-tarrow a a))
@@ -744,6 +772,14 @@
          (b (tl-fresh-tvar))
          (binds (list (cons a (tl-tint)) (cons b a))))
     (should (equal (tl-apply-bindings b binds) (tl-tint)))))
+
+(ert-deftest type/apply-bindings-recurses-into-result ()
+  "Apply-bindings chases a variable bound to a constructor with variables."
+  (let* ((a (tl-fresh-tvar))
+         (b (tl-fresh-tvar))
+         (binds (list (cons a (tl-tarrow b b)) (cons b (tl-tint)))))
+    (should (equal (tl-apply-bindings a binds)
+                   (tl-tarrow (tl-tint) (tl-tint))))))
 
 (ert-deftest type/compose-bindings ()
   (let* ((a (tl-fresh-tvar))
@@ -1067,6 +1103,11 @@
                    (tl-canonical-key (tl-tcon 'Maybe (list b b)))))
     (should-not (equal (tl-canonical-key (tl-tarrow a b))
                        (tl-canonical-key (tl-tarrow c c))))))
+
+(ert-deftest class/canonical-key-head-position ()
+  "Head-position variables are numbered before argument variables."
+  (let ((f (tl-fresh-tvar)) (a (tl-fresh-tvar)))
+    (should (equal (tl-canonical-key (tl-tcon f (list a))) "(?0 ?1)"))))
 
 (ert-deftest class/canonical-key-dedup ()
   "Canonical-key bucketing dedups equal constraints but not distinct vars."

@@ -138,18 +138,28 @@ application."
   (let ((tl-type-parse-vars nil))
     (tl-type-parse* sexp)))
 
+(defun tl-type-fold (leaf-fn node-fn type)
+  "Fold over the `tl-decompose' structure of TYPE.
+For a leaf (a node with no decomposition) return `(funcall LEAF-FN TYPE)'.
+Otherwise, with decomposition D, fold the head `(car D)' first, then the
+children `(cdr D)' left to right, and return
+`(funcall NODE-FN (car D) HEAD-RESULT CHILDREN-RESULTS)'."
+  (let ((d (tl-decompose type)))
+    (if (null d)
+        (funcall leaf-fn type)
+      (let* ((head (tl-type-fold leaf-fn node-fn (car d)))
+             (children (mapcar (lambda (child)
+                                 (tl-type-fold leaf-fn node-fn child))
+                               (cdr d))))
+        (funcall node-fn (car d) head children)))))
+
 (defun tl-free-tvars (type)
   "Return the list of type variables occurring in TYPE."
   (let ((acc nil))
-    (cl-labels ((walk (node)
-                  (let ((d (tl-decompose node)))
-                    (if d
-                        (progn
-                          (walk (car d))
-                          (mapc #'walk (cdr d)))
-                      (when (tl-tvar-p node)
-                        (cl-pushnew node acc :test #'eq))))))
-      (walk type))
+    (tl-type-fold
+     (lambda (node) (when (tl-tvar-p node) (cl-pushnew node acc :test #'eq)))
+     (lambda (_head _head-result _children) nil)
+     type)
     acc))
 
 (defun tl-canonical-key (type)
@@ -160,23 +170,21 @@ The key is an over-approximation: callers that need exact equality
 confirm within the bucket (see `tl-remove-duplicates-by-key').
 Borrowed from clover's `canonical-term-string'."
   (let ((index nil) (counter 0))
-    (cl-labels ((canon (ty)
-                  (cond
-                   ((tl-tvar-p ty)
-                    (let ((cell (assq ty index)))
-                      (if cell (cdr cell)
-                        (let ((key (format "?%d" counter)))
-                          (setq counter (1+ counter))
-                          (push (cons ty key) index)
-                          key))))
-                   ((tl-decompose ty)
-                    (let* ((d (tl-decompose ty)) (name (car d)))
-                      (format "(%s%s)"
-                              (if (tl-tvar-p name) (canon name) name)
-                              (mapconcat (lambda (a) (concat " " (canon a)))
-                                         (cdr d) ""))))
-                   (t (format "%S" ty)))))
-      (canon type))))
+    (tl-type-fold
+     (lambda (ty)
+       (if (tl-tvar-p ty)
+           (let ((cell (assq ty index)))
+             (if cell (cdr cell)
+               (let ((key (format "?%d" counter)))
+                 (setq counter (1+ counter))
+                 (push (cons ty key) index)
+                 key)))
+         (format "%S" ty)))
+     (lambda (name head children)
+       (format "(%s%s)"
+               (if (tl-tvar-p name) head name)
+               (mapconcat (lambda (s) (concat " " s)) children "")))
+     type)))
 
 (defun tl-constraint-canonical-key (c)
   "Return a variable-rename-invariant string key for constraint C."
@@ -206,26 +214,32 @@ from clover's `remove-duplicates-by-key'."
   (let ((ty (tl-type-parse sexp)))
     (tl-tscheme (tl-free-tvars ty) ty)))
 
-(defun tl-type-subst (type sub)
-  "Apply substitution SUB (alist tvar -> type) to TYPE."
+(defun tl-map-type (f type)
+  "Apply F to each type variable in TYPE (shallow at each node), rebuilding.
+F is applied to a variable wherever it occurs, including the head position of
+a `tl-tcon' (the higher-kinded `(f a)' case); its result is inserted without
+further traversal.  Non-constructor, non-variable leaves are returned as-is."
   (cond
-   ((tl-tvar-p type)
-    (let ((cell (assq type sub))) (if cell (cdr cell) type)))
+   ((tl-tvar-p type) (funcall f type))
    ((tl-tcon-p type)
     (let* ((d (tl-decompose type)) (name (car d)))
-      (tl-rebuild (if (tl-tvar-p name) (tl-type-subst name sub) name)
-                  (mapcar (lambda (arg) (tl-type-subst arg sub)) (cdr d)))))
+      (tl-rebuild (if (tl-tvar-p name) (funcall f name) name)
+                  (mapcar (lambda (arg) (tl-map-type f arg)) (cdr d)))))
    (t type)))
+
+(defun tl-type-subst (type sub)
+  "Apply substitution SUB (alist tvar -> type) to TYPE."
+  (tl-map-type
+   (lambda (tv) (let ((cell (assq tv sub))) (if cell (cdr cell) tv)))
+   type))
 
 (defun tl-apply-bindings (type bindings)
   "Fully apply BINDINGS to TYPE."
-  (let ((ty (tl-deref type bindings)))
-    (if (tl-tcon-p ty)
-        (let* ((d (tl-decompose ty)) (name (car d)))
-          (tl-rebuild (if (tl-tvar-p name) (tl-apply-bindings name bindings) name)
-                      (mapcar (lambda (arg) (tl-apply-bindings arg bindings))
-                              (cdr d))))
-      ty)))
+  (tl-map-type
+   (lambda (tv)
+     (let ((ty (tl-deref tv bindings)))
+       (if (tl-tvar-p ty) ty (tl-apply-bindings ty bindings))))
+   type))
 
 (defun tl-generalized-vars (type env-tvars)
   "Return the type variables of TYPE that are not in ENV-TVARS."
