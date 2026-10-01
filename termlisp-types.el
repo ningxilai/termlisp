@@ -53,6 +53,8 @@ Like `tl-occurs', but traverses the argument types of a `tl-tcon'."
       (let ((t0 (tl-deref (pop work) bindings)))
         (cond ((eq t0 var) (setq found t))
               ((tl-tcon-p t0)
+               (when (tl-tvar-p (tl-tcon-name t0))
+                 (push (tl-tcon-name t0) work))
                (dolist (a (tl-tcon-args t0)) (push a work))))))
     found))
 
@@ -73,12 +75,13 @@ On failure returns `(nil . nil)'."
           (if (tl-occurs-type y x bindings) (setq ok nil)
             (setq bindings (cons (cons y x) bindings))))
          ((and (tl-tcon-p x) (tl-tcon-p y))
-          (if (and (eq (tl-tcon-name x) (tl-tcon-name y))
-                   (= (length (tl-tcon-args x)) (length (tl-tcon-args y))))
-              (let ((ax (tl-tcon-args x)) (ay (tl-tcon-args y)))
-                (while ax
-                  (push (cons (car ax) (car ay)) pending)
-                  (setq ax (cdr ax) ay (cdr ay))))
+          (if (= (length (tl-tcon-args x)) (length (tl-tcon-args y)))
+              (progn
+                (push (cons (tl-tcon-name x) (tl-tcon-name y)) pending)
+                (let ((ax (tl-tcon-args x)) (ay (tl-tcon-args y)))
+                  (while ax
+                    (push (cons (car ax) (car ay)) pending)
+                    (setq ax (cdr ax) ay (cdr ay)))))
             (setq ok nil)))
          (t (setq ok nil)))))
     (if ok (cons t bindings) (cons nil nil))))
@@ -112,12 +115,21 @@ On failure returns `(nil . nil)'."
     (push (nreverse cur) parts)
     (nreverse parts)))
 
+(defun tl-type-head (sym)
+  "Resolve head symbol SYM through `tl-type-parse-vars' if it is bound.
+Bound class/datatype parameters become their shared type variable, so
+an application such as `(f a)' stores the variable in the `tl-tcon'
+name slot."
+  (let ((cell (and (symbolp sym) (assq sym tl-type-parse-vars))))
+    (if cell (cdr cell) sym)))
+
 (defun tl-type-parse-segment (segment)
   "Parse SEGMENT, one arrow operand's token list, into a type.
 A single-token SEGMENT is that token; otherwise it is a constructor
 application."
   (if (cdr segment)
-      (tl-tcon (car segment) (mapcar #'tl-type-parse* (cdr segment)))
+      (tl-tcon (tl-type-head (car segment))
+               (mapcar #'tl-type-parse* (cdr segment)))
     (tl-type-parse* (car segment))))
 
 (defun tl-type-parse-arrow (parts)
@@ -145,7 +157,7 @@ application."
    ((and (consp sexp) (memq '-> sexp))
     (tl-type-parse-arrow (tl-split-arrow sexp)))
    ((consp sexp)
-    (tl-tcon (car sexp) (mapcar #'tl-type-parse* (cdr sexp))))
+    (tl-tcon (tl-type-head (car sexp)) (mapcar #'tl-type-parse* (cdr sexp))))
    (t (signal 'termlisp-type-error (list (format "Bad type: %S" sexp))))))
 
 (defun tl-type-parse (sexp)
@@ -158,7 +170,10 @@ application."
   (let ((acc nil))
     (cl-labels ((walk (node)
                   (cond ((tl-tvar-p node) (cl-pushnew node acc :test #'eq))
-                        ((tl-tcon-p node) (mapc #'walk (tl-tcon-args node))))))
+                        ((tl-tcon-p node)
+                         (when (tl-tvar-p (tl-tcon-name node))
+                           (cl-pushnew (tl-tcon-name node) acc :test #'eq))
+                         (mapc #'walk (tl-tcon-args node))))))
       (walk type))
     acc))
 
@@ -173,17 +188,19 @@ application."
    ((tl-tvar-p type)
     (let ((cell (assq type sub))) (if cell (cdr cell) type)))
    ((tl-tcon-p type)
-    (tl-tcon (tl-tcon-name type)
-             (mapcar (lambda (arg) (tl-type-subst arg sub)) (tl-tcon-args type))))
+    (let ((name (tl-tcon-name type)))
+      (tl-tcon (if (tl-tvar-p name) (tl-type-subst name sub) name)
+               (mapcar (lambda (arg) (tl-type-subst arg sub)) (tl-tcon-args type)))))
    (t type)))
 
 (defun tl-apply-bindings (type bindings)
   "Fully apply BINDINGS to TYPE."
   (let ((ty (tl-deref type bindings)))
     (if (tl-tcon-p ty)
-        (tl-tcon (tl-tcon-name ty)
-                 (mapcar (lambda (arg) (tl-apply-bindings arg bindings))
-                         (tl-tcon-args ty)))
+        (let ((name (tl-tcon-name ty)))
+          (tl-tcon (if (tl-tvar-p name) (tl-apply-bindings name bindings) name)
+                   (mapcar (lambda (arg) (tl-apply-bindings arg bindings))
+                           (tl-tcon-args ty))))
       ty)))
 
 (defun tl-generalize (type env-tvars)
@@ -580,17 +597,23 @@ Return `(LOCAL-BINDINGS . SUBST)'."
   "Register `(class NAME (PARAM) SUPERS METHOD-DECL...)' in ENV."
   (let* ((name (nth 1 form))
          (param (car (nth 2 form)))
-         (supers (nth 3 form))
+         (super-forms (nth 3 form))
          (method-decls (nthcdr 4 form))
-         (methods nil))
+         (param-var (tl-fresh-tvar))
+         (methods nil)
+         (supers nil))
+    (dolist (sf super-forms)
+      (let ((tl-type-parse-vars (list (cons param param-var))))
+        (push (tl-constraint (car sf) (tl-type-parse* (cadr sf))) supers)))
+    (setq supers (nreverse supers))
     (dolist (md method-decls)
       (let* ((mname (car md))
-             (ty (tl-type-parse (cadr md)))
-             (cparam (tl-fresh-tvar)))
+             (tl-type-parse-vars (list (cons param param-var)))
+             (ty (tl-type-parse* (cadr md))))
         (push (cons mname
-                    (tl-tscheme (list cparam)
+                    (tl-tscheme (tl-free-tvars ty)
                                 ty
-                                (list (tl-constraint name cparam))))
+                                (list (tl-constraint name param-var))))
               methods)))
     (setq methods (nreverse methods))
     (puthash name (tl-cclass name (list param) supers methods)

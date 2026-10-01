@@ -1008,6 +1008,17 @@
     (termlisp-typecheck-def env "(instance (Functor Maybe))")
     (should (= (length (gethash 'Functor (tl-env-instance-env env))) 1))))
 
+(ert-deftest class/method-scheme-wellformed ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(class Functor (f) nil (fmap ((-> a b) -> (f a) -> (f b))))")
+    (let* ((sc (gethash 'fmap (tl-env-method-env env)))
+           (ty (tl-tscheme-type sc))
+           (vars (tl-tscheme-vars sc))
+           (ct (tl-constraint-type (car (tl-tscheme-constraints sc)))))
+      (should (= (length vars) 3))
+      (should (memq ct vars))
+      (should (memq ct (tl-free-tvars ty))))))
+
 (ert-deftest typecheck/do ()
   (let ((env (termlisp-make-env)))
     (termlisp-typecheck-file
