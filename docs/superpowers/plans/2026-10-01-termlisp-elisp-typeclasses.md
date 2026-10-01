@@ -10,7 +10,15 @@
 
 **Scope:** Phase A. Kind checking is minimal (class params are `* -> *`). Multi-parameter type classes, functional dependencies, and associated types are out of scope. Superclasses are supported for constraint simplification only.
 
-**Progress (as of 2026-10-01):** Tasks 1–3 are DONE and merged (class/instance declarations; constraint collection; constraint solving + constrained schemes; 185 tests). Tasks 4–6 remain (type-directed `do`, dictionary-passing elaboration, prelude classes/instances + acceptance). Known constraints for the remaining work: parameterized instance heads (e.g. `Functor (Either e)`) do not resolve with the current `f a`-vs-`Either e a` encoding; instance contexts/superclasses are parsed but not yet used; full dictionary passing (Task 5) is the largest remaining piece.
+**Progress (as of 2026-10-01):** Tasks 1–3 DONE and merged (class/instance declarations; constraint collection; constraint solving + constrained schemes). Tasks 5–6 DONE and merged (`termlisp-elaborate.el` type-directed dictionary passing; prelude `Functor`/`Applicative`/`Monad` classes + Maybe/List/State/Reader instances; `:elaborate` option; 188 tests, `make compile` clean). The elaborator is sound: it never rewrites a non-method call and never inserts a wrong dictionary — it only *under*-elaborates.
+
+**Remaining (Task 4 + follow-ups):**
+- **Task 4 — type-directed `do`**: `(do (x <- (Just 1)) (return (+ x 1)))` (no explicit monad name) is not yet supported; `tl-desugar-do` still requires a dictionary. Explicit-dictionary `do` works.
+- Polymorphic functions with a *generalized* constraint are not dictionary-threaded (e.g. `(define (add1-in m) (fmap ... m))` errors at runtime); full support requires transforming polymorphic functions to take dictionary parameters.
+- Method referenced as a bare value (not in application position) is not elaborated.
+- Ambiguous (non-ground) constraints are silently accepted and fail only at runtime; a proper implementation should reject ambiguous type variables.
+- `Applicative` runtime methods (`pure`/`ap`) are absent; superclasses are declared `nil` (nominal only).
+- Parameterized instance heads (e.g. `Functor (Either e)`) do not resolve with the current `f a`-vs-`Either e a` encoding; instance contexts/superclasses are parsed but unused.
 
 **Borrowing note:** constraint solving uses one-way matching/subsumption in the style of clover's `unify.lisp`; the shared unifier kernel may be parameterized over term decomposition (`cons` vs `tl-tcon`) where natural.
 
