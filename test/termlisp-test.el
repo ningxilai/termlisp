@@ -285,5 +285,20 @@
     (should (equal (cdr (assq 'b (cdr r))) 1))
     (should (equal (cdr (assq 'c (cdr r))) 2))))
 
+(ert-deftest builtins/registry ()
+  (should (tl-builtin-p 'eq))
+  (should (tl-builtin-p '+))
+  (should-not (tl-builtin-p 'nope)))
+
+(ert-deftest builtins/eq ()
+  (should (eq (funcall (gethash 'eq tl-builtins) '(1 1)) 'True))
+  (should (eq (funcall (gethash 'eq tl-builtins) '(1 2)) 'False)))
+
+(ert-deftest builtins/arith ()
+  (should (= (funcall (gethash '+ tl-builtins) '(2 3)) 5))
+  (should (= (funcall (gethash '- tl-builtins) '(7 3)) 4))
+  (should (= (funcall (gethash '* tl-builtins) '(2 3)) 6))
+  (should (eq (funcall (gethash '< tl-builtins) '(1 2)) 'True)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
