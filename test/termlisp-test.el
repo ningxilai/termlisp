@@ -459,5 +459,44 @@
   (let ((env (termlisp-make-env)))
     (should (eq (termlisp-load-prelude env) env))))
 
+(ert-deftest laziness/unused-argument-not-evaluated ()
+  "A diverging argument to a function that ignores it is never forced."
+  (tl-register-builtin 'boom2
+    (lambda (_args) (signal 'termlisp-eval-error '("boom"))))
+  (should (eq (termlisp-eval
+               "(define (const a b) a)
+                (const 1 (boom2))")
+             1)))
+
+(ert-deftest laziness/sharing-via-memoization ()
+  "A thunk bound to a name is forced at most once (observed via a counter)."
+  (let ((count 0)
+        (env (termlisp-load-prelude)))
+    (tl-register-builtin 'tick2
+      (lambda (_args) (setq count (1+ count)) 'True))
+    (termlisp-eval
+     "(define (dup x) (Pair x x))
+      (define (used p) (eq (car p) (cdr p)))
+      (used (dup (tick2)))"
+     env)
+    (should (= count 1))))
+
+(ert-deftest tco/mutual-recursion ()
+  "Mutually recursive tail calls must not overflow."
+  (let ((env (termlisp-load-prelude (termlisp-make-env '(:fuel 10000000)))))
+    (termlisp-eval
+     "(define (evenp n) (if (eq n 0) True (oddp (- n 1))))
+      (define (oddp n) (if (eq n 0) False (evenp (- n 1))))"
+     env)
+    (should (eq (termlisp-eval "(evenp 100000)" env) 'True))))
+
+(ert-deftest tco/large-accumulator ()
+  "A deep accumulator loop must not overflow the Elisp stack."
+  (let ((env (termlisp-load-prelude (termlisp-make-env '(:fuel 10000000)))))
+    (termlisp-eval
+     "(define (sum n acc) (if (eq n 0) acc (sum (- n 1) (+ acc n))))"
+     env)
+    (should (= (termlisp-eval "(sum 10000 0)" env) 50005000))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
