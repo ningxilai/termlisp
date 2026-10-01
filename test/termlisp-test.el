@@ -308,5 +308,74 @@
   (should-error (funcall (gethash '+ tl-builtins) '(1 2 3)) :type 'termlisp-type-error)
   (should-error (funcall (gethash '+ tl-builtins) '(a b)) :type 'termlisp-type-error))
 
+(require 'termlisp-eval)
+
+(ert-deftest eval/atom-and-symbol ()
+  (should (equal (termlisp-eval "42") 42))
+  (should (eq (termlisp-eval "Foo") 'Foo)))
+
+(ert-deftest eval/constant ()
+  (should (equal (termlisp-eval "(define x 5) x") 5)))
+
+(ert-deftest eval/lambda-immediate ()
+  (should (equal (termlisp-eval "((lambda (x) x) 42)") 42)))
+
+(ert-deftest eval/constructor-lazy ()
+  (should (equal (termlisp-value->string (termlisp-eval "(Pair 1 2)"))
+                 "(Pair 1 2)")))
+
+(ert-deftest eval/define-function ()
+  (should (equal (termlisp-eval "(define (id x) x) (id 42)") 42)))
+
+(ert-deftest eval/if-clauses ()
+  (should (eq (termlisp-eval
+               "(datatype Bool (True) (False))
+                (define (if (True) a b) a)
+                (define (if (False) a b) b)
+                (if True yes no)")
+              'yes)))
+
+(ert-deftest eval/pattern-destructure ()
+  (should (eq (termlisp-eval
+               "(datatype Pair (Pair a b))
+                (define (fst (Pair a b)) a)
+                (fst (Pair hello world))")
+              'hello)))
+
+(ert-deftest eval/open-constructor ()
+  (should (equal (termlisp-value->string (termlisp-eval "(Foo 1 (Bar 2))"))
+                 "(Foo 1 (Bar 2))")))
+
+(ert-deftest eval/match-failure-signals ()
+  (should-error (termlisp-eval "(define (f (True)) 1) (f (False))")
+                :type 'termlisp-eval-error))
+
+(ert-deftest eval/annotations-ignored ()
+  (should (equal (termlisp-eval "(: id (a -> a)) (define (id x) x) (id 7)") 7)))
+
+(ert-deftest eval/tco-deep-recursion ()
+  "A tail-recursive loop of 100000 iterations must not overflow the stack."
+  (let ((env (termlisp-make-env '(:fuel 10000000))))
+    (should (= (termlisp-eval
+                "(datatype Bool (True) (False))
+                 (define (if (True) a b) a)
+                 (define (if (False) a b) b)
+                 (define (loop n acc)
+                   (if (eq n 0) acc (loop (- n 1) (+ acc 1))))
+                 (loop 100000 0)"
+                env)
+               100000))))
+
+(ert-deftest eval/laziness-shares ()
+  (should (= (termlisp-eval
+              "(define (id x) x)
+               (define (bump n) (+ n 1))
+               (+ (id (bump 0)) (id (bump 0)))")
+             2)))
+
+(ert-deftest api/value->string ()
+  (should (equal (termlisp-value->string '(Pair 1 2)) "(Pair 1 2)"))
+  (should (equal (termlisp-value->string 'Foo) "Foo")))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

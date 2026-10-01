@@ -21,5 +21,10 @@
                    termlisp-eval))
   (require feature nil t))
 
+(defun termlisp-typecheck (string &optional env)
+  "Typecheck STRING in ENV.  Implemented in Plan 2; returns ENV for now."
+  (ignore string)
+  (or env (termlisp-make-env)))
+
 (provide 'termlisp)
 ;;; termlisp.el ends here
