@@ -16,6 +16,7 @@
 ;; file; the declarations avoid a circular `require' at load time.
 (declare-function tl-graph-apply-crule "termlisp-case" (node rule))
 (declare-function tl-graph-crule-applicable-p "termlisp-case" (node rule))
+(declare-function tl-pat-dispatch-heads "termlisp-case" (pat))
 
 (cl-defstruct (tl-node (:constructor tl-make-node (head &optional children application)))
   "A term graph node.
@@ -241,27 +242,102 @@ Does not descend into opaque subterms (`tl-graph-opaque-heads')."
   (sort (cl-remove-if-not (lambda (r) (eq (tl-grule-phase r) phase)) rules)
         (lambda (a b) (< (tl-grule-priority a) (tl-grule-priority b)))))
 
-(defun tl-graph--step (graph rules)
-  "Apply one highest-priority leftmost-outermost rewrite.  Return t if any."
-  (catch 'applied
-    (dolist (node (tl-graph--preorder (tl-graph-root graph)))
-      (dolist (rule rules)
-        (when (tl-graph-apply node rule)
-          (throw 'applied t))))
-    nil))
+(defun tl-graph--rule-heads (rule)
+  "Return the head values RULE may match, or `:generic'.
+A clause-based rule dispatches on the heads of its clauses' patterns, so it
+is indexed under their union; a clause that is irrefutable (a variable,
+wildcard or rest pattern) makes the whole rule generic.  A pattern/template
+rule indexes under its pattern's head, or is generic for a variable pattern."
+  (if (tl-grule-clauses rule)
+      (let ((heads nil))
+        (catch 'generic
+          (dolist (clause (tl-grule-clauses rule))
+            (let ((hs (tl-pat-dispatch-heads (car clause))))
+              (if (eq hs :generic)
+                  (throw 'generic :generic)
+                (dolist (head hs)
+                  (cl-pushnew head heads :test #'equal)))))
+          heads))
+    (let ((pattern (tl-grule-pattern rule)))
+      (cond ((tl-graph--pvar-p pattern) :generic)
+            ((consp pattern) (list (car pattern)))
+            (t (list pattern))))))
+
+(defun tl-graph--merge-by-pos (a b pos)
+  "Merge rule lists A and B, ordered by their position recorded in POS."
+  (let (out)
+    (while (and a b)
+      (if (< (gethash (car a) pos) (gethash (car b) pos))
+          (setq out (cons (car a) out) a (cdr a))
+        (setq out (cons (car b) out) b (cdr b))))
+    (while a (setq out (cons (car a) out) a (cdr a)))
+    (while b (setq out (cons (car b) out) b (cdr b)))
+    (nreverse out)))
+
+(defun tl-graph--rule-dispatch (rules)
+  "Index priority-ordered RULES by the node head they can match.
+Return `(GENERIC . TABLE)': GENERIC is the ordered list of rules that may
+match any head; TABLE maps a head to the ordered list of rules indexed under
+it, with GENERIC merged in so a single lookup yields every rule to try."
+  (let ((generic nil)
+        (specific (make-hash-table :test #'equal))
+        (pos (make-hash-table :test #'eq))
+        (i 0))
+    (dolist (rule rules)
+      (puthash rule i pos)
+      (setq i (1+ i))
+      (let ((heads (tl-graph--rule-heads rule)))
+        (if (eq heads :generic)
+            (push rule generic)
+          (dolist (head heads)
+            (puthash head (cons rule (gethash head specific)) specific)))))
+    (setq generic (nreverse generic))
+    (let ((table (make-hash-table :test #'equal)))
+      (maphash (lambda (head rs)
+                 (puthash head
+                          (tl-graph--merge-by-pos (nreverse rs) generic pos)
+                          table))
+               specific)
+      (cons generic table))))
+
+(defun tl-graph--step (graph dispatch)
+  "Apply one highest-priority leftmost-outermost rewrite.  Return t if any.
+DISPATCH is a `(GENERIC . TABLE)' index from `tl-graph--rule-dispatch'; only
+the rules indexed under a node's head (plus the generic ones) are tried.
+The graph is walked in pre-order with early exit, so no full node list is
+built and the scan stops at the first applicable rule."
+  (let ((generic (car dispatch))
+        (table (cdr dispatch))
+        (seen (make-hash-table :test #'eq)))
+    (cl-labels ((walk (node)
+                  (unless (gethash node seen)
+                    (puthash node t seen)
+                    (catch 'applied
+                      (dolist (rule (or (gethash (tl-node-head node) table)
+                                        generic))
+                        (when (tl-graph-apply node rule)
+                          (throw 'applied t)))
+                      (unless (memq (tl-node-head node) tl-graph-opaque-heads)
+                        (catch 'descend
+                          (dolist (child (tl-node-children node))
+                            (when (walk child)
+                              (throw 'descend t)))))))))
+      (walk (tl-graph-root graph)))))
 
 (defun tl-graph-rewrite (graph rules &optional fuel)
   "Strictly reduce GRAPH to normal form using RULES, phase by phase.
 Signals `termlisp-eval-error' when FUEL (default 10000) is exhausted."
   (let ((remaining (or fuel 10000)))
     (dolist (phase tl-graph-phases graph)
-      (let ((prules (tl-graph--rules-for phase rules))
-            (progress t))
-        (while progress
-          (when (<= remaining 0)
-            (signal 'termlisp-eval-error '("TGR fuel exhausted")))
-          (setq remaining (1- remaining))
-          (setq progress (tl-graph--step graph prules)))))))
+      (let ((dispatch (tl-graph--rule-dispatch (tl-graph--rules-for phase rules))))
+        (unless (and (null (car dispatch))
+                     (zerop (hash-table-count (cdr dispatch))))
+          (let ((progress t))
+            (while progress
+              (when (<= remaining 0)
+                (signal 'termlisp-eval-error '("TGR fuel exhausted")))
+              (setq remaining (1- remaining))
+              (setq progress (tl-graph--step graph dispatch)))))))))
 
 (defun tl-graph-rewrite-sexp (sexp rules &optional fuel)
   "Build a graph from SEXP, strictly reduce it with RULES, and render it back."
@@ -269,17 +345,20 @@ Signals `termlisp-eval-error' when FUEL (default 10000) is exhausted."
 
 (defun tl-graph-normal-form-p (graph rules)
   "Return non-nil if no rule applies anywhere in GRAPH."
-  (catch 'reducible
-    (dolist (node (tl-graph--preorder (tl-graph-root graph)))
-      (dolist (rule rules)
-        (when (if (tl-grule-clauses rule)
-                  (tl-graph-crule-applicable-p node rule)
-                (let ((bindings (tl-graph-match (tl-grule-pattern rule) node nil)))
-                  (and bindings
-                       (or (null (tl-grule-guard rule))
-                           (funcall (tl-grule-guard rule) bindings)))))
-          (throw 'reducible nil))))
-    t))
+  (let* ((dispatch (tl-graph--rule-dispatch rules))
+         (generic (car dispatch))
+         (table (cdr dispatch)))
+    (catch 'reducible
+      (dolist (node (tl-graph--preorder (tl-graph-root graph)))
+        (dolist (rule (or (gethash (tl-node-head node) table) generic))
+          (when (if (tl-grule-clauses rule)
+                    (tl-graph-crule-applicable-p node rule)
+                  (let ((bindings (tl-graph-match (tl-grule-pattern rule) node nil)))
+                    (and bindings
+                         (or (null (tl-grule-guard rule))
+                             (funcall (tl-grule-guard rule) bindings)))))
+            (throw 'reducible nil))))
+      t)))
 
 (provide 'termlisp-graph)
 ;;; termlisp-graph.el ends here

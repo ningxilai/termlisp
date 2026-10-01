@@ -239,6 +239,19 @@ literal, and nil for an irrefutable pattern (see `tl-pat-variable-p')."
     (`(pnil) (list 'const nil))
     (_ nil)))
 
+(defun tl-pat-dispatch-heads (pat)
+  "Return the head values PAT can match, or `:generic'.
+A `(pcon HEAD ...)' pattern only matches a node whose head is HEAD, and a
+literal `(plit VALUE)' or `(pnil)' only matches a node whose head is VALUE
+or nil respectively, so those are the values a rule with such a pattern can
+be indexed under.  An irrefutable pattern (variable, wildcard or rest)
+matches any head and yields `:generic'.  `pas' is transparent."
+  (pcase (tl-pat-strip-pas pat)
+    (`(pcon ,head . ,_) (list head))
+    (`(plit ,value) (list value))
+    (`(pnil) (list nil))
+    (_ :generic)))
+
 (defun tl-ct-refutable-column (rows)
   "Return the leftmost column holding a refutable pattern in ROWS, or nil.
 Every ROW is `(PATTERNS . CLAUSE-INDEX)' and all rows have equal width."
