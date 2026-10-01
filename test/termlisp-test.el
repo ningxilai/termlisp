@@ -575,5 +575,34 @@
                 (p (False))")
               'yes)))
 
+(require 'termlisp-types)
+
+(ert-deftest type/representation ()
+  (should (tl-type-p (tl-fresh-tvar)))
+  (should (tl-type-p (tl-tint)))
+  (should (equal (tl-tcon-name (tl-tint)) 'Int))
+  (should (equal (tl-tcon-args (tl-tint)) nil)))
+
+(ert-deftest type/unify-atoms ()
+  (should (car (tl-unify-types (tl-tint) (tl-tint) nil)))
+  (should (null (car (tl-unify-types (tl-tint) (tl-tstring) nil)))))
+
+(ert-deftest type/unify-variable ()
+  (let* ((a (tl-fresh-tvar))
+         (r (tl-unify-types a (tl-tint) nil)))
+    (should (car r))
+    (should (equal (tl-deref a (cdr r)) (tl-tint)))))
+
+(ert-deftest type/unify-application ()
+  (let* ((a (tl-fresh-tvar))
+         (r (tl-unify-types (tl-tcon 'List (list a)) (tl-tcon 'List (list (tl-tint))) nil)))
+    (should (car r))
+    (should (equal (tl-deref a (cdr r)) (tl-tint)))))
+
+(ert-deftest type/unify-occurs ()
+  (let* ((a (tl-fresh-tvar))
+         (r (tl-unify-types a (tl-tcon 'List (list a)) nil)))
+    (should (null (car r)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

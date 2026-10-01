@@ -11,7 +11,7 @@
 (require 'cl-lib)
 (require 'termlisp-base)
 
-(cl-defstruct (tl-lvar (:constructor tl-make-lvar (id))) id)
+(cl-defstruct (tl-lvar (:constructor tl-make-lvar (id &optional level))) id (level 0))
 
 (defun tl-deref (term bindings)
   "Follow variable BINDINGS on TERM until a non-variable or unbound."
