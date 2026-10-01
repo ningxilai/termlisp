@@ -300,5 +300,13 @@
   (should (= (funcall (gethash '* tl-builtins) '(2 3)) 6))
   (should (eq (funcall (gethash '< tl-builtins) '(1 2)) 'True)))
 
+(ert-deftest builtins/less-than-false ()
+  (should (eq (funcall (gethash '< tl-builtins) '(2 1)) 'False)))
+
+(ert-deftest builtins/arith-arity-and-type ()
+  (should-error (funcall (gethash '+ tl-builtins) '(1)) :type 'termlisp-type-error)
+  (should-error (funcall (gethash '+ tl-builtins) '(1 2 3)) :type 'termlisp-type-error)
+  (should-error (funcall (gethash '+ tl-builtins) '(a b)) :type 'termlisp-type-error))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
