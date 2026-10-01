@@ -435,5 +435,29 @@
                     (termlisp-eval "(map Foo (lambda (a) (Wrap a)))" env))
                    "(Wrap Foo)"))))
 
+(ert-deftest prelude/short-circuit ()
+  (let ((env (termlisp-load-prelude)))
+    (should (eq (termlisp-eval "(and False (boom))" env) 'False))
+    (should (eq (termlisp-eval "(or True (boom))" env) 'True))
+    (should (eq (termlisp-eval "(not False)" env) 'True))))
+
+(ert-deftest prelude/plus-identities ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string (termlisp-eval "(plus one zero)" env))
+                   "(Succ Zero)"))
+    (should (equal (termlisp-value->string (termlisp-eval "(plus zero one)" env))
+                   "(Succ Zero)"))))
+
+(ert-deftest prelude/map-named-function ()
+  (let ((env (termlisp-load-prelude)))
+    (termlisp-eval "(define (this-is a) (This Is a))" env)
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(map Foo this-is)" env))
+                   "(This Is Foo)"))))
+
+(ert-deftest prelude/load-prelude-returns-env ()
+  (let ((env (termlisp-make-env)))
+    (should (eq (termlisp-load-prelude env) env))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
