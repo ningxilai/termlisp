@@ -130,13 +130,19 @@ Signals `termlisp-eval-error' if the rewrite makes no progress."
   '(:surface :normalize :desugar :context :control :load :action :backend)
   "Reduction phases, applied in order.  Rules only move forward.")
 
+(defconst tl-graph-opaque-heads '(quote function)
+  "Heads whose subterms are never rewritten (opaque data).")
+
 (defun tl-graph--preorder (node &optional seen)
-  "Return NODE and its descendants in pre-order, without revisiting nodes."
+  "Return NODE and its descendants in pre-order, without revisiting nodes.
+Does not descend into opaque subterms (`tl-graph-opaque-heads')."
   (let ((seen (or seen (make-hash-table :test #'eq))))
     (unless (gethash node seen)
       (puthash node t seen)
-      (cons node (mapcan (lambda (c) (tl-graph--preorder c seen))
-                         (tl-node-children node))))))
+      (cons node
+            (unless (memq (tl-node-head node) tl-graph-opaque-heads)
+              (mapcan (lambda (c) (tl-graph--preorder c seen))
+                      (tl-node-children node)))))))
 
 (defun tl-graph--rules-for (phase rules)
   "Rules of PHASE, sorted by ascending priority."
