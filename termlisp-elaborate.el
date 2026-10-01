@@ -101,7 +101,7 @@ or nested) is desugared first so its method calls are elaborated."
             form))))
      (t
       (let ((r (tl-infer (cons nil env) form)))
-        (tl-close-constraints env nil tl-infer-constraints (cdr r))
+        (tl-close-constraints env nil tl-infer-constraints (cdr r) t)
         (if tl-elab-sites
             (tl-elaborate-tree env (cdr r) form)
           form))))))

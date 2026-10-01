@@ -1390,5 +1390,11 @@ the test fixes the type to Maybe with a signature-annotated binding."
                      "(ap (Just (lambda (x) (+ x 1))) (Just 4))" env))
                    "(Just 5)"))))
 
+(ert-deftest elaborate/ambiguous-constraint-errors ()
+  (let ((env (termlisp-make-env '(:elaborate t))))
+    (termlisp-load-prelude env)
+    (should-error (termlisp-eval "(return 7)" env)
+                  :type 'termlisp-type-error)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
