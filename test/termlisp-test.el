@@ -1593,5 +1593,51 @@ the test fixes the type to Maybe with a signature-annotated binding."
     (should-error (tl-graph-apply (tl-graph-root g) r)
                   :type 'termlisp-eval-error)))
 
+(ert-deftest graph/phase-order ()
+  "An earlier phase fires first; later phases do not re-run."
+  (let* ((g (tl-graph-build '(a)))
+         (r1 (tl-make-grule 'n :normalize 0 '(a) '(b)))
+         (r2 (tl-make-grule 'd :desugar 0 '(a) '(c))))
+    (tl-graph-rewrite g (list r1 r2))
+    (should (eq (tl-node-head (tl-graph-root g)) 'b))))
+
+(ert-deftest graph/priority ()
+  "Within a phase, the lower priority number fires first."
+  (let* ((g (tl-graph-build '(a)))
+         (r1 (tl-make-grule 'p0 :normalize 0 '(a) '(b)))
+         (r2 (tl-make-grule 'p1 :normalize 1 '(a) '(c))))
+    (tl-graph-rewrite g (list r1 r2))
+    (should (eq (tl-node-head (tl-graph-root g)) 'b))))
+
+(ert-deftest graph/strict-normalization ()
+  "Reduction descends into children (leftmost-outermost)."
+  (let* ((g (tl-graph-build '(outer (a))))
+         (r (tl-make-grule 'r :normalize 0 '(a) '(b))))
+    (tl-graph-rewrite g (list r))
+    (should (eq (tl-node-head (car (tl-node-children (tl-graph-root g)))) 'b))))
+
+(ert-deftest graph/normal-form ()
+  (let* ((g (tl-graph-build '(a)))
+         (r (tl-make-grule 'r :normalize 0 '(a) '(b))))
+    (should-not (tl-graph-normal-form-p g (list r)))
+    (tl-graph-rewrite g (list r))
+    (should (tl-graph-normal-form-p g (list r)))))
+
+(ert-deftest graph/chain-within-phase ()
+  "Repeated application within a phase reaches the fixed point."
+  (let* ((g (tl-graph-build '(a)))
+         (r1 (tl-make-grule 'a-b :normalize 0 '(a) '(b)))
+         (r2 (tl-make-grule 'b-c :normalize 0 '(b) '(c))))
+    (tl-graph-rewrite g (list r1 r2))
+    (should (eq (tl-node-head (tl-graph-root g)) 'c))))
+
+(ert-deftest graph/fuel-exhaustion ()
+  "A cyclic rule set is bounded by the fuel limit."
+  (let* ((g (tl-graph-build '(a)))
+         (r1 (tl-make-grule 'a-b :normalize 0 '(a) '(b)))
+         (r2 (tl-make-grule 'b-a :normalize 0 '(b) '(a))))
+    (should-error (tl-graph-rewrite g (list r1 r2))
+                  :type 'termlisp-eval-error)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
