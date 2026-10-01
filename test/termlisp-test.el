@@ -87,36 +87,36 @@
     (should (null (car r)))
     (should (null (cdr r)))))
 
-(ert-deftest data-reader/single-form ()
+(ert-deftest reader/single-form ()
   (should (equal (termlisp-parse "(id 42)") '((id 42)))))
 
-(ert-deftest data-reader/multiple-forms ()
+(ert-deftest reader/multiple-forms ()
   (should (equal (termlisp-parse "(a) (b c)") '((a) (b c)))))
 
-(ert-deftest data-reader/comments-and-whitespace ()
+(ert-deftest reader/comments-and-whitespace ()
   (should (equal (termlisp-parse ";; hi\n(a)\n  (b)") '((a) (b)))))
 
-(ert-deftest data-reader/keyword-pattern ()
+(ert-deftest reader/keyword-pattern ()
   (should (equal (termlisp-parse "(:literal true)")
                  '((:literal true)))))
 
-(ert-deftest data-reader/unbalanced-signals ()
+(ert-deftest reader/unbalanced-signals ()
   (should-error (termlisp-parse "(a b") :type 'termlisp-parse-error))
 
-(ert-deftest data-reader/extra-close-signals ()
+(ert-deftest reader/extra-close-signals ()
   (should-error (termlisp-parse "(a))") :type 'termlisp-parse-error))
 
-(ert-deftest data-reader/empty-and-whitespace ()
+(ert-deftest reader/empty-and-whitespace ()
   (should (null (termlisp-parse "")))
   (should (null (termlisp-parse "   \n\t "))))
 
-(ert-deftest data-reader/trailing-vertical-tab ()
+(ert-deftest reader/trailing-vertical-tab ()
   (should (equal (termlisp-parse "(a)\v") '((a)))))
 
-(ert-deftest data-reader/rejects-circular ()
+(ert-deftest reader/rejects-circular ()
   (should-error (termlisp-parse "(#1=(a . #1#))") :type 'termlisp-parse-error))
 
-(ert-deftest data-reader/parse-file ()
+(ert-deftest reader/parse-file ()
   (let ((file (make-temp-file "termlisp-reader-" nil ".tlsp")))
     (unwind-protect
         (progn
@@ -515,7 +515,7 @@
                    (expand-file-name "examples/nat.tlsp" termlisp--directory)))
                  "(Succ (Succ (Succ Zero)))")))
 
-(ert-deftest data-reader/trailing-comment ()
+(ert-deftest reader/trailing-comment ()
   (should (equal (termlisp-parse "(a) ;; trailing") '((a))))
   (should (equal (termlisp-parse "(a) ;; trailing\n") '((a))))
   (should (null (termlisp-parse ";; only a comment")))
