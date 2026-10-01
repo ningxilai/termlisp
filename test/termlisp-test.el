@@ -1126,5 +1126,25 @@
                     (termlisp-eval "(do MaybeDict (Just 0) (return _))" env))
                    "(Just 42)"))))
 
+(ert-deftest monad/state ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval
+                     "((run-state
+                        (do StateDict
+                          (n <- (state-get))
+                          (state-put (+ n 1))
+                          (return n)))
+                       0)"
+                     env))
+                   "(Pair 0 1)"))))
+
+(ert-deftest monad/reader ()
+  (let ((env (termlisp-load-prelude)))
+    (should (eq (termlisp-eval
+                 "((run-reader (do ReaderDict (r <- (reader-ask)) (return r))) cfg)"
+                 env)
+                'cfg))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

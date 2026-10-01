@@ -60,3 +60,23 @@
 (define (list-fmap f Nil) Nil)
 (define (list-fmap f (Cons x xs)) (Cons (f x) (list-fmap f xs)))
 (define ListDict (MonadDict list-bind list-return list-fmap))
+
+;; State instance: a computation is a function s -> (Pair a s)
+(datatype Unit (Unit))
+(define (state-return v) (lambda (s) (Pair v s)))
+(define (state-bind-step (Pair a s2) k) ((k a) s2))
+(define (state-bind m k) (lambda (s) (state-bind-step (m s) k)))
+(define (state-fmap-step (Pair a s2) f) (Pair (f a) s2))
+(define (state-fmap f m) (lambda (s) (state-fmap-step (m s) f)))
+(define StateDict (MonadDict state-bind state-return state-fmap))
+(define (state-get) (lambda (s) (Pair s s)))
+(define (state-put v) (lambda (s) (Pair Unit v)))
+(define run-state (lambda (m) m))
+
+;; Reader instance: a computation is a function r -> a
+(define (reader-return v) (lambda (r) v))
+(define (reader-bind m k) (lambda (r) ((k (m r)) r)))
+(define (reader-fmap f m) (lambda (r) (f (m r))))
+(define ReaderDict (MonadDict reader-bind reader-return reader-fmap))
+(define (reader-ask) (lambda (r) r))
+(define run-reader (lambda (m) m))
