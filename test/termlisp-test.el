@@ -409,5 +409,31 @@
                     (plus (Succ Zero) (Succ Zero))"))
                  "(Succ (Succ Zero))")))
 
+(ert-deftest prelude/booleans ()
+  (let ((env (termlisp-load-prelude)))
+    (should (eq (termlisp-eval "(if True 1 2)" env) 1))
+    (should (eq (termlisp-eval "(if False 1 2)" env) 2))
+    (should (eq (termlisp-eval "(not True)" env) 'False))
+    (should (eq (termlisp-eval "(and True False)" env) 'False))
+    (should (eq (termlisp-eval "(and True True)" env) 'True))
+    (should (eq (termlisp-eval "(or True False)" env) 'True))
+    (should (eq (termlisp-eval "(or False False)" env) 'False))))
+
+(ert-deftest prelude/pairs ()
+  (let ((env (termlisp-load-prelude)))
+    (should (eq (termlisp-eval "(car (cons A B))" env) 'A))
+    (should (eq (termlisp-eval "(cdr (cons A B))" env) 'B))))
+
+(ert-deftest prelude/peano ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string (termlisp-eval "(plus two two)" env))
+                   "(Succ (Succ (Succ (Succ Zero))))"))))
+
+(ert-deftest prelude/map-lambda ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(map Foo (lambda (a) (Wrap a)))" env))
+                   "(Wrap Foo)"))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

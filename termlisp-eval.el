@@ -301,12 +301,17 @@
                    (buffer-string))
                  env))
 
+(defconst termlisp--directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory containing the termlisp sources.")
+
 (defun termlisp-load-prelude (&optional env)
-  "Load the bundled prelude into ENV."
-  (termlisp-eval-file
-   (expand-file-name "termlisp-prelude.tlsp"
-                     (file-name-directory (or load-file-name buffer-file-name)))
-   env))
+  "Load the bundled prelude into ENV, returning the environment."
+  (let ((env (or env (termlisp-make-env))))
+    (termlisp-eval-file
+     (expand-file-name "termlisp-prelude.tlsp" termlisp--directory)
+     env)
+    env))
 
 (provide 'termlisp-eval)
 ;;; termlisp-eval.el ends here

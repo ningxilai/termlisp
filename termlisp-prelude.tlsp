@@ -1,0 +1,34 @@
+;;; term-lisp prelude (Plan 1 MVP)
+
+;; Booleans
+(datatype Bool (True) (False))
+(define true True)
+(define false False)
+
+(define (if (True) a b) a)
+(define (if (False) a b) b)
+(define (not (True)) (False))
+(define (not (False)) (True))
+(define (and (True) (True)) (True))
+(define (and (True) (False)) (False))
+(define (and (False) a) (False))
+(define (or (True) a) (True))
+(define (or (False) (True)) (True))
+(define (or (False) (False)) (False))
+
+;; Pairs
+(datatype Pair (Pair a b))
+(define (cons a b) (Pair a b))
+(define (car (Pair a b)) a)
+(define (cdr (Pair a b)) b)
+
+;; Peano naturals
+(datatype Nat (Zero) (Succ Nat))
+(define zero Zero)
+(define one (Succ Zero))
+(define two (Succ (Succ Zero)))
+(define (plus Zero b) b)
+(define (plus (Succ a) b) (Succ (plus a b)))
+
+;; Higher-order: apply a passed function to one argument
+(define (map a (:lambda fun)) (fun a))
