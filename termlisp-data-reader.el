@@ -17,6 +17,12 @@
   ((run :initarg :run :accessor tl-data-reader-run))
   :documentation "Reader monad: RUN is a function of the environment.")
 
+(cl-defmethod cl-print-object ((this tl-data-reader) stream)
+  "Print the object THIS to STREAM."
+  (princ "#<tl-data-reader " stream)
+  (cl-print-object (if (slot-boundp this 'run) (tl-data-reader-run this) nil) stream)
+  (princ ">" stream))
+
 (defun tl-reader-pure (v)
   "Return a Reader that ignores the environment and yields V."
   (tl-data-reader :run (lambda (_env) v)))

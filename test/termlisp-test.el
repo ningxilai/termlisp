@@ -87,36 +87,36 @@
     (should (null (car r)))
     (should (null (cdr r)))))
 
-(ert-deftest reader/single-form ()
+(ert-deftest data-reader/single-form ()
   (should (equal (termlisp-parse "(id 42)") '((id 42)))))
 
-(ert-deftest reader/multiple-forms ()
+(ert-deftest data-reader/multiple-forms ()
   (should (equal (termlisp-parse "(a) (b c)") '((a) (b c)))))
 
-(ert-deftest reader/comments-and-whitespace ()
+(ert-deftest data-reader/comments-and-whitespace ()
   (should (equal (termlisp-parse ";; hi\n(a)\n  (b)") '((a) (b)))))
 
-(ert-deftest reader/keyword-pattern ()
+(ert-deftest data-reader/keyword-pattern ()
   (should (equal (termlisp-parse "(:literal true)")
                  '((:literal true)))))
 
-(ert-deftest reader/unbalanced-signals ()
+(ert-deftest data-reader/unbalanced-signals ()
   (should-error (termlisp-parse "(a b") :type 'termlisp-parse-error))
 
-(ert-deftest reader/extra-close-signals ()
+(ert-deftest data-reader/extra-close-signals ()
   (should-error (termlisp-parse "(a))") :type 'termlisp-parse-error))
 
-(ert-deftest reader/empty-and-whitespace ()
+(ert-deftest data-reader/empty-and-whitespace ()
   (should (null (termlisp-parse "")))
   (should (null (termlisp-parse "   \n\t "))))
 
-(ert-deftest reader/trailing-vertical-tab ()
+(ert-deftest data-reader/trailing-vertical-tab ()
   (should (equal (termlisp-parse "(a)\v") '((a)))))
 
-(ert-deftest reader/rejects-circular ()
+(ert-deftest data-reader/rejects-circular ()
   (should-error (termlisp-parse "(#1=(a . #1#))") :type 'termlisp-parse-error))
 
-(ert-deftest reader/parse-file ()
+(ert-deftest data-reader/parse-file ()
   (let ((file (make-temp-file "termlisp-reader-" nil ".tlsp")))
     (unwind-protect
         (progn
@@ -515,7 +515,7 @@
                    (expand-file-name "examples/nat.tlsp" termlisp--directory)))
                  "(Succ (Succ (Succ Zero)))")))
 
-(ert-deftest reader/trailing-comment ()
+(ert-deftest data-reader/trailing-comment ()
   (should (equal (termlisp-parse "(a) ;; trailing") '((a))))
   (should (equal (termlisp-parse "(a) ;; trailing\n") '((a))))
   (should (null (termlisp-parse ";; only a comment")))
@@ -1005,25 +1005,30 @@
 
 (require 'termlisp-data-reader)
 
-(ert-deftest reader/pure-and-run ()
+(ert-deftest data-reader/pure-and-run ()
   (let ((m (cats-pure (tl-data-reader) 42)))
     (should (= (tl-run-reader m :env) 42))))
 
-(ert-deftest reader/ask ()
+(ert-deftest data-reader/ask ()
   (should (eq (tl-run-reader (tl-reader-ask) :env) :env)))
 
-(ert-deftest reader/fmap ()
+(ert-deftest data-reader/fmap ()
   (let ((m (cats-fmap (lambda (x) (1+ x)) (cats-pure (tl-data-reader) 41))))
     (should (= (tl-run-reader m :env) 42))))
 
-(ert-deftest reader/bind ()
+(ert-deftest data-reader/bind ()
   (let ((m (cats-bind (tl-reader-ask)
                       (lambda (r) (cats-pure (tl-data-reader) (list r r))))))
     (should (equal (tl-run-reader m :cfg) '(:cfg :cfg)))))
 
-(ert-deftest reader/local ()
+(ert-deftest data-reader/local ()
   (let ((m (tl-reader-local (lambda (_) :inner) (tl-reader-ask))))
     (should (eq (tl-run-reader m :outer) :inner))))
+
+(ert-deftest data-reader/apply ()
+  (let ((mf (cats-pure (tl-data-reader) (lambda (x) (1+ x))))
+        (mx (cats-pure (tl-data-reader) 41)))
+    (should (= (tl-run-reader (cats-apply mf mx) :e) 42))))
 
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
