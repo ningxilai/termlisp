@@ -87,5 +87,24 @@
     (should (null (car r)))
     (should (null (cdr r)))))
 
+(ert-deftest reader/single-form ()
+  (should (equal (termlisp-parse "(id 42)") '((id 42)))))
+
+(ert-deftest reader/multiple-forms ()
+  (should (equal (termlisp-parse "(a) (b c)") '((a) (b c)))))
+
+(ert-deftest reader/comments-and-whitespace ()
+  (should (equal (termlisp-parse ";; hi\n(a)\n  (b)") '((a) (b)))))
+
+(ert-deftest reader/keyword-pattern ()
+  (should (equal (termlisp-parse "(:literal true)")
+                 '((:literal true)))))
+
+(ert-deftest reader/unbalanced-signals ()
+  (should-error (termlisp-parse "(a b") :type 'termlisp-parse-error))
+
+(ert-deftest reader/extra-close-signals ()
+  (should-error (termlisp-parse "(a))") :type 'termlisp-parse-error))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
