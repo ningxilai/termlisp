@@ -1822,5 +1822,20 @@ the test fixes the type to Maybe with a signature-annotated binding."
     (should (equal (tl-node->sexp (tl-graph-root (tl-graph-build sexp)))
                    sexp))))
 
+(ert-deftest case/parse-shapes ()
+  (should (equal (tl-pat-parse '(pvar $x)) '(pvar $x)))
+  (should (equal (tl-pat-parse '(pwild)) '(pwild)))
+  (should (equal (tl-pat-parse '(plit 0)) '(plit 0)))
+  (should (equal (tl-pat-parse '(pcon :seq (pvar $x))) '(pcon :seq (pvar $x))))
+  (should (equal (tl-pat-parse '(pas $whole (pvar $x))) '(pas $whole (pvar $x)))))
+
+(ert-deftest case/parse-list ()
+  (should (equal (tl-pat-parse '(plist)) '(pnil)))
+  (should (equal (tl-pat-parse '(plist (pvar $x) (pvar $y)))
+                 '(pcon cons (pvar $x) (pcon cons (pvar $y) (pnil))))))
+
+(ert-deftest case/parse-error ()
+  (should-error (tl-pat-parse '(bogus x)) :type 'termlisp-error))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
