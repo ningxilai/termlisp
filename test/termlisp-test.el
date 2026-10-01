@@ -176,5 +176,72 @@
     (should (equal (cdr (tl-lookup 'g '((g . 2)))) 2))
     (should (null (tl-lookup 'missing '())))))
 
+(ert-deftest pattern/parse-shapes ()
+  (should (equal (tl-pattern-parse 'x) '(var . x)))
+  (should (equal (tl-pattern-parse '_) '(wild)))
+  (should (equal (tl-pattern-parse '(:literal foo)) '(lit foo)))
+  (should (equal (tl-pattern-parse '(:list rest)) '(rest . rest)))
+  (should (equal (tl-pattern-parse '(Pair a b))
+                 '(con Pair (var . a) (var . b)))))
+
+(defun tl-test-ctx ()
+  (tl-make-match-ctx
+   :force #'identity
+   :lit-eval #'identity
+   :guard-eval (lambda (e _b) e)
+   :lambda-value #'identity))
+
+(ert-deftest pattern/match-var ()
+  (let* ((p (tl-pattern-parse 'x))
+         (r (tl-match p 5 nil (tl-test-ctx))))
+    (should (car r))
+    (should (equal (cdr (assq 'x (cdr r))) 5))))
+
+(ert-deftest pattern/match-wild ()
+  (should (car (tl-match (tl-pattern-parse '_) 5 nil (tl-test-ctx)))))
+
+(ert-deftest pattern/match-constructor ()
+  (let* ((p (tl-pattern-parse '(Pair a b)))
+         (r (tl-match p '(Pair 1 2) nil (tl-test-ctx))))
+    (should (car r))
+    (should (equal (cdr (assq 'a (cdr r))) 1))
+    (should (equal (cdr (assq 'b (cdr r))) 2))))
+
+(ert-deftest pattern/match-constructor-fail ()
+  (should (null (tl-match (tl-pattern-parse '(Pair a b)) '(Cons 1 2)
+                          nil (tl-test-ctx)))))
+
+(ert-deftest pattern/match-nullary-constructor ()
+  (should (car (tl-match (tl-pattern-parse '(True)) 'True nil (tl-test-ctx))))
+  (should-not (tl-match (tl-pattern-parse '(True)) 'False nil (tl-test-ctx))))
+
+(ert-deftest pattern/match-literal ()
+  (should (car (tl-match (tl-pattern-parse '(:literal foo)) 'foo nil (tl-test-ctx))))
+  (should-not (tl-match (tl-pattern-parse '(:literal foo)) 'bar nil (tl-test-ctx))))
+
+(ert-deftest pattern/match-nonlinear ()
+  (let* ((p (tl-pattern-parse '(Pair a a))))
+    (should (car (tl-match p '(Pair 1 1) nil (tl-test-ctx))))
+    (should-not (tl-match p '(Pair 1 2) nil (tl-test-ctx)))))
+
+(ert-deftest pattern/match-rest ()
+  (let* ((p (tl-pattern-parse '(:list rest)))
+         (r (tl-match-seq (list p) '(1 2 3) nil (tl-test-ctx))))
+    (should (car r))
+    (should (equal (cdr (assq 'rest (cdr r))) '(1 2 3)))))
+
+(ert-deftest pattern/match-guard ()
+  (let* ((p (tl-pattern-parse '(guard x True)))
+         (r (tl-match p 'anything nil (tl-test-ctx))))
+    (should (car r))
+    (should (equal (cdr (assq 'x (cdr r))) 'anything)))
+  (should-not (tl-match (tl-pattern-parse '(guard x False)) 'anything nil (tl-test-ctx))))
+
+(ert-deftest pattern/match-or ()
+  (let ((p (tl-pattern-parse '(or (True) (False)))))
+    (should (car (tl-match p 'True nil (tl-test-ctx))))
+    (should (car (tl-match p 'False nil (tl-test-ctx))))
+    (should-not (tl-match p 'Other nil (tl-test-ctx)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
