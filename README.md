@@ -130,11 +130,9 @@ vendor/cats/           ; emacs-cats, as a git submodule
 ### Submodule
 
 `vendor/cats` is a git submodule pointing at
-<https://github.com/Fuco1/emacs-cats>. After cloning, initialize it:
-
-```
-git submodule update --init --recursive
-```
+<https://github.com/Fuco1/emacs-cats>. The `Makefile` fetches it on demand
+(`make submodule`, and automatically before `make test` / `make compile`), so
+no manual initialization step is needed.
 
 ## Development
 
