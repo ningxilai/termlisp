@@ -106,5 +106,23 @@
 (ert-deftest reader/extra-close-signals ()
   (should-error (termlisp-parse "(a))") :type 'termlisp-parse-error))
 
+(ert-deftest reader/empty-and-whitespace ()
+  (should (null (termlisp-parse "")))
+  (should (null (termlisp-parse "   \n\t "))))
+
+(ert-deftest reader/trailing-vertical-tab ()
+  (should (equal (termlisp-parse "(a)\v") '((a)))))
+
+(ert-deftest reader/rejects-circular ()
+  (should-error (termlisp-parse "(#1=(a . #1#))") :type 'termlisp-parse-error))
+
+(ert-deftest reader/parse-file ()
+  (let ((file (make-temp-file "termlisp-reader-" nil ".tlsp")))
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert "(a)\n(b c)\n"))
+          (should (equal (termlisp-parse-file file) '((a) (b c)))))
+      (delete-file file))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
