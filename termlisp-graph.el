@@ -12,6 +12,11 @@
 (require 'cl-lib)
 (require 'termlisp-base)
 
+;; Clause-based rules are dispatched by `termlisp-case', which builds on this
+;; file; the declarations avoid a circular `require' at load time.
+(declare-function tl-graph-apply-crule "termlisp-case" (node rule))
+(declare-function tl-graph-crule-applicable-p "termlisp-case" (node rule))
+
 (cl-defstruct (tl-node (:constructor tl-make-node (head &optional children application)))
   "A term graph node.
 HEAD is a symbol/atom operator (or a literal value for leaves).
@@ -58,12 +63,25 @@ a non-application node renders as its atom HEAD."
       (cons (tl-node-head node) (mapcar #'tl-node->sexp (tl-node-children node)))
     (tl-node-head node)))
 
-(cl-defstruct (tl-grule (:constructor tl-make-grule (name phase priority pattern template &optional guard)))
+(cl-defstruct (tl-grule (:constructor tl-make-grule (name phase priority pattern template &optional guard clauses)))
   "A term-graph rewrite rule.
 NAME identifies the rule; PHASE and PRIORITY order its application.
 PATTERN is matched against a node, TEMPLATE instantiated to rewrite it.
-GUARD, when non-nil, is called with the bindings and must return non-nil."
-  name phase priority pattern template guard)
+GUARD, when non-nil, is called with the bindings and must return non-nil.
+
+A clause-based rule leaves PATTERN and TEMPLATE nil and stores a list of
+`(PATTERN . TEMPLATE)' CLAUSES instead (see `tl-make-crule'); its decision
+tree is compiled lazily into COMPILED and memoised on the rule."
+  name phase priority pattern template guard clauses compiled)
+
+(defun tl-make-crule (name phase priority clauses &optional guard)
+  "Construct a clause-based term-graph rewrite rule.
+CLAUSES is a list of `(PATTERN . TEMPLATE)' whose PATTERNs come from
+`tl-pat-parse' (see `termlisp-case').  The rule is applied by compiling the
+clauses into a decision tree once and dispatching the node through it, so
+variadic rules can be written with list patterns and `(prest NAME)' instead
+of `(:rest)'/`(:splice)'/function templates."
+  (tl-make-grule name phase priority nil nil guard clauses))
 
 (defconst tl-graph--match-ok (list (cons 'tl-graph-match-ok t))
   "Sentinel binding alist returned for a match with no variables.
@@ -174,23 +192,34 @@ returning either a node or a further template sexp."
                   t))
    (t (tl-make-node template nil nil))))
 
+(defun tl-graph--commit (node rule new)
+  "Replace NODE's contents with NEW.  Return t, or signal on no progress.
+Shared by the pattern/template path and the clause-based path so both
+enforce the same in-place-update and non-progressing-rewrite contract."
+  (if (and (eq (tl-node-head node) (tl-node-head new))
+           (eq (tl-node-application node) (tl-node-application new))
+           (equal (tl-node-children node) (tl-node-children new)))
+      (signal 'termlisp-eval-error
+              (list (format "Non-progressing rewrite: %S" (tl-grule-name rule))))
+    (setf (tl-node-head node) (tl-node-head new))
+    (setf (tl-node-application node) (tl-node-application new))
+    (setf (tl-node-children node) (tl-node-children new))
+    t))
+
 (defun tl-graph-apply (node rule)
   "If RULE matches NODE, rewrite NODE in place.  Return t, or nil if no match.
+A clause-based rule (see `tl-make-crule') is dispatched through its compiled
+case tree; otherwise PATTERN/TEMPLATE are used as before.
 Signals `termlisp-eval-error' if the rewrite makes no progress."
-  (let ((bindings (tl-graph-match (tl-grule-pattern rule) node nil)))
-    (when (and bindings
-               (or (null (tl-grule-guard rule))
-                   (funcall (tl-grule-guard rule) bindings)))
-      (let ((new (tl-graph-instantiate (tl-grule-template rule) bindings)))
-        (if (and (eq (tl-node-head node) (tl-node-head new))
-                 (eq (tl-node-application node) (tl-node-application new))
-                 (equal (tl-node-children node) (tl-node-children new)))
-            (signal 'termlisp-eval-error
-                    (list (format "Non-progressing rewrite: %S" (tl-grule-name rule))))
-          (setf (tl-node-head node) (tl-node-head new))
-          (setf (tl-node-application node) (tl-node-application new))
-          (setf (tl-node-children node) (tl-node-children new))
-          t)))))
+  (if (tl-grule-clauses rule)
+      (tl-graph-apply-crule node rule)
+    (let ((bindings (tl-graph-match (tl-grule-pattern rule) node nil)))
+      (when (and bindings
+                 (or (null (tl-grule-guard rule))
+                     (funcall (tl-grule-guard rule) bindings)))
+        (tl-graph--commit node rule
+                          (tl-graph-instantiate (tl-grule-template rule)
+                                                bindings))))))
 
 (defconst tl-graph-phases
   '(:surface :normalize :desugar :context :control :load :action :backend)
@@ -243,11 +272,13 @@ Signals `termlisp-eval-error' when FUEL (default 10000) is exhausted."
   (catch 'reducible
     (dolist (node (tl-graph--preorder (tl-graph-root graph)))
       (dolist (rule rules)
-        (let ((bindings (tl-graph-match (tl-grule-pattern rule) node nil)))
-          (when (and bindings
-                     (or (null (tl-grule-guard rule))
-                         (funcall (tl-grule-guard rule) bindings)))
-            (throw 'reducible nil)))))
+        (when (if (tl-grule-clauses rule)
+                  (tl-graph-crule-applicable-p node rule)
+                (let ((bindings (tl-graph-match (tl-grule-pattern rule) node nil)))
+                  (and bindings
+                       (or (null (tl-grule-guard rule))
+                           (funcall (tl-grule-guard rule) bindings)))))
+          (throw 'reducible nil))))
     t))
 
 (provide 'termlisp-graph)

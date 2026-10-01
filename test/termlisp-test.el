@@ -1920,5 +1920,124 @@ the test fixes the type to Maybe with a signature-annotated binding."
     (should (equal (tl-case-template '(:seq (:splice $xs)) (list (cons '$xs (list n1 n2))))
                    '(:seq a b)))))
 
+(ert-deftest case/parse-rest ()
+  (should (equal (tl-pat-parse '(prest $xs)) '(prest $xs))))
+
+(ert-deftest case/match-rest ()
+  "A trailing `(prest $xs)' binds the remaining children as a node list."
+  (let* ((n (tl-graph-root (tl-graph-build '(:hooks a b c))))
+         (r (tl-pat-match (tl-pat-parse '(pcon :hooks (pvar $x) (prest $rest))) n nil)))
+    (should r)
+    (should (eq (tl-node-head (cdr (assq '$x (cdr r)))) 'a))
+    (should (equal (mapcar #'tl-node->sexp (cdr (assq '$rest (cdr r)))) '(b c)))))
+
+(ert-deftest case/match-rest-empty ()
+  (let* ((n (tl-graph-root (tl-graph-build '(:hooks a))))
+         (r (tl-pat-match (tl-pat-parse '(pcon :hooks (pvar $x) (prest $rest))) n nil)))
+    (should r)
+    (should (null (cdr (assq '$rest (cdr r)))))))
+
+(ert-deftest case/match-rest-order ()
+  "Rest-pattern clause lists compile to a linear scan and match in order."
+  (let* ((c1 (cons (tl-pat-parse '(pcon :x (pvar $a) (prest $r)))
+                   '(:one $a (:splice $r))))
+         (c2 (cons (tl-pat-parse '(pcon :x (pvar $a) (pvar $b) (pvar $c)))
+                   '(:two $a $b $c)))
+         (clauses (list c1 c2))
+         (tree (tl-case-compile clauses))
+         (n (tl-graph-root (tl-graph-build '(:x 1 2 3)))))
+    (should (equal tree '(ct-linear)))
+    (let ((m (tl-case-match tree clauses n)))
+      (should (= (car m) 0)))))
+
+(ert-deftest case/match-args-as-list ()
+  "A sole `(plist ...)' subpattern matches the whole child list."
+  (let* ((n (tl-graph-root (tl-graph-build '(:hooks a b c))))
+         (r (tl-pat-match (tl-pat-parse
+                           '(pcon :hooks (plist (pvar $a) (pvar $b) (prest $rest))))
+                          n nil)))
+    (should r)
+    (should (eq (tl-node-head (cdr (assq '$a (cdr r)))) 'a))
+    (should (eq (tl-node-head (cdr (assq '$b (cdr r)))) 'b))
+    (should (equal (mapcar #'tl-node->sexp (cdr (assq '$rest (cdr r)))) '(c)))))
+
+(ert-deftest graph/crule-plist-variadic ()
+  "A `(pcon HEAD (plist ...))' clause matches a repeatable keyword."
+  (let ((rule (tl-make-crule 'hooks :normalize 0
+                             (list (cons (tl-pat-parse
+                                          '(pcon :hooks (plist (pvar $a) (prest $rest))))
+                                         '(:seq $a (:splice $rest)))))))
+    (should (equal (tl-graph-rewrite-sexp '(:hooks x y z) (list rule))
+                   '(:seq x y z)))))
+
+(ert-deftest graph/crule-simple ()
+  (let* ((rule (tl-make-crule 'g :desugar 0
+                              (list (cons (tl-pat-parse '(pcon :global (pvar $k) (pvar $c)))
+                                          '(:bind (:map (current-global-map)) (:key $k) (:function $c))))))
+         (g (tl-graph-build '(:global "C-c f" foo))))
+    (should (tl-graph-apply (tl-graph-root g) rule))
+    (should (equal (tl-node->sexp (tl-graph-root g))
+                   '(:bind (:map (current-global-map)) (:key "C-c f") (:function foo))))))
+
+(ert-deftest graph/crule-rewrite-sexp ()
+  (let ((rule (tl-make-crule 'g :normalize 0
+                             (list (cons (tl-pat-parse '(pcon :global (pvar $k) (pvar $c)))
+                                         '(:bind $k $c))))))
+    (should (equal (tl-graph-rewrite-sexp '(:global "C-c f" foo) (list rule))
+                   '(:bind "C-c f" foo)))))
+
+(ert-deftest graph/crule-variadic ()
+  "A `(prest $rest)' clause pattern binds the remaining children as a list."
+  (let ((rule (tl-make-crule 'hooks :normalize 0
+                             (list (cons (tl-pat-parse
+                                          '(pcon :hooks (pvar $a) (pvar $b) (prest $rest)))
+                                         '(:seq $a $b (:splice $rest)))))))
+    (should (equal (tl-graph-rewrite-sexp '(:hooks x y z w) (list rule))
+                   '(:seq x y z w)))
+    (should (equal (tl-graph-rewrite-sexp '(:hooks x y) (list rule))
+                   '(:seq x y)))))
+
+(ert-deftest graph/crule-priority ()
+  "Within a phase, clause rules obey priority like pattern rules."
+  (let ((r0 (tl-make-crule 'a0 :normalize 0
+                           (list (cons (tl-pat-parse '(pcon :x (pvar $v))) '(:zero $v)))))
+        (r1 (tl-make-crule 'a1 :normalize 1
+                           (list (cons (tl-pat-parse '(pcon :x (pvar $v))) '(:one $v))))))
+    (should (equal (tl-graph-rewrite-sexp '(:x 5) (list r0 r1)) '(:zero 5)))))
+
+(ert-deftest graph/crule-no-match ()
+  (let ((rule (tl-make-crule 'g :normalize 0
+                             (list (cons (tl-pat-parse '(pcon :global (pvar $k)))
+                                         '(:bind $k))))))
+    (should-not (tl-graph-apply (tl-graph-root (tl-graph-build '(:other a))) rule))))
+
+(ert-deftest graph/crule-guard ()
+  (let ((rule (tl-make-crule 'g :normalize 0
+                             (list (cons (tl-pat-parse '(pcon :set (pvar $v) (pvar $n)))
+                                         '(:custom $v $n)))
+                             (lambda (b)
+                               (eq (tl-node-head (cdr (assq '$v b))) 'foo)))))
+    (should (equal (tl-graph-rewrite-sexp '(:set foo 1) (list rule))
+                   '(:custom foo 1)))
+    (should (equal (tl-graph-rewrite-sexp '(:set bar 1) (list rule))
+                   '(:set bar 1)))))
+
+(ert-deftest graph/crule-normal-form ()
+  (let* ((g (tl-graph-build '(:x 1)))
+         (rule (tl-make-crule 'g :normalize 0
+                              (list (cons (tl-pat-parse '(pcon :x (pvar $v))) '(:y $v))))))
+    (should-not (tl-graph-normal-form-p g (list rule)))
+    (tl-graph-rewrite g (list rule))
+    (should (tl-graph-normal-form-p g (list rule)))))
+
+(ert-deftest graph/crule-compiles-once ()
+  "The decision tree is compiled lazily and memoised on the rule."
+  (let* ((rule (tl-make-crule 'g :normalize 0
+                              (list (cons (tl-pat-parse '(pcon :x (pvar $v))) '(:y $v)))))
+         (g (tl-graph-build '(:x 1))))
+    (should (null (tl-grule-compiled rule)))
+    (tl-graph-apply (tl-graph-root g) rule)
+    (should (tl-grule-compiled rule))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
