@@ -115,17 +115,29 @@ termlisp-machine.el    ; runtime objects (thunks, closures, functions)
 termlisp-pattern.el    ; pattern parsing and matching
 termlisp-builtins.el   ; primitive functions
 termlisp-eval.el       ; lazy TCO evaluator, `do`, top-level forms
+termlisp-load.el       ; load .tls files as elisp
 termlisp-data-reader.el; cats-based Reader monad
 termlisp-prelude.tls   ; the standard prelude
-examples/              ; example programs
-test/                  ; ERT test suite
-vendor/cats/           ; vendored emacs-cats (GPLv3)
+vendor/cats/           ; emacs-cats, as a git submodule
 ```
+
+### Branches
+
+- `main` — the library implementation (this branch).
+- `dev` — the implementation plus tests (`test/`), design docs (`docs/`),
+  and examples (`examples/`).
+
+### Submodule
+
+`vendor/cats` is a git submodule pointing at
+<https://github.com/Fuco1/emacs-cats>. The `Makefile` fetches it on demand
+(`make submodule`, and automatically before `make test` / `make compile`), so
+no manual initialization step is needed.
 
 ## Development
 
 ```
-make test      ; run the ERT suite
+make test      ; run the ERT suite (on the `dev` branch)
 make compile   ; byte-compile
 make clean     ; remove .elc files
 ```
