@@ -1216,6 +1216,18 @@
                     (termlisp-eval "(Pair (do MaybeDict (return 1)) (do MaybeDict (return 2)))" env))
                    "(Pair (Just 1) (Just 2))"))))
 
+(ert-deftest do/type-directed-nested ()
+  "A nested type-directed `do' is elaborated, not just a top-level one.
+Each block binds a value from `Just' so its monad is fixed to Maybe;
+a bare `(return 1)' would leave the monad ambiguous."
+  (let ((env (termlisp-make-env '(:elaborate t))))
+    (termlisp-load-prelude env)
+    (should (equal (termlisp-value->string
+                    (termlisp-eval
+                     "(Pair (do (x <- (Just 1)) (return x))
+                            (do (y <- (Just 2)) (return y)))" env))
+                   "(Pair (Just 1) (Just 2))"))))
+
 (ert-deftest do/no-underscore-capture ()
   (let ((env (termlisp-load-prelude)))
     (termlisp-eval "(define _ 42)" env)

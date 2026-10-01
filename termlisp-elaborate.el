@@ -29,6 +29,8 @@
 (require 'termlisp-base)
 (require 'termlisp-types)
 
+(declare-function tl-desugar-do "termlisp-eval" (form))
+
 (defun tl-resolve-instance-dict (env constraint bindings)
   "Return the dictionary for CONSTRAINT solved in ENV under BINDINGS.
 Return nil when the constraint type is not ground or has no instance."
@@ -62,12 +64,25 @@ BINDINGS is the substitution from the inference pass that produced
    (t (cons (tl-elaborate-tree env bindings (car form))
             (tl-elaborate-tree env bindings (cdr form))))))
 
+(defun tl-desugar-do-tree (form)
+  "Return FORM with every `(do ...)' subterm replaced by its desugaring.
+Desugaring before inference (rather than letting `tl-infer' desugar
+internally) ensures the `bind'/`return' application cons cells the
+elaborator records are the same objects it later rewrites."
+  (cond
+   ((atom form) form)
+   ((eq (car form) 'do) (tl-desugar-do-tree (tl-desugar-do form)))
+   (t (cons (tl-desugar-do-tree (car form))
+            (tl-desugar-do-tree (cdr form))))))
+
 (defun tl-elaborate-form (env form)
   "Infer top-level FORM in ENV, then rewrite class-method calls.
 Registration forms (`datatype', `class', `instance', signatures) are
 handled here so they are available to inference; runtime evaluation of
-`datatype' forms is left to `tl-eval-top'."
-  (let ((tl-infer-constraints nil)
+`datatype' forms is left to `tl-eval-top'.  Any `do' subterm (top-level
+or nested) is desugared first so its method calls are elaborated."
+  (let ((form (tl-desugar-do-tree form))
+        (tl-infer-constraints nil)
         (tl-elab-active t)
         (tl-elab-sites nil)
         (tl-elab-bindings nil))
