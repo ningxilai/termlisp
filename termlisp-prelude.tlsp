@@ -1,4 +1,4 @@
-;;; term-lisp prelude (Plan 1 MVP)
+;;; term-lisp standard prelude
 
 ;; Booleans
 (datatype Bool (True) (False))
