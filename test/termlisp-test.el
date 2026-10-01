@@ -975,5 +975,33 @@
     (should-error (termlisp-eval "(bad \"s\")" env)
                   :type 'termlisp-type-error)))
 
+(ert-deftest infer/value-restriction-no-escape ()
+  "A tvar free in a monomorphic binding must not be generalized."
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(define n (unknown-fn))")
+    (termlisp-typecheck-def env "(define (f x) n)")
+    (let ((sc (gethash 'f (tl-env-type-env env))))
+      ;; only the argument tvar is generalized; n's tvar stays rigid
+      (should (= (length (tl-tscheme-vars sc)) 1)))))
+
+(ert-deftest infer/builtin-types ()
+  "Builtins are typed: arithmetic is Int-only."
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(define (inc x) (+ x 1))")
+    (should (equal (tl-tscheme-type (gethash 'inc (tl-env-type-env env)))
+                   (tl-tarrow (tl-tint) (tl-tint))))))
+
+(ert-deftest infer/builtin-static-rejection ()
+  (should-error (termlisp-typecheck "(define (bad x) (+ x 1)) (bad \"s\")")
+                :type 'termlisp-type-error))
+
+(ert-deftest infer/or-incompatible-alternatives ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(datatype Nat (Zero) (Succ Nat))")
+    (termlisp-typecheck-def env "(datatype Pair (Pair a b))")
+    (should-error
+     (termlisp-typecheck-def env "(define (weird (or (Succ n) (Pair n m))) n)")
+     :type 'termlisp-type-error)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

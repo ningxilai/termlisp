@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'termlisp-base)
 (require 'termlisp-unify)
+(require 'termlisp-reader)
 
 (declare-function tl-eval-datatype "termlisp-eval" (env form))
 (declare-function tl-eval-datatype-extension "termlisp-eval" (env form))
@@ -181,6 +182,17 @@ application."
          (vars (cl-remove-if (lambda (v) (memq v env-tvars)) ftv)))
     (tl-tscheme vars type)))
 
+(defun tl-env-free-tvars (env)
+  "Free type variables of the type environment of ENV."
+  (let ((acc nil))
+    (maphash (lambda (_name sc)
+               (let ((vars (tl-tscheme-vars sc)))
+                 (dolist (v (tl-free-tvars (tl-tscheme-type sc)))
+                   (unless (memq v vars)
+                     (cl-pushnew v acc :test #'eq)))))
+             (tl-env-type-env env))
+    acc))
+
 (defun tl-instantiate (scheme)
   "Instantiate SCHEME (a `tl-tscheme') with fresh type variables."
   (if (tl-tscheme-p scheme)
@@ -194,6 +206,29 @@ application."
   (tl-type-subst (tl-tscheme-type scheme)
                  (mapcar (lambda (v) (cons v (tl-tcon (gensym "sk") nil)))
                          (tl-tscheme-vars scheme))))
+
+(defvar tl-builtin-types (make-hash-table :test #'eq)
+  "Type schemes for builtin functions.")
+
+(defun tl-register-builtin-type (name scheme)
+  "Register type SCHEME for builtin NAME."
+  (puthash name scheme tl-builtin-types))
+
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type
+   'eq (tl-tscheme (list a) (tl-tarrow a (tl-tarrow a (tl-tbool))))))
+(tl-register-builtin-type
+ '+
+ (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tarrow (tl-tint) (tl-tint)))))
+(tl-register-builtin-type
+ '-
+ (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tarrow (tl-tint) (tl-tint)))))
+(tl-register-builtin-type
+ '*
+ (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tarrow (tl-tint) (tl-tint)))))
+(tl-register-builtin-type
+ '<
+ (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tarrow (tl-tint) (tl-tbool)))))
 
 (defun tl-compose-bindings (b1 b2)
   "Compose substitutions B1 and B2 (apply B2 after B1).
@@ -276,6 +311,8 @@ error."
      (cell (cons (cdr cell) nil))
      ((and base (gethash sym (tl-env-type-env base)))
       (cons (tl-instantiate (gethash sym (tl-env-type-env base))) nil))
+     ((gethash sym tl-builtin-types)
+      (cons (tl-instantiate (gethash sym tl-builtin-types)) nil))
      (t (cons (tl-fresh-tvar) nil)))))
 
 (defun tl-infer-lambda (env params body)
@@ -379,16 +416,34 @@ Return `(LOCAL-BINDINGS . SUBST)'."
         (signal 'termlisp-type-error (list "Guard expression is not Bool")))
       (cons (car sub) (cdr u))))
    ((and (consp pat) (eq (car pat) 'or))
-    (let ((first nil) (bs nil))
+    (let ((first-binds nil) (first t) (bs nil))
       (dolist (p (cdr pat))
-        (let ((r (tl-infer-pattern env p expected)))
-          (unless first (setq first (car r)))
-          (setq bs (tl-compose-bindings bs (cdr r)))))
-      (cons first bs)))
+        (let* ((env-z (tl-zonk-env env bs))
+               (r (tl-infer-pattern env-z p expected))
+               (rbs (tl-compose-bindings bs (cdr r)))
+               (binds (mapcar (lambda (cell)
+                                (cons (car cell) (tl-apply-bindings (cdr cell) rbs)))
+                              (car r))))
+          (if first
+              (setq first nil first-binds binds bs rbs)
+            (dolist (cell binds)
+              (let ((other (assq (car cell) first-binds)))
+                (unless other
+                  (signal 'termlisp-type-error
+                          (list "or-pattern alternatives bind different variables")))
+                (let ((u (tl-unify-types (cdr other) (cdr cell) rbs)))
+                  (unless (car u)
+                    (signal 'termlisp-type-error
+                            (list "or-pattern alternatives bind incompatible types")))
+                  (setq rbs (cdr u)))))
+            (setq bs rbs))))
+      (cons first-binds bs)))
+
    ((and (consp pat) (eq (car pat) 'and))
     (let ((binds nil) (bs nil))
       (dolist (p (cdr pat))
-        (let ((r (tl-infer-pattern env p expected)))
+        (let* ((env-z (tl-tenv-extend (tl-zonk-env env bs) binds))
+               (r (tl-infer-pattern env-z p expected)))
           (setq binds (append (car r) binds)
                 bs (tl-compose-bindings bs (cdr r)))))
       (cons binds bs)))
@@ -462,7 +517,7 @@ Return `(LOCAL-BINDINGS . SUBST)'."
                 (signal 'termlisp-type-error
                         (list (format "Definition of %S does not match its signature" name))))
               (puthash name sig tyenv))
-          (puthash name (tl-generalize final nil) tyenv))))))
+          (puthash name (tl-generalize final (tl-env-free-tvars env)) tyenv))))))
 
 (defun tl-syntactic-value-p (expr)
   "Return non-nil if EXPR is a syntactic value (value restriction)."
@@ -483,7 +538,7 @@ Return `(LOCAL-BINDINGS . SUBST)'."
             ty)
         (puthash name
                  (if (tl-syntactic-value-p expr)
-                     (tl-generalize ty nil)
+                     (tl-generalize ty (tl-env-free-tvars env))
                    (tl-tscheme nil ty))
                  (tl-env-type-env env))
         ty))))
