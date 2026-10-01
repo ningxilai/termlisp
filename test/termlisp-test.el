@@ -1861,5 +1861,30 @@ the test fixes the type to Maybe with a signature-annotated binding."
       (should (car r))
       (should (eq (cdr (assq '$whole (cdr r))) n)))))
 
+(ert-deftest case/compile-head-dispatch ()
+  (let* ((c1 (cons (tl-pat-parse '(pcon :a (pvar $x))) '(:pa $x)))
+         (c2 (cons (tl-pat-parse '(pcon :b (pvar $x))) '(:pb $x)))
+         (tree (tl-case-compile (list c1 c2))))
+    (should (eq (car tree) 'ct-case))
+    (should (= (nth 1 tree) 0))
+    (should (assq 'ct-con (nth 2 tree)))))
+
+(ert-deftest case/compile-default ()
+  (let* ((c1 (cons (tl-pat-parse '(pcon :a)) 'one))
+         (c2 (cons (tl-pat-parse '(pvar $x)) 'any))
+         (tree (tl-case-compile (list c1 c2))))
+    (should (eq (car tree) 'ct-case))
+    (should (memq 'ct-default (mapcar #'car (nth 2 tree))))))
+
+(ert-deftest case/compile-const ()
+  (let* ((c1 (cons (tl-pat-parse '(plit 0)) 'zero))
+         (c2 (cons (tl-pat-parse '(pvar $x)) 'n))
+         (tree (tl-case-compile (list c1 c2))))
+    (should (assq 'ct-const (nth 2 tree)))))
+
+(ert-deftest case/compile-leaf ()
+  (let ((tree (tl-case-compile (list (cons (tl-pat-parse '(pvar $x)) 'one)))))
+    (should (equal tree '(ct-leaf 0)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
