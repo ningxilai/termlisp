@@ -1701,5 +1701,18 @@ the test fixes the type to Maybe with a signature-annotated binding."
          (r (tl-make-grule 'u :normalize 0 '(a) '(f $y))))
     (should-error (tl-graph-rewrite g (list r)) :type 'termlisp-eval-error)))
 
+(ert-deftest graph/atom-vs-nullary ()
+  "A nullary application `(a)' is distinct from the atom `a'."
+  (should (eq (tl-node->sexp (tl-graph-root (tl-graph-build 'a))) 'a))
+  (should (equal (tl-node->sexp (tl-graph-root (tl-graph-build '(a)))) '(a))))
+
+(ert-deftest graph/roundtrip ()
+  (dolist (x '(a (a) (f a (g b)) ((a) b) (a (b) c)))
+    (should (equal (tl-node->sexp (tl-graph-root (tl-graph-build x))) x))))
+
+(ert-deftest graph/rewrite-to-nullary ()
+  (let ((r (tl-make-grule 'q :normalize 0 '(:quit) '(:done))))
+    (should (equal (tl-graph-rewrite-sexp '(:quit) (list r)) '(:done)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
