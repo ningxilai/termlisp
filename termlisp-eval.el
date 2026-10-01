@@ -30,11 +30,13 @@
     (signal 'termlisp-eval-error '("<<loop>> detected while forcing a thunk")))
    (t
     (setf (tl-thunk-busy-p value) t)
-    (let ((v (tl-run (tl-thunk-expr value) (tl-thunk-env value))))
-      (setf (tl-thunk-value value) v)
-      (setf (tl-thunk-forced-p value) t)
-      (setf (tl-thunk-busy-p value) nil)
-      v))))
+    (unwind-protect
+        (let* ((termlisp--current-env (or (tl-thunk-ctx value) termlisp--current-env))
+               (v (tl-run (tl-thunk-expr value) (tl-thunk-env value))))
+          (setf (tl-thunk-value value) v)
+          (setf (tl-thunk-forced-p value) t)
+          v)
+      (setf (tl-thunk-busy-p value) nil)))))
 
 (defun tl-make-arg-thunks (exprs env)
   "Turn argument expressions EXPRS into thunks capturing ENV."
@@ -95,9 +97,25 @@
           (cons (tl-clause-body (car sel)) (cdr sel))
         (signal 'termlisp-eval-error '("No matching clause for function value")))))
    (t (signal 'termlisp-eval-error
-              (list (format "Not a function: %S" (termlisp-value->string fv)))))))
+              (list (format "Not a function: %S" fv))))))
+
+(defun tl-resolve-callable (fv)
+  "Resolve FV to a closure/function object, or return it unchanged."
+  (cond
+   ((tl-closure-p fv) fv)
+   ((tl-function-p fv) fv)
+   ((and (symbolp fv) (gethash fv (tl-env-functions termlisp--current-env)))
+    (tl-make-function (gethash fv (tl-env-functions termlisp--current-env))))
+   (t fv)))
 
 ;;; Driver ---------------------------------------------------------------
+
+;; Known limitations (not addressed here):
+;; * Forcing a variable-bound thunk in tail position pushes a `memoize'
+;;   frame, so the continuation heap grows O(n) for the `if'-function loop
+;;   idiom.  This avoids Elisp stack growth but is not constant-space.
+;; * `:fuel' is a per-`tl-run' budget, not a global budget across nested
+;;   `tl-run' calls (e.g. thunk forcing or literal/guard evaluation).
 
 (defun tl-run (expr env)
   "Evaluate EXPR in lexical ENV to weak head normal form."
@@ -132,6 +150,9 @@
                ((and (consp head) (eq (car head) 'lambda))
                 (setq cenv (tl-bind-params (cadr head) args cenv cenv))
                 (setq control (caddr head)))
+               ((eq head 'lambda)
+                (setq value (tl-make-closure (cadr control) (caddr control) cenv)
+                      mode 'ret))
                ((symbolp head)
                 (let ((cell (assq head cenv))
                       (global (assq head (tl-env-globals termlisp--current-env)))
@@ -139,7 +160,7 @@
                   (cond
                    ((or cell global)
                     (let* ((v (cdr (or cell global)))
-                           (fv (if (tl-thunk-p v) (tl-force v) v))
+                           (fv (tl-resolve-callable (if (tl-thunk-p v) (tl-force v) v)))
                            (step (tl-apply-step fv args cenv)))
                       (setq control (car step) cenv (cdr step))))
                    (fns
@@ -211,7 +232,10 @@
   (let ((target (cadr form)))
     (if (consp target)
         (let* ((name (car target))
-               (params (mapcar #'tl-pattern-parse (cdr target)))
+               (params (mapcar (lambda (p)
+                                 (tl-pattern-parse
+                                  p (lambda (s) (gethash s (tl-env-constructors env)))))
+                               (cdr target)))
                (clause (tl-make-clause name params (caddr form))))
           (puthash name
                    (append (gethash name (tl-env-functions env)) (list clause))

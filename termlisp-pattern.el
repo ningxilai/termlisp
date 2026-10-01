@@ -24,22 +24,28 @@
 (cl-defstruct (tl-match-ctx (:constructor tl-make-match-ctx))
   force lit-eval guard-eval lambda-value)
 
-(defun tl-pattern-parse (pat)
-  "Parse surface pattern PAT into a compiled pattern."
+(defun tl-pattern-parse (pat &optional constructor-p)
+  "Parse surface pattern PAT into a compiled pattern.
+When CONSTRUCTOR-P is non-nil, a bare symbol satisfying it is parsed as a
+nullary constructor pattern instead of a variable."
   (cond
    ((eq pat '_) '(wild))
-   ((symbolp pat) (cons 'var pat))
+   ((symbolp pat)
+    (if (and constructor-p (funcall constructor-p pat))
+        (list 'con pat)
+      (cons 'var pat)))
    ((and (consp pat) (eq (car pat) :literal)) (list 'lit (cadr pat)))
    ((and (consp pat) (eq (car pat) :list)) (cons 'rest (cadr pat)))
    ((and (consp pat) (eq (car pat) :lambda)) (cons 'lam (cadr pat)))
    ((and (consp pat) (eq (car pat) 'guard))
-    (list 'guard (tl-pattern-parse (nth 1 pat)) (nth 2 pat)))
+    (list 'guard (tl-pattern-parse (nth 1 pat) constructor-p) (nth 2 pat)))
    ((and (consp pat) (eq (car pat) 'or))
-    (cons 'or (mapcar #'tl-pattern-parse (cdr pat))))
+    (cons 'or (mapcar (lambda (p) (tl-pattern-parse p constructor-p)) (cdr pat))))
    ((and (consp pat) (eq (car pat) 'and))
-    (cons 'and (mapcar #'tl-pattern-parse (cdr pat))))
+    (cons 'and (mapcar (lambda (p) (tl-pattern-parse p constructor-p)) (cdr pat))))
    ((consp pat)
-    (cons 'con (cons (car pat) (mapcar #'tl-pattern-parse (cdr pat)))))
+    (cons 'con (cons (car pat)
+                     (mapcar (lambda (p) (tl-pattern-parse p constructor-p)) (cdr pat)))))
    (t (signal 'termlisp-error (list (format "Bad pattern: %S" pat))))))
 
 (defun tl-match (pat value bindings ctx)

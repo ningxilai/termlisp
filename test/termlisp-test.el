@@ -377,5 +377,37 @@
   (should (equal (termlisp-value->string '(Pair 1 2)) "(Pair 1 2)"))
   (should (equal (termlisp-value->string 'Foo) "Foo")))
 
+(ert-deftest eval/lambda-as-value ()
+  (should (equal (termlisp-eval
+                  "(define (apply1 f x) (f x))
+                   (apply1 (lambda (y) (+ y 1)) 41)")
+                 42))
+  (should (equal (termlisp-eval
+                  "(define (mk x) (lambda (y) (+ x y)))
+                   ((mk 5) 10)")
+                 15)))
+
+(ert-deftest eval/named-function-as-value ()
+  (should (equal (termlisp-eval
+                  "(define (apply1 f x) (f x))
+                   (define (inc y) (+ y 1))
+                   (apply1 inc 41)")
+                 42)))
+
+(ert-deftest eval/lazy-result-forceable-after-return ()
+  "A lazy result returned by `termlisp-eval' must still be forceable."
+  (should (equal (termlisp-value->string
+                  (termlisp-eval "(define (f x) x) (Pair (f 1) (f 2))"))
+                 "(Pair 1 2)")))
+
+(ert-deftest eval/nullary-constructor-pattern ()
+  (should (equal (termlisp-value->string
+                  (termlisp-eval
+                   "(datatype Nat (Zero) (Succ Nat))
+                    (define (plus Zero b) b)
+                    (define (plus (Succ a) b) (Succ (plus a b)))
+                    (plus (Succ Zero) (Succ Zero))"))
+                 "(Succ (Succ Zero))")))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

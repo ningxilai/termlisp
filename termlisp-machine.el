@@ -16,8 +16,12 @@
   "Dynamically bound evaluation context during `tl-run'.
 Defined in termlisp-eval.el.")
 
-(cl-defstruct (tl-thunk (:constructor tl-make-thunk (expr env)))
-  expr env (forced-p nil) (value nil) (busy-p nil))
+(cl-defstruct (tl-thunk (:constructor tl-make-thunk--raw (expr env ctx)))
+  expr env ctx (forced-p nil) (value nil) (busy-p nil))
+
+(defun tl-make-thunk (expr env)
+  "Create a thunk for EXPR in ENV, capturing the current eval context."
+  (tl-make-thunk--raw expr env termlisp--current-env))
 
 (cl-defstruct (tl-closure (:constructor tl-make-closure (params body env)))
   params body env)
