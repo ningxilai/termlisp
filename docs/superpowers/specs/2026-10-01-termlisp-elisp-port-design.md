@@ -53,9 +53,11 @@
 
 ```
 termlisp.el            ; 入口：公共 API、autoload、require 汇总、load-path 注入
+termlisp-base.el       ; 错误定义、options、tl-env 上下文 struct、访问器
 termlisp-reader.el     ; elisp read 读 S-exp；peg 解析类型/模式/声明子语法
-termlisp-syntax.el     ; cl-defstruct 表面 AST 与核心 AST；S-exp <-> struct
-termlisp-types.el      ; 类型表示、合一化(eprolog 式)、HM 推断(B)、约束求解(A)、kind 检查
+termlisp-syntax.el     ; 顶层形式分类、语法糖脱糖、S-exp 辅助
+termlisp-unify.el      ; 合一内核：lvar、deref、occurs-check、结构合一（类型与模式共用）
+termlisp-types.el      ; 类型表示、HM 推断(B)、约束求解(A)、kind 检查（基于 termlisp-unify）
 termlisp-elaborate.el  ; 表面 AST -> 带类型核心 AST；模式编译；字典插入(A)
 termlisp-machine.el    ; CEK 机器：control/env/kont/store、TCO、force/memo、fuel
 termlisp-eval.el       ; 重写规则库、开放构造子分派、clause 选择、回溯
@@ -135,19 +137,22 @@ test/                  ; ERT 测试
 
 ## 6. 项与值的表示、开放数据类型
 
-### 6.1 核心项（`termlisp-syntax.el`，`cl-defstruct`）
+### 6.1 项的表示
 
-- `tl-atom`：symbol / number / string
-- `tl-app`：head + 实参列表
-- `tl-lambda`：形参列表 + body
-- `tl-let`、`tl-do` 等语法糖在 elaborate 阶段脱糖，不进入运行时
-- 每个核心节点带 `type` 槽（类型检查后填充；B 阶段可为推断结果）
+项（语法）直接用 **S-expressions** 表示，这与项重写语言的本质一致，也让 reader 极简：
+
+- 原子：symbol / number / string
+- 应用 / 构造子：list `(head arg ...)`
+- `let`、`do` 等语法糖在 elaborate 阶段脱糖，不进入运行时
+
+不采用逐节点 struct 的原因：求值器与类型无关，运行时无需在每个节点挂 `type` 槽；类型检查器（§8）作为独立 pass 在 S-exp 上推断，产出"名字 → 类型方案"的环境。仅对需要额外状态的运行时对象使用 struct（见 §6.2）。
 
 ### 6.2 运行时值（WHNF）
 
-- `tl-value-atom`：不可再归约的原子
-- `tl-cons-value`：已归约的构造子应用 `(Con v1 ... vn)`，`Con` 为已声明或开放构造子
-- `tl-thunk`：闭包 + `forced?` + `memo` 槽（call-by-need 共享；blackhole 检测 `<<loop>>`）
+- 原子值：不可再归约的 symbol / number / string
+- 构造子值：list `(Con v1 ... vn)`，实参已求到 WHNF；`Con` 为已声明或开放构造子
+- `tl-thunk`（struct）：闭包 + `forced?` + `memo` 槽（call-by-need 共享；blackhole 检测 `<<loop>>`）
+- `tl-closure`（struct）：lambda 形参 + body + 捕获环境
 
 ### 6.3 开放数据类型（extensible variants）
 
