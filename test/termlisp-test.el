@@ -455,6 +455,30 @@
                     (termlisp-eval "(map Foo this-is)" env))
                    "(This Is Foo)"))))
 
+(ert-deftest monad/maybe-return ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string (termlisp-eval "(monad-return MaybeDict 5)" env))
+                   "(Just 5)"))))
+
+(ert-deftest monad/maybe-bind-just ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(monad-bind MaybeDict (Just 3) (lambda (x) (Just (+ x 1))))" env))
+                   "(Just 4)"))))
+
+(ert-deftest monad/maybe-bind-nothing ()
+  (let ((env (termlisp-load-prelude)))
+    (should (eq (termlisp-eval "(monad-bind MaybeDict Nothing (lambda (x) (Just x)))" env)
+                'Nothing))))
+
+(ert-deftest monad/list-return-and-bind ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string (termlisp-eval "(monad-return ListDict 1)" env))
+                   "(Cons 1 Nil)"))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(monad-bind ListDict (Cons 1 (Cons 2 Nil)) (lambda (x) (Cons (+ x 10) Nil)))" env))
+                   "(Cons 11 (Cons 12 Nil))"))))
+
 (ert-deftest prelude/load-prelude-returns-env ()
   (let ((env (termlisp-make-env)))
     (should (eq (termlisp-load-prelude env) env))))

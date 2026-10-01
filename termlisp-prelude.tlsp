@@ -32,3 +32,31 @@
 
 ;; Higher-order: apply a passed function to one argument
 (define (map a (:lambda fun)) (fun a))
+
+;; Monads (phase B: explicit dictionaries)
+
+(datatype MonadDict (MonadDict bind return fmap))
+(datatype Maybe (Nothing) (Just a))
+(datatype List (Nil) (Cons a (List a)))
+
+(define (monad-return (MonadDict bind return fmap) v) (return v))
+(define (monad-bind (MonadDict bind return fmap) m k) (bind m k))
+(define (monad-fmap (MonadDict bind return fmap) f m) (fmap f m))
+
+;; Maybe instance
+(define (maybe-return v) (Just v))
+(define (maybe-bind Nothing k) Nothing)
+(define (maybe-bind (Just v) k) (k v))
+(define (maybe-fmap f Nothing) Nothing)
+(define (maybe-fmap f (Just v)) (Just (f v)))
+(define MaybeDict (MonadDict maybe-bind maybe-return maybe-fmap))
+
+;; List instance
+(define (list-return v) (Cons v Nil))
+(define (list-append Nil ys) ys)
+(define (list-append (Cons x xs) ys) (Cons x (list-append xs ys)))
+(define (list-bind Nil k) Nil)
+(define (list-bind (Cons x xs) k) (list-append (k x) (list-bind xs k)))
+(define (list-fmap f Nil) Nil)
+(define (list-fmap f (Cons x xs)) (Cons (f x) (list-fmap f xs)))
+(define ListDict (MonadDict list-bind list-return list-fmap))
