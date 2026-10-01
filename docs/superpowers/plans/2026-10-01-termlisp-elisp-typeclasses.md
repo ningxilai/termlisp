@@ -10,6 +10,8 @@
 
 **Scope:** Phase A. Kind checking is minimal (class params are `* -> *`). Multi-parameter type classes, functional dependencies, and associated types are out of scope. Superclasses are supported for constraint simplification only.
 
+**Progress (as of 2026-10-01):** Tasks 1–3 are DONE and merged (class/instance declarations; constraint collection; constraint solving + constrained schemes; 185 tests). Tasks 4–6 remain (type-directed `do`, dictionary-passing elaboration, prelude classes/instances + acceptance). Known constraints for the remaining work: parameterized instance heads (e.g. `Functor (Either e)`) do not resolve with the current `f a`-vs-`Either e a` encoding; instance contexts/superclasses are parsed but not yet used; full dictionary passing (Task 5) is the largest remaining piece.
+
 **Borrowing note:** constraint solving uses one-way matching/subsumption in the style of clover's `unify.lisp`; the shared unifier kernel may be parameterized over term decomposition (`cons` vs `tl-tcon`) where natural.
 
 ---
