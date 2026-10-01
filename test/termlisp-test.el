@@ -1058,6 +1058,29 @@
     (should-error (termlisp-typecheck "(return 7)" env)
                   :type 'termlisp-type-error)))
 
+(ert-deftest class/canonical-key ()
+  "Canonical keys are invariant under renaming of type variables."
+  (let ((a (tl-fresh-tvar)) (b (tl-fresh-tvar)) (c (tl-fresh-tvar)))
+    (should (equal (tl-canonical-key (tl-tarrow a a))
+                   (tl-canonical-key (tl-tarrow b b))))
+    (should (equal (tl-canonical-key (tl-tcon 'Maybe (list a a)))
+                   (tl-canonical-key (tl-tcon 'Maybe (list b b)))))
+    (should-not (equal (tl-canonical-key (tl-tarrow a b))
+                       (tl-canonical-key (tl-tarrow c c))))))
+
+(ert-deftest class/canonical-key-dedup ()
+  "Canonical-key bucketing dedups equal constraints but not distinct vars."
+  (let* ((a (tl-fresh-tvar)) (b (tl-fresh-tvar))
+         (c1 (tl-constraint 'Functor (tl-tcon 'Maybe (list a))))
+         (c2 (tl-constraint 'Functor (tl-tcon 'Maybe (list a))))
+         (c3 (tl-constraint 'Functor (tl-tcon 'Maybe (list b)))))
+    (should (= (length (tl-remove-duplicates-by-key
+                        (list c1 c2) #'tl-constraint-canonical-key #'equal))
+               1))
+    (should (= (length (tl-remove-duplicates-by-key
+                        (list c1 c3) #'tl-constraint-canonical-key #'equal))
+               2))))
+
 (ert-deftest typecheck/do ()
   (let ((env (termlisp-make-env)))
     (termlisp-typecheck-file

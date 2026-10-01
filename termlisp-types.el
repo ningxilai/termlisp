@@ -178,6 +178,55 @@ application."
       (walk type))
     acc))
 
+(defun tl-canonical-key (type)
+  "Return a variable-rename-invariant string key for TYPE.
+Type variables are numbered in order of first appearance, so
+alpha-equivalent types (e.g. `(a -> a)' and `(b -> b)') share a key.
+The key is an over-approximation: callers that need exact equality
+confirm within the bucket (see `tl-remove-duplicates-by-key').
+Borrowed from clover's `canonical-term-string'."
+  (let ((index nil) (counter 0))
+    (cl-labels ((canon (ty)
+                  (cond
+                   ((tl-tvar-p ty)
+                    (let ((cell (assq ty index)))
+                      (if cell (cdr cell)
+                        (let ((key (format "?%d" counter)))
+                          (setq counter (1+ counter))
+                          (push (cons ty key) index)
+                          key))))
+                   ((tl-tcon-p ty)
+                    (let ((name (tl-tcon-name ty)))
+                      (format "(%s%s)"
+                              (if (tl-tvar-p name) (canon name) name)
+                              (mapconcat (lambda (a) (concat " " (canon a)))
+                                         (tl-tcon-args ty) ""))))
+                   (t (format "%S" ty)))))
+      (canon type))))
+
+(defun tl-constraint-canonical-key (c)
+  "Return a variable-rename-invariant string key for constraint C."
+  (format "%S:%s" (tl-constraint-class c)
+          (tl-canonical-key (tl-constraint-type c))))
+
+(defun tl-remove-duplicates-by-key (items key-fn eq-fn)
+  "Remove duplicates from ITEMS, keeping the last of each equivalence.
+Behaves like `cl-remove-duplicates' with `:test EQ-FN', but buckets by
+KEY-FN first.  KEY-FN must be an over-approximation (EQ-FN true implies
+equal keys); the result is identical to the unbucketed dedup.  Borrowed
+from clover's `remove-duplicates-by-key'."
+  (let* ((keyed (cl-loop for x in items
+                         collect (cons (funcall key-fn x) x)))
+         (buckets (make-hash-table :test #'equal)))
+    (cl-loop for kc in keyed for i from 0
+             do (push (cons i (cdr kc)) (gethash (car kc) buckets)))
+    (cl-loop for kc in keyed for i from 0
+             unless (cl-some (lambda (p)
+                               (and (> (car p) i)
+                                    (funcall eq-fn (cdr kc) (cdr p))))
+                             (gethash (car kc) buckets))
+             collect (cdr kc))))
+
 (defun tl-type-parse-scheme (sexp)
   "Parse SEXP into a type scheme, quantifying its free variables."
   (let ((ty (tl-type-parse sexp)))
@@ -217,7 +266,10 @@ symbol (e.g. the `Maybe' of `Functor Maybe'); this normalizes it."
 (defun tl-match-instance (head ty)
   "Match instance HEAD against type TY.  Return `(t . SUB)' on success.
 Instance-head variables are rigid patterns; variables in TY may be
-bound by SUB.  Returns nil when HEAD does not match TY."
+bound by SUB.  Returns nil when HEAD does not match TY.
+This is one-way matching in the style of clover's
+`one-way-unify1-term-alist' \"no-change-loser\": bindings are built in a
+local SUB and the caller's state is left untouched on failure."
   (let ((sub nil) (work (list (cons head ty))) (ok t))
     (while (and work ok)
       (let* ((pair (pop work))
@@ -286,7 +338,8 @@ variable never resolved to a concrete instance."
                                           (tl-constraint-class c) ty)
                                 (format "No instance for %S %S"
                                         (tl-constraint-class c) ty))))))))))
-    (cl-remove-duplicates (nreverse kept) :test #'equal)))
+    (tl-remove-duplicates-by-key (nreverse kept)
+                                 #'tl-constraint-canonical-key #'equal)))
 
 (defun tl-generalize (type env-tvars &optional constraints)
   "Generalize TYPE, quantifying tvars not in ENV-TVARS, keeping CONSTRAINTS
@@ -296,7 +349,9 @@ whose type mentions a quantified variable."
                 (lambda (c)
                   (cl-intersection vars (tl-free-tvars (tl-constraint-type c))))
                 constraints)))
-    (tl-tscheme vars type (cl-remove-duplicates kept :test #'equal))))
+    (tl-tscheme vars type
+                (tl-remove-duplicates-by-key kept
+                                             #'tl-constraint-canonical-key #'equal))))
 
 (defun tl-env-free-tvars (env)
   "Free type variables of the type environment of ENV."
