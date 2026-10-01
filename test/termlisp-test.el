@@ -7,5 +7,17 @@
 (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name)))
 (require 'termlisp)
 
+(ert-deftest base/env-defaults ()
+  (let ((env (termlisp-make-env)))
+    (should (tl-env-p env))
+    (should (hash-table-p (tl-env-functions env)))
+    (should (eq (tl-env-option env :phase) 'B))
+    (should (eq (tl-env-option env :occurs-check) t))))
+
+(ert-deftest base/env-option-override ()
+  (let ((env (termlisp-make-env '(:fuel 10))))
+    (should (= (tl-env-option env :fuel) 10))
+    (should (eq (tl-env-option env :occurs-check) t))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
