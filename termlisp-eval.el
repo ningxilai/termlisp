@@ -217,13 +217,26 @@
 
 (defun termlisp-value->string (v)
   "Render runtime value V as a string, forcing thunks."
-  (let ((v (if (tl-thunk-p v) (tl-force v) v)))
-    (cond
-     ((consp v)
-      (concat "(" (mapconcat #'termlisp-value->string v " ") ")"))
-     ((tl-closure-p v) "#<closure>")
-     ((tl-function-p v) "#<function>")
-     (t (format "%s" v)))))
+  (let ((out nil) (stack (list v)))
+    (while stack
+      (let ((x (pop stack)))
+        (cond
+         ((stringp x) (push x out))
+         (t
+          (setq x (if (tl-thunk-p x) (tl-force x) x))
+          (cond
+           ((consp x)
+            (push "(" out)
+            (push ")" stack)
+            (let* ((vec (vconcat x)) (n (length vec)))
+              (dotimes (k n)
+                (let ((idx (- n 1 k)))
+                  (push (aref vec idx) stack)
+                  (when (> idx 0) (push " " stack))))))
+           ((tl-closure-p x) (push "#<closure>" out))
+           ((tl-function-p x) (push "#<function>" out))
+           (t (push (format "%s" x) out)))))))
+    (apply #'concat (nreverse out))))
 
 ;;; Top-level forms ------------------------------------------------------
 

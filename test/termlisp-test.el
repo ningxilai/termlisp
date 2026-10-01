@@ -515,5 +515,65 @@
                    (expand-file-name "examples/nat.tlsp" termlisp--directory)))
                  "(Succ (Succ (Succ Zero)))")))
 
+(ert-deftest reader/trailing-comment ()
+  (should (equal (termlisp-parse "(a) ;; trailing") '((a))))
+  (should (equal (termlisp-parse "(a) ;; trailing\n") '((a))))
+  (should (null (termlisp-parse ";; only a comment")))
+  (should (equal (termlisp-eval "(define x 5) ;; set x") 5)))
+
+(ert-deftest value/deep-structure-does-not-overflow ()
+  "Rendering and comparing deep values must not overflow the Elisp stack."
+  (let ((env (termlisp-load-prelude)))
+    (termlisp-eval
+     "(define (count n) (if (eq n 0) Zero (Succ (count (- n 1)))))" env)
+    (should (stringp (termlisp-value->string (termlisp-eval "(count 2000)" env))))
+    (should (eq (termlisp-eval "(eq (count 2000) (count 2000))" env) 'True))
+    (should (eq (termlisp-eval "(eq (count 2000) (count 1999))" env) 'False))))
+
+(ert-deftest eval/open-datatype-extension ()
+  (should (equal (termlisp-value->string
+                  (termlisp-eval
+                   "(datatype open Expr (Lit Int))
+                    (datatype-extension Expr (Add Expr Expr))
+                    (define (eval-expr (Lit n)) n)
+                    (eval-expr (Lit 7))"))
+                 "7"))
+  (should-error (termlisp-eval
+                 "(datatype Closed (A))
+                  (datatype-extension Closed (B))")
+                :type 'termlisp-eval-error)
+  (should-error (termlisp-eval
+                 "(datatype open Expr (Lit Int))
+                  (define (f (Lit n)) n)
+                  (f (Other 1))")
+                :type 'termlisp-eval-error))
+
+(ert-deftest eval/pattern-forms-end-to-end ()
+  (should (equal (termlisp-value->string
+                  (termlisp-eval
+                   "(define (grab a (:list rest)) (Pair a rest))
+                    (grab 1 2 3)"))
+                 "(Pair 1 (2 3))"))
+  (should (eq (termlisp-eval
+               "(datatype Bool (True) (False))
+                (define (zero? (guard n (eq n 0))) (True))
+                (zero? 0)")
+              'True))
+  (should-error (termlisp-eval
+                 "(datatype Bool (True) (False))
+                  (define (zero? (guard n (eq n 0))) (True))
+                  (zero? 5)")
+                :type 'termlisp-eval-error)
+  (should (eq (termlisp-eval
+               "(datatype Bool (True) (False))
+                (define (is-zero (:literal 0)) (True))
+                (is-zero 0)")
+              'True))
+  (should (eq (termlisp-eval
+               "(datatype Bool (True) (False))
+                (define (p (or (True) (False))) yes)
+                (p (False))")
+              'yes)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

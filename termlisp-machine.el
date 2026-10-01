@@ -31,14 +31,19 @@ Defined in termlisp-eval.el.")
 
 (defun tl-value-equal (a b force)
   "Compare runtime values A and B structurally, forcing thunks with FORCE."
-  (let ((a (funcall force a))
-        (b (funcall force b)))
-    (cond
-     ((and (consp a) (consp b))
-      (and (tl-value-equal (car a) (car b) force)
-           (tl-value-equal (cdr a) (cdr b) force)))
-     ((or (consp a) (consp b)) nil)
-     (t (equal a b)))))
+  (let ((work (list (cons a b))) (ok t))
+    (while (and work ok)
+      (let* ((pair (pop work))
+             (x (funcall force (car pair)))
+             (y (funcall force (cdr pair))))
+        (cond
+         ((and (consp x) (consp y))
+          (push (cons (car x) (car y)) work)
+          (push (cons (cdr x) (cdr y)) work))
+         ((or (consp x) (consp y)) (setq ok nil))
+         ((equal x y))
+         (t (setq ok nil)))))
+    ok))
 
 (defun tl-true-value-p (v)
   "Return non-nil if V is the boolean constructor `True'."

@@ -24,6 +24,14 @@ buffer ending in such whitespace is not mistaken for an unterminated
 form; the reader would otherwise consume the trivia, hit end of file,
 and signal a spurious `end-of-file'.")
 
+(defun termlisp--skip-trivia ()
+  "Skip whitespace and `;' line comments.  Return non-nil if a form follows."
+  (skip-chars-forward termlisp--reader-whitespace)
+  (while (and (not (eobp)) (eq (char-after) ?\;))
+    (end-of-line)
+    (skip-chars-forward termlisp--reader-whitespace))
+  (not (eobp)))
+
 (defun termlisp-parse (string)
   "Read all top-level forms from STRING and return them as a list."
   (with-temp-buffer
@@ -34,14 +42,10 @@ and signal a spurious `end-of-file'.")
     (when (boundp 'read-eval)
       (set (make-local-variable 'read-eval) nil))
     (let ((read-circle nil)
-          (forms nil)
-          (done nil))
+          (forms nil))
       (condition-case err
-          (while (not done)
-            (skip-chars-forward termlisp--reader-whitespace)
-            (if (eobp)
-                (setq done t)
-              (push (read (current-buffer)) forms)))
+          (while (termlisp--skip-trivia)
+            (push (read (current-buffer)) forms))
         (end-of-file
          (signal 'termlisp-parse-error
                  (list "Unbalanced parentheses: unexpected end of input")))
