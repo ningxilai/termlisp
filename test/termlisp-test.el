@@ -852,5 +852,40 @@
     (should-error (tl-infer (cons nil env) '(lambda (f) (Pair (f 1) (f "s"))))
                   :type 'termlisp-type-error)))
 
+(ert-deftest infer/define-id ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(define (id x) x)")
+    (let ((ty (tl-tscheme-type (gethash 'id (tl-env-type-env env)))))
+      (should (eq (tl-tcon-name ty) '->))
+      (should (eq (nth 0 (tl-tcon-args ty)) (nth 1 (tl-tcon-args ty)))))))
+
+(ert-deftest infer/define-peano-plus ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(datatype Nat (Zero) (Succ Nat))")
+    (termlisp-typecheck-def env "(define (plus Zero b) b)")
+    (termlisp-typecheck-def env "(define (plus (Succ a) b) (Succ (plus a b)))")
+    (let ((ty (tl-tscheme-type (gethash 'plus (tl-env-type-env env)))))
+      (should (equal ty (tl-tarrow (tl-tcon 'Nat nil)
+                                   (tl-tarrow (tl-tcon 'Nat nil)
+                                              (tl-tcon 'Nat nil))))))))
+
+(ert-deftest infer/type-mismatch-clauses ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(datatype Bool (True) (False))")
+    (termlisp-typecheck-def env "(define (bad True) 1)")
+    (should-error (termlisp-typecheck-def env "(define (bad False) \"x\")")
+                  :type 'termlisp-type-error)))
+
+(ert-deftest infer/define-constant ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(define n 5)")
+    (should (equal (tl-tscheme-type (gethash 'n (tl-env-type-env env))) (tl-tint)))))
+
+(ert-deftest infer/guard-pattern ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(datatype Bool (True) (False))")
+    (termlisp-typecheck-def env "(define (zero? (guard n (eq n 0))) (True))")
+    (should (gethash 'zero? (tl-env-type-env env)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

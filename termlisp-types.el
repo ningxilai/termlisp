@@ -15,6 +15,9 @@
 (require 'termlisp-base)
 (require 'termlisp-unify)
 
+(declare-function tl-eval-datatype "termlisp-eval" (env form))
+(declare-function tl-eval-datatype-extension "termlisp-eval" (env form))
+
 (cl-defstruct (tl-tcon (:constructor tl-tcon (name args))) name args)
 (cl-defstruct (tl-tscheme (:constructor tl-tscheme (vars type))) vars type)
 
@@ -306,6 +309,187 @@ error."
           (setq bindings (cdr u))
           (setq ftype (tl-apply-bindings res bindings)))))
     (cons (tl-apply-bindings ftype bindings) bindings)))
+
+(defun tl-infer-arg-types-of-constructor (cty n)
+  "Return the first N argument types of constructor type CTY."
+  (let ((acc nil))
+    (dotimes (_ n)
+      (let ((args (tl-tfun-args cty)))
+        (push (nth 0 args) acc)
+        (setq cty (nth 1 args))))
+    (nreverse acc)))
+
+(defun tl-infer-result-of-constructor (cty n)
+  "Return the result type of constructor type CTY applied to N args."
+  (dotimes (_ n) (setq cty (nth 1 (tl-tfun-args cty))))
+  cty)
+
+(defun tl-constructor-name-p (env name)
+  "Return non-nil if NAME is a registered constructor."
+  (let ((base (tl-tenv-base env)))
+    (and base (gethash name (tl-env-constructors base)))))
+
+(defun tl-infer-pattern (env pat expected)
+  "Infer bindings of PAT at type EXPECTED.
+Return `(LOCAL-BINDINGS . SUBST)'."
+  (cond
+   ((eq pat '_) (cons nil nil))
+   ((symbolp pat)
+    (if (tl-constructor-name-p env pat)
+        (let ((sc (gethash pat (tl-env-type-env (tl-tenv-base env)))))
+          (let ((u (tl-unify-types (tl-instantiate sc) expected nil)))
+            (unless (car u)
+              (signal 'termlisp-type-error
+                      (list (format "Constructor %S mismatches expected type" pat))))
+            (cons nil (cdr u))))
+      (cons (list (cons pat expected)) nil)))
+   ((and (consp pat) (eq (car pat) :literal))
+    (let* ((r (tl-infer env (cadr pat)))
+           (bs (cdr r))
+           (u (tl-unify-types (tl-apply-bindings (car r) bs) expected bs)))
+      (unless (car u)
+        (signal 'termlisp-type-error (list (format "Literal pattern %S mismatches" pat))))
+      (cons nil (cdr u))))
+   ((and (consp pat) (eq (car pat) :list))
+    (cons (list (cons (cadr pat) (tl-fresh-tvar))) nil))
+   ((and (consp pat) (eq (car pat) :lambda))
+    (cons (list (cons (cadr pat) (tl-fresh-tvar))) nil))
+   ((and (consp pat) (eq (car pat) 'guard))
+    (let* ((sub (tl-infer-pattern env (cadr pat) expected))
+           (env2 (tl-tenv-extend env (car sub)))
+           (g (tl-infer env2 (caddr pat)))
+           (bs (tl-compose-bindings (cdr sub) (cdr g)))
+           (u (tl-unify-types (tl-apply-bindings (car g) bs) (tl-tbool) bs)))
+      (unless (car u)
+        (signal 'termlisp-type-error (list "Guard expression is not Bool")))
+      (cons (car sub) (cdr u))))
+   ((and (consp pat) (eq (car pat) 'or))
+    (let ((binds nil) (bs nil))
+      (dolist (p (cdr pat))
+        (let ((r (tl-infer-pattern env p expected)))
+          (setq binds (car r) bs (tl-compose-bindings bs (cdr r)))))
+      (cons binds bs)))
+   ((and (consp pat) (eq (car pat) 'and))
+    (let ((binds nil) (bs nil))
+      (dolist (p (cdr pat))
+        (let ((r (tl-infer-pattern env p expected)))
+          (setq binds (append (car r) binds)
+                bs (tl-compose-bindings bs (cdr r)))))
+      (cons binds bs)))
+   ((consp pat)
+    (let* ((ctor (car pat))
+           (subs (cdr pat))
+           (base (tl-tenv-base env))
+           (sc (and base (gethash ctor (tl-env-type-env base)))))
+      (unless sc
+        (signal 'termlisp-type-error
+                (list (format "Unknown constructor in pattern: %S" ctor))))
+      (let* ((cty (tl-instantiate sc))
+             (result-type (tl-infer-result-of-constructor cty (length subs)))
+             (u (tl-unify-types result-type expected nil)))
+        (unless (car u)
+          (signal 'termlisp-type-error
+                  (list (format "Constructor %S mismatches expected type" ctor))))
+        (let ((arg-types (tl-infer-arg-types-of-constructor cty (length subs)))
+              (bs (cdr u))
+              (binds nil))
+          (while subs
+            (let ((r (tl-infer-pattern env (car subs) (car arg-types))))
+              (setq binds (append (car r) binds)
+                    bs (tl-compose-bindings bs (cdr r))))
+            (setq subs (cdr subs) arg-types (cdr arg-types)))
+          (cons binds bs)))))
+   (t (signal 'termlisp-type-error (list (format "Bad pattern: %S" pat))))))
+
+(defun tl-infer-define-clauses (env name clauses)
+  "Infer NAME from CLAUSES (list of `(PARAMS . BODY)'); register a scheme."
+  (let* ((placeholder (tl-fresh-tvar))
+         (tyenv (tl-env-type-env env)))
+    (puthash name (tl-tscheme nil placeholder) tyenv)
+    (let ((bindings nil))
+      (dolist (clause clauses)
+        (let* ((params (car clause))
+               (body (cdr clause))
+               (ptypes (mapcar (lambda (_) (tl-fresh-tvar)) params))
+               (binds nil)
+               (ps params)
+               (pts ptypes))
+          (while ps
+            (let ((r (tl-infer-pattern (tl-zonk-env (cons nil env) bindings)
+                                       (car ps) (car pts))))
+              (setq binds (append (car r) binds)
+                    bindings (tl-compose-bindings bindings (cdr r)))
+              (setq ps (cdr ps) pts (cdr pts))))
+          (let* ((binds-z (mapcar (lambda (cell)
+                                    (cons (car cell)
+                                          (tl-apply-bindings (cdr cell) bindings)))
+                                  binds))
+                 (env2 (tl-tenv-extend (cons nil env) binds-z))
+                 (rb (tl-infer (tl-zonk-env env2 bindings) body)))
+            (setq bindings (tl-compose-bindings bindings (cdr rb)))
+            (let ((ctype (tl-apply-bindings (car rb) bindings)))
+              (dolist (pt (reverse (mapcar (lambda (p)
+                                             (tl-apply-bindings p bindings))
+                                           ptypes)))
+                (setq ctype (tl-tarrow pt ctype)))
+              (let ((u (tl-unify-types placeholder ctype bindings)))
+                (unless (car u)
+                  (signal 'termlisp-type-error
+                          (list (format "Clause of %S has inconsistent type" name))))
+                (setq bindings (cdr u)))))))
+      (let ((final (tl-apply-bindings placeholder bindings)))
+        (puthash name (tl-generalize final nil) tyenv)))))
+
+(defun tl-syntactic-value-p (expr)
+  "Return non-nil if EXPR is a syntactic value (value restriction)."
+  (or (atom expr)
+      (and (consp expr) (eq (car expr) 'lambda))))
+
+(defun tl-infer-constant (env name expr)
+  "Infer a constant binding NAME = EXPR."
+  (let ((r (tl-infer (cons nil env) expr)))
+    (let ((ty (tl-apply-bindings (car r) (cdr r))))
+      (puthash name
+               (if (tl-syntactic-value-p expr)
+                   (tl-generalize ty nil)
+                 (tl-tscheme nil ty))
+               (tl-env-type-env env))
+      ty)))
+
+(defun tl-register-signature (env form)
+  "Register a `(: NAME TYPE)' signature in ENV (type checked in Task 7)."
+  (let ((name (cadr form))
+        (sc (tl-type-parse-scheme (caddr form))))
+    (puthash name sc (tl-env-type-env env))
+    name))
+
+(defun tl-typecheck-define (env form)
+  "Typecheck a `define' FORM, registering it in ENV."
+  (let ((target (cadr form)))
+    (if (consp target)
+        (let* ((name (car target))
+               (params (cdr target))
+               (body (caddr form))
+               (clauses (append (gethash name (tl-env-clauses env))
+                                (list (cons params body)))))
+          (puthash name clauses (tl-env-clauses env))
+          (tl-infer-define-clauses env name clauses))
+      (tl-infer-constant env target (caddr form)))))
+
+(defun tl-typecheck-form (env form)
+  "Typecheck one top-level FORM in ENV."
+  (cond
+   ((and (consp form) (eq (car form) 'datatype)) (tl-eval-datatype env form))
+   ((and (consp form) (eq (car form) 'datatype-extension))
+    (tl-eval-datatype-extension env form))
+   ((and (consp form) (eq (car form) ':)) (tl-register-signature env form))
+   ((and (consp form) (eq (car form) 'define)) (tl-typecheck-define env form))
+   (t (car (tl-infer (cons nil env) form)))))
+
+(defun termlisp-typecheck-def (env string)
+  "Typecheck all top-level forms in STRING into ENV.  Return ENV."
+  (dolist (form (termlisp-parse string) env)
+    (tl-typecheck-form env form)))
 
 (provide 'termlisp-types)
 ;;; termlisp-types.el ends here
