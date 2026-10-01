@@ -124,5 +124,25 @@
           (should (equal (termlisp-parse-file file) '((a) (b c)))))
       (delete-file file))))
 
+(ert-deftest machine/thunk-accessors ()
+  (let ((t0 (tl-make-thunk '(f 1) '((x . 1)))))
+    (should (tl-thunk-p t0))
+    (should (equal (tl-thunk-expr t0) '(f 1)))
+    (should (null (tl-thunk-forced-p t0)))))
+
+(ert-deftest machine/value-equal-atoms ()
+  (should (tl-value-equal 1 1 #'identity))
+  (should-not (tl-value-equal 1 2 #'identity))
+  (should (tl-value-equal 'Foo 'Foo #'identity)))
+
+(ert-deftest machine/value-equal-constructors ()
+  (should (tl-value-equal '(Pair 1 2) '(Pair 1 2) #'identity))
+  (should-not (tl-value-equal '(Pair 1 2) '(Pair 1 3) #'identity))
+  (should-not (tl-value-equal '(Pair 1 2) '(Cons 1 2) #'identity)))
+
+(ert-deftest machine/true-value-p ()
+  (should (tl-true-value-p 'True))
+  (should-not (tl-true-value-p 'False)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
