@@ -151,3 +151,32 @@ node termlisp.js <file>
 It will evaluate the prelude module, plus your file (if you provided one) and go to REPL mode.
 
 Read [the prelude](/prelude.tls).
+
+Emacs Lisp port
+---
+term-lisp is now implemented in Emacs Lisp; the JavaScript implementation is
+superseded. Load it with:
+
+```elisp
+(require 'termlisp)
+```
+
+API:
+
+- `termlisp-eval` — parse and evaluate a string (or use `termlisp-eval-file`).
+- `termlisp-typecheck` — typecheck a string (or `termlisp-typecheck-file`).
+- `termlisp-load-prelude` — load the bundled `termlisp-prelude.tlsp` into an
+  environment and return it.
+
+Environments are created with `termlisp-make-env`, which takes plist options:
+
+- `:type-check` — typecheck each form before evaluating it.
+- `:elaborate` — type-directed elaboration (required for class-method
+  dictionary passing, e.g. `(fmap f (Just 4))`).
+
+```elisp
+(let ((env (termlisp-load-prelude (termlisp-make-env '(:elaborate t)))))
+  (termlisp-value->string
+   (termlisp-eval "(fmap (lambda (x) (+ x 1)) (Just 4))" env)))
+;; => "(Just 5)"
+```
