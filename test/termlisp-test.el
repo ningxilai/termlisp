@@ -1076,5 +1076,25 @@
     (should (eq (termlisp-eval "(monad-bind ListDict Nil (lambda (x) (Cons x Nil)))" env)
                 'Nil))))
 
+(ert-deftest do/maybe ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(do MaybeDict (x <- (Just 1)) (y <- (Just 2)) (return (+ x y)))" env))
+                   "(Just 3)"))
+    (should (eq (termlisp-eval
+                 "(do MaybeDict (x <- (Just 1)) (y <- Nothing) (return (+ x y)))" env)
+                'Nothing))))
+
+(ert-deftest do/list ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(do ListDict (x <- (Cons 1 (Cons 2 Nil))) (return (+ x 10)))" env))
+                   "(Cons 11 (Cons 12 Nil))"))))
+
+(ert-deftest do/requires-return ()
+  (let ((env (termlisp-load-prelude)))
+    (should-error (termlisp-eval "(do MaybeDict (x <- (Just 1)))" env)
+                  :type 'termlisp-eval-error)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

@@ -299,6 +299,26 @@ constructor argument types are parsed and their schemes registered."
       (puthash (car ctor) name (tl-env-constructors env)))
     name))
 
+(defun tl-desugar-do (form)
+  "Desugar `(do DICT STMT...)' into nested monad-bind/monad-return calls.
+Each STMT is `(NAME <- EXPR)' or a bare monadic expression; the block must
+end with `(return EXPR)'."
+  (let* ((dict (cadr form))
+         (stmts (cddr form))
+         (last (car (last stmts)))
+         (init (butlast stmts))
+         (acc nil))
+    (unless (and (consp last) (eq (car last) 'return))
+      (signal 'termlisp-eval-error '("do block must end with (return e)")))
+    (setq acc (list 'monad-return dict (cadr last)))
+    (dolist (stmt (reverse init))
+      (if (and (consp stmt) (eq (cadr stmt) '<-))
+          (setq acc (list 'monad-bind dict (caddr stmt)
+                          (list 'lambda (list (car stmt)) acc)))
+        (setq acc (list 'monad-bind dict stmt
+                        (list 'lambda '(_) acc)))))
+    acc))
+
 (defun tl-eval-top (env form)
   "Evaluate one top-level FORM in ENV."
   (cond
@@ -307,6 +327,7 @@ constructor argument types are parsed and their schemes registered."
    ((and (consp form) (eq (car form) 'datatype-extension))
     (tl-eval-datatype-extension env form))
    ((and (consp form) (eq (car form) ':)) nil)
+   ((and (consp form) (eq (car form) 'do)) (tl-run (tl-desugar-do form) nil))
    (t (tl-run form nil))))
 
 (defun termlisp-eval (string &optional env)
