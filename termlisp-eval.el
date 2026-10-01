@@ -109,6 +109,29 @@
     (tl-make-function (gethash fv (tl-env-functions termlisp--current-env))))
    (t fv)))
 
+;;; do-notation ----------------------------------------------------------
+
+(defun tl-desugar-do (form)
+  "Desugar `(do DICT STMT...)' into nested monad-bind/monad-return calls.
+Each STMT is `(NAME <- EXPR)' or a bare monadic expression; the block must
+end with `(return EXPR)'.  The block is desugared here so it may appear as a
+top-level or nested `do' form (handled in both `tl-eval-top' and `tl-run')."
+  (let* ((dict (cadr form))
+         (stmts (cddr form))
+         (last (car (last stmts)))
+         (init (butlast stmts))
+         (acc nil))
+    (unless (and (consp last) (eq (car last) 'return))
+      (signal 'termlisp-eval-error '("do block must end with (return e)")))
+    (setq acc (list 'monad-return dict (cadr last)))
+    (dolist (stmt (reverse init))
+      (if (and (consp stmt) (eq (cadr stmt) '<-))
+          (setq acc (list 'monad-bind dict (caddr stmt)
+                          (list 'lambda (list (car stmt)) acc)))
+        (setq acc (list 'monad-bind dict stmt
+                        (list 'lambda (list (gensym "ignored")) acc)))))
+    acc))
+
 ;;; Driver ---------------------------------------------------------------
 
 ;; Known limitations (not addressed here):
@@ -154,6 +177,8 @@
                ((eq head 'lambda)
                 (setq value (tl-make-closure (cadr control) (caddr control) cenv)
                       mode 'ret))
+               ((eq head 'do)
+                (setq control (tl-desugar-do control)))
                ((symbolp head)
                 (let ((cell (assq head cenv))
                       (global (assq head (tl-env-globals termlisp--current-env)))
@@ -298,26 +323,6 @@ constructor argument types are parsed and their schemes registered."
     (dolist (ctor ctors)
       (puthash (car ctor) name (tl-env-constructors env)))
     name))
-
-(defun tl-desugar-do (form)
-  "Desugar `(do DICT STMT...)' into nested monad-bind/monad-return calls.
-Each STMT is `(NAME <- EXPR)' or a bare monadic expression; the block must
-end with `(return EXPR)'."
-  (let* ((dict (cadr form))
-         (stmts (cddr form))
-         (last (car (last stmts)))
-         (init (butlast stmts))
-         (acc nil))
-    (unless (and (consp last) (eq (car last) 'return))
-      (signal 'termlisp-eval-error '("do block must end with (return e)")))
-    (setq acc (list 'monad-return dict (cadr last)))
-    (dolist (stmt (reverse init))
-      (if (and (consp stmt) (eq (cadr stmt) '<-))
-          (setq acc (list 'monad-bind dict (caddr stmt)
-                          (list 'lambda (list (car stmt)) acc)))
-        (setq acc (list 'monad-bind dict stmt
-                        (list 'lambda '(_) acc)))))
-    acc))
 
 (defun tl-eval-top (env form)
   "Evaluate one top-level FORM in ENV."

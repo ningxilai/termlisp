@@ -1096,5 +1096,35 @@
     (should-error (termlisp-eval "(do MaybeDict (x <- (Just 1)))" env)
                   :type 'termlisp-eval-error)))
 
+(ert-deftest do/bare-statement ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(do MaybeDict (Just 99) (return 2))" env))
+                   "(Just 2)"))))
+
+(ert-deftest do/nested ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval
+                     "(do MaybeDict
+                        (x <- (Just 1))
+                        (y <- (do MaybeDict (y <- (Just 2)) (return (+ x y))))
+                        (return y))"
+                     env))
+                   "(Just 3)"))))
+
+(ert-deftest do/subexpression ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(Pair (do MaybeDict (return 1)) (do MaybeDict (return 2)))" env))
+                   "(Pair (Just 1) (Just 2))"))))
+
+(ert-deftest do/no-underscore-capture ()
+  (let ((env (termlisp-load-prelude)))
+    (termlisp-eval "(define _ 42)" env)
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(do MaybeDict (Just 0) (return _))" env))
+                   "(Just 42)"))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
