@@ -914,5 +914,42 @@
     (should-error (termlisp-typecheck-def env "(define (f (Succ a b)) a)")
                   :type 'termlisp-type-error)))
 
+(ert-deftest signature/checked ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(: id (a -> a))")
+    (termlisp-typecheck-def env "(define (id x) x)")
+    (should (gethash 'id (tl-env-type-env env)))))
+
+(ert-deftest signature/mismatch ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(: id Int)")
+    (should-error (termlisp-typecheck-def env "(define (id x) x)")
+                  :type 'termlisp-type-error)))
+
+(ert-deftest api/typecheck-string ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck "(define (id x) x)" env)
+    (should (gethash 'id (tl-env-type-env env)))))
+
+(ert-deftest api/typecheck-prelude ()
+  "The prelude must typecheck without error."
+  (let ((env (termlisp-make-env)))
+    (should (termlisp-typecheck-file
+             (expand-file-name "termlisp-prelude.tlsp" termlisp--directory)
+             env))))
+
+(ert-deftest api/eval-with-type-check ()
+  (let ((env (termlisp-make-env '(:type-check t))))
+    (should (equal (termlisp-eval "(define (id x) x) (id 42)" env) 42))
+    (should-error (termlisp-eval "(define (bad x) (+ x 1)) (bad \"s\")" env)
+                  :type 'termlisp-type-error)))
+
+(ert-deftest api/eval-type-check-rejects-ill-typed ()
+  "Type checking must reject ill-typed code even when eval would not error."
+  (let ((env (termlisp-make-env '(:type-check t))))
+    (termlisp-eval "(datatype Nat (Zero) (Succ Nat)) (define (bad x) (Succ x))" env)
+    (should-error (termlisp-eval "(bad \"s\")" env)
+                  :type 'termlisp-type-error)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

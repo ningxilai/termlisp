@@ -414,7 +414,9 @@ Return `(LOCAL-BINDINGS . SUBST)'."
 (defun tl-infer-define-clauses (env name clauses)
   "Infer NAME from CLAUSES (list of `(PARAMS . BODY)'); register a scheme."
   (let* ((placeholder (tl-fresh-tvar))
-         (tyenv (tl-env-type-env env)))
+         (tyenv (tl-env-type-env env))
+         (sig (and (gethash name (tl-env-sig-env env))
+                   (gethash name tyenv))))
     (puthash name (tl-tscheme nil placeholder) tyenv)
     (let ((bindings nil))
       (dolist (clause clauses)
@@ -448,7 +450,13 @@ Return `(LOCAL-BINDINGS . SUBST)'."
                           (list (format "Clause of %S has inconsistent type" name))))
                 (setq bindings (cdr u)))))))
       (let ((final (tl-apply-bindings placeholder bindings)))
-        (puthash name (tl-generalize final nil) tyenv)))))
+        (if sig
+            (let ((u (tl-unify-types final (tl-instantiate sig) nil)))
+              (unless (car u)
+                (signal 'termlisp-type-error
+                        (list (format "Definition of %S does not match its signature" name))))
+              (puthash name sig tyenv))
+          (puthash name (tl-generalize final nil) tyenv))))))
 
 (defun tl-syntactic-value-p (expr)
   "Return non-nil if EXPR is a syntactic value (value restriction)."
@@ -467,10 +475,11 @@ Return `(LOCAL-BINDINGS . SUBST)'."
       ty)))
 
 (defun tl-register-signature (env form)
-  "Register a `(: NAME TYPE)' signature in ENV (type checked in Task 7)."
+  "Register a `(: NAME TYPE)' signature in ENV."
   (let ((name (cadr form))
         (sc (tl-type-parse-scheme (caddr form))))
     (puthash name sc (tl-env-type-env env))
+    (puthash name t (tl-env-sig-env env))
     name))
 
 (defun tl-typecheck-define (env form)
@@ -500,6 +509,17 @@ Return `(LOCAL-BINDINGS . SUBST)'."
   "Typecheck all top-level forms in STRING into ENV.  Return ENV."
   (dolist (form (termlisp-parse string) env)
     (tl-typecheck-form env form)))
+
+(defun termlisp-typecheck (string &optional env)
+  "Typecheck STRING in ENV (fresh if nil).  Return ENV; signal on error."
+  (let ((env (or env (termlisp-make-env))))
+    (termlisp-typecheck-def env string)))
+
+(defun termlisp-typecheck-file (file &optional env)
+  "Typecheck the contents of FILE in ENV."
+  (termlisp-typecheck
+   (with-temp-buffer (insert-file-contents file) (buffer-string))
+   env))
 
 (provide 'termlisp-types)
 ;;; termlisp-types.el ends here

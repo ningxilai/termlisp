@@ -24,6 +24,7 @@
   (datatypes (make-hash-table :test #'eq))
   (constructors (make-hash-table :test #'eq))
   (type-env (make-hash-table :test #'eq))
+  (sig-env (make-hash-table :test #'eq))
   (clauses (make-hash-table :test #'eq))
   (globals nil)
   (options termlisp-default-options))

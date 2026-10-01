@@ -315,6 +315,10 @@ constructor argument types are parsed and their schemes registered."
          (termlisp--current-env env)
          (result nil))
     (dolist (form (termlisp-parse string) result)
+      (when (and (tl-env-option env :type-check)
+                 (not (and (consp form)
+                           (memq (car form) '(datatype datatype-extension)))))
+        (tl-typecheck-form env form))
       (setq result (tl-eval-top env form)))))
 
 (defun termlisp-eval-file (file &optional env)
