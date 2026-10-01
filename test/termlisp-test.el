@@ -917,8 +917,32 @@
 (ert-deftest signature/checked ()
   (let ((env (termlisp-make-env)))
     (termlisp-typecheck-def env "(: id (a -> a))")
+    (let ((sig (gethash 'id (tl-env-type-env env))))
+      (termlisp-typecheck-def env "(define (id x) x)")
+      (should (eq (gethash 'id (tl-env-type-env env)) sig)))))
+
+(ert-deftest signature/under-general-rejected ()
+  "A definition less general than its signature must be rejected."
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(datatype Nat (Zero) (Succ Nat))")
+    (termlisp-typecheck-def env "(: f (a -> a))")
+    (should-error (termlisp-typecheck-def env "(define (f x) 5)")
+                  :type 'termlisp-type-error)
+    (should-error (termlisp-typecheck-def env "(: g (a -> a)) (define (g x) (Succ x))")
+                  :type 'termlisp-type-error)))
+
+(ert-deftest signature/specialization-ok ()
+  "A definition more general than its signature is accepted."
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(: id (Int -> Int))")
     (termlisp-typecheck-def env "(define (id x) x)")
     (should (gethash 'id (tl-env-type-env env)))))
+
+(ert-deftest signature/constant-mismatch ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(: c Int)")
+    (should-error (termlisp-typecheck-def env "(define c \"hello\")")
+                  :type 'termlisp-type-error)))
 
 (ert-deftest signature/mismatch ()
   (let ((env (termlisp-make-env)))

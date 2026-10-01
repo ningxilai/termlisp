@@ -189,6 +189,12 @@ application."
         (tl-type-subst (tl-tscheme-type scheme) sub))
     scheme))
 
+(defun tl-skolemize-scheme (scheme)
+  "Replace SCHEME's quantified variables with rigid type constants."
+  (tl-type-subst (tl-tscheme-type scheme)
+                 (mapcar (lambda (v) (cons v (tl-tcon (gensym "sk") nil)))
+                         (tl-tscheme-vars scheme))))
+
 (defun tl-compose-bindings (b1 b2)
   "Compose substitutions B1 and B2 (apply B2 after B1).
 Result is first-wins for `tl-deref' (assq); duplicate keys from B2 and
@@ -451,7 +457,7 @@ Return `(LOCAL-BINDINGS . SUBST)'."
                 (setq bindings (cdr u)))))))
       (let ((final (tl-apply-bindings placeholder bindings)))
         (if sig
-            (let ((u (tl-unify-types final (tl-instantiate sig) nil)))
+            (let ((u (tl-unify-types final (tl-skolemize-scheme sig) nil)))
               (unless (car u)
                 (signal 'termlisp-type-error
                         (list (format "Definition of %S does not match its signature" name))))
@@ -467,12 +473,20 @@ Return `(LOCAL-BINDINGS . SUBST)'."
   "Infer a constant binding NAME = EXPR."
   (let ((r (tl-infer (cons nil env) expr)))
     (let ((ty (tl-apply-bindings (car r) (cdr r))))
-      (puthash name
-               (if (tl-syntactic-value-p expr)
-                   (tl-generalize ty nil)
-                 (tl-tscheme nil ty))
-               (tl-env-type-env env))
-      ty)))
+      (if (gethash name (tl-env-sig-env env))
+          (let* ((sig (gethash name (tl-env-type-env env)))
+                 (u (tl-unify-types ty (tl-skolemize-scheme sig) nil)))
+            (unless (car u)
+              (signal 'termlisp-type-error
+                      (list (format "Definition of %S does not match its signature" name))))
+            (puthash name sig (tl-env-type-env env))
+            ty)
+        (puthash name
+                 (if (tl-syntactic-value-p expr)
+                     (tl-generalize ty nil)
+                   (tl-tscheme nil ty))
+                 (tl-env-type-env env))
+        ty))))
 
 (defun tl-register-signature (env form)
   "Register a `(: NAME TYPE)' signature in ENV."
