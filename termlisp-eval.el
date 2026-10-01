@@ -15,6 +15,7 @@
 (require 'termlisp-machine)
 (require 'termlisp-pattern)
 (require 'termlisp-builtins)
+(require 'termlisp-types)
 
 (defvar termlisp--current-env nil
   "Dynamically bound evaluation context during `tl-run'.")
@@ -270,6 +271,7 @@
              (tl-env-datatypes env))
     (dolist (ctor ctors)
       (puthash (car ctor) name (tl-env-constructors env)))
+    (tl-register-datatype-types env name ctors)
     name))
 
 (defun tl-eval-datatype-extension (env form)
@@ -287,6 +289,7 @@
              (tl-env-datatypes env))
     (dolist (ctor ctors)
       (puthash (car ctor) name (tl-env-constructors env)))
+    (tl-register-datatype-types env name ctors)
     name))
 
 (defun tl-eval-top (env form)

@@ -18,7 +18,7 @@
 ;; modules exist.
 (dolist (feature '(termlisp-base termlisp-reader termlisp-unify
                    termlisp-machine termlisp-pattern termlisp-builtins
-                   termlisp-eval))
+                   termlisp-types termlisp-eval))
   (require feature nil t))
 
 (defun termlisp-typecheck (string &optional env)

@@ -198,5 +198,22 @@ self-bindings are removed."
     (cl-remove-if (lambda (cell) (eq (car cell) (cdr cell)))
                   (append composed rest))))
 
+(defun tl-register-datatype-types (env name ctors)
+  "Register constructor type schemes for datatype NAME with CTORS.
+Each CTOR is `(CON ARGTYPE...)'.  Lowercase symbols in ARGTYPE are type
+parameters of NAME; argument order is preserved."
+  (let* ((tl-type-parse-vars nil)
+         (ctor-args (mapcar (lambda (ctor)
+                              (cons (car ctor) (mapcar #'tl-type-parse* (cdr ctor))))
+                            ctors))
+         (params (mapcar #'cdr (reverse tl-type-parse-vars)))
+         (result (tl-tcon name params)))
+    (dolist (ca ctor-args)
+      (let ((ty result))
+        (dolist (argty (reverse (cdr ca)))
+          (setq ty (tl-tarrow argty ty)))
+        (puthash (car ca) (tl-tscheme params ty)
+                 (tl-env-type-env env))))))
+
 (provide 'termlisp-types)
 ;;; termlisp-types.el ends here

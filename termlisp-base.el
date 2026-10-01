@@ -23,6 +23,7 @@
   (functions (make-hash-table :test #'eq))
   (datatypes (make-hash-table :test #'eq))
   (constructors (make-hash-table :test #'eq))
+  (type-env (make-hash-table :test #'eq))
   (globals nil)
   (options termlisp-default-options))
 
