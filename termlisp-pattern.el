@@ -100,9 +100,12 @@ Return `(ok . bindings)'.  CTX provides force/lit-eval/guard-eval/lambda-value."
     (while (and pats ok)
       (let ((pat (car pats)))
         (if (eq (car pat) 'rest)
-            (progn
-              (setq bindings (cons (cons (cdr pat) values) bindings))
-              (setq pats nil values nil))
+            (if (cdr pats)
+                (signal 'termlisp-error
+                        (list (format "`:list' pattern must be last: %S" pats)))
+              (progn
+                (setq bindings (cons (cons (cdr pat) values) bindings))
+                (setq pats nil values nil)))
           (if (null values)
               (setq ok nil)
             (let ((r (tl-match pat (car values) bindings ctx)))

@@ -243,5 +243,47 @@
     (should (car (tl-match p 'False nil (tl-test-ctx))))
     (should-not (tl-match p 'Other nil (tl-test-ctx)))))
 
+(ert-deftest pattern/match-and ()
+  (should (car (tl-match (tl-pattern-parse '(and (Pair a b) (Pair a b)))
+                         '(Pair 1 2) nil (tl-test-ctx))))
+  (should-not (tl-match (tl-pattern-parse '(and (Pair a b) a))
+                        '(Pair 1 2) nil (tl-test-ctx))))
+
+(ert-deftest pattern/match-lambda ()
+  (let* ((p (tl-pattern-parse '(:lambda f)))
+         (r (tl-match p 'some-fn nil (tl-test-ctx))))
+    (should (car r))
+    (should (eq (cdr (assq 'f (cdr r))) 'some-fn))))
+
+(ert-deftest pattern/guard-sees-bindings ()
+  "The guard expression is evaluated with the sub-pattern's bindings."
+  (let ((ctx (tl-make-match-ctx
+              :force #'identity :lit-eval #'identity
+              :guard-eval (lambda (e b) (cdr (assq e b)))
+              :lambda-value #'identity)))
+    (should (car (tl-match (tl-pattern-parse '(guard x x)) 'True nil ctx)))
+    (should-not (tl-match (tl-pattern-parse '(guard x x)) 'False nil ctx))))
+
+(ert-deftest pattern/match-seq-arity ()
+  (let ((p (list (tl-pattern-parse 'a) (tl-pattern-parse 'b))))
+    (should-not (tl-match-seq p '(1) nil (tl-test-ctx)))
+    (should-not (tl-match-seq p '(1 2 3) nil (tl-test-ctx)))
+    (should (car (tl-match-seq p '(1 2) nil (tl-test-ctx))))))
+
+(ert-deftest pattern/rest-must-be-last ()
+  (should-error
+   (tl-match-seq (list (tl-pattern-parse '(:list r)) (tl-pattern-parse 'x))
+                 '(1 2 3) nil (tl-test-ctx))
+   :type 'termlisp-error))
+
+(ert-deftest pattern/or-no-binding-leak ()
+  "A failed `or' alternative must not leak its bindings into the next."
+  (let* ((p (tl-pattern-parse '(or (Pair a (True)) (Pair b c))))
+         (r (tl-match p '(Pair 1 2) nil (tl-test-ctx))))
+    (should (car r))
+    (should (null (assq 'a (cdr r))))
+    (should (equal (cdr (assq 'b (cdr r))) 1))
+    (should (equal (cdr (assq 'c (cdr r))) 2))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
