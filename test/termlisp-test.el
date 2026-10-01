@@ -633,5 +633,39 @@
          (r (tl-unify-types a (tl-tcon 'List (list b)) b1)))
     (should (null (car r)))))
 
+(ert-deftest type/parse-atom ()
+  (should (equal (tl-type-parse 'Int) (tl-tint)))
+  (should (equal (tl-tcon-name (tl-type-parse 'Int)) 'Int)))
+
+(ert-deftest type/parse-arrow ()
+  (let ((ty (tl-type-parse '(a -> a))))
+    (should (tl-tcon-p ty))
+    (should (eq (tl-tcon-name ty) '->))
+    (let ((args (tl-tcon-args ty)))
+      (should (eq (nth 0 args) (nth 1 args))))))
+
+(ert-deftest type/parse-arrow-right-assoc ()
+  (let* ((ty (tl-type-parse '(a -> b -> c)))
+         (args (tl-tcon-args ty)))
+    (should (tl-tcon-p (nth 1 args)))
+    (should (eq (tl-tcon-name (nth 1 args)) '->))))
+
+(ert-deftest type/parse-application ()
+  (let* ((ty (tl-type-parse '(List a)))
+         (args (tl-tcon-args ty)))
+    (should (eq (tl-tcon-name ty) 'List))
+    (should (tl-tvar-p (nth 0 args)))))
+
+(ert-deftest type/parse-scheme ()
+  (let ((sc (tl-type-parse-scheme '(a -> a))))
+    (should (tl-tscheme-p sc))
+    (should (= (length (tl-tscheme-vars sc)) 1))))
+
+(ert-deftest type/free-tvars ()
+  (let* ((a (tl-fresh-tvar))
+         (ty (tl-tarrow a (tl-tint))))
+    (should (memq a (tl-free-tvars ty)))
+    (should (= (length (tl-free-tvars ty)) 1))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

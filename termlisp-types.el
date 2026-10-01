@@ -74,5 +74,73 @@ On failure returns `(nil . nil)'."
          (t (setq ok nil)))))
     (if ok (cons t bindings) (cons nil nil))))
 
+(defvar tl-type-parse-vars nil
+  "Alist of type-variable symbols to type variables, bound during parsing.")
+
+(defun tl-type-var-symbol-p (sym)
+  "Return non-nil if SYM is a type variable (lowercase-initial)."
+  (and (symbolp sym)
+       (> (length (symbol-name sym)) 0)
+       (let ((case-fold-search nil))
+         (string-match-p "\\`[a-z]" (symbol-name sym)))))
+
+(defun tl-split-arrow (sexp)
+  "Split SEXP on `->' into its component type expressions."
+  (let ((parts nil) (cur nil))
+    (dolist (x sexp)
+      (if (eq x '->)
+          (progn (push (nreverse cur) parts) (setq cur nil))
+        (push x cur)))
+    (push (nreverse cur) parts)
+    (nreverse parts)))
+
+(defun tl-type-parse-segment (segment)
+  "Parse SEGMENT, one arrow operand's token list, into a type.
+A single-token SEGMENT is that token; otherwise it is a constructor
+application."
+  (if (cdr segment)
+      (tl-tcon (car segment) (mapcar #'tl-type-parse (cdr segment)))
+    (tl-type-parse (car segment))))
+
+(defun tl-type-parse-arrow (parts)
+  "Parse PARTS as a right-associative arrow chain."
+  (if (null (cdr parts))
+      (tl-type-parse-segment (car parts))
+    (tl-tarrow (tl-type-parse-segment (car parts))
+               (tl-type-parse-arrow (cdr parts)))))
+
+(defun tl-type-parse (sexp)
+  "Parse surface type expression SEXP into a type.
+Lowercase-initial symbols are type variables, shared via
+`tl-type-parse-vars'."
+  (cond
+   ((tl-type-var-symbol-p sexp)
+    (let ((cell (assq sexp tl-type-parse-vars)))
+      (if cell (cdr cell)
+        (let ((tv (tl-fresh-tvar)))
+          (push (cons sexp tv) tl-type-parse-vars)
+          tv))))
+   ((symbolp sexp) (tl-tcon sexp nil))
+   ((and (consp sexp) (memq '-> sexp))
+    (tl-type-parse-arrow (tl-split-arrow sexp)))
+   ((consp sexp)
+    (tl-tcon (car sexp) (mapcar #'tl-type-parse (cdr sexp))))
+   (t (signal 'termlisp-type-error (list (format "Bad type: %S" sexp))))))
+
+(defun tl-free-tvars (type)
+  "Return the list of type variables occurring in TYPE."
+  (let ((acc nil))
+    (cl-labels ((walk (node)
+                  (cond ((tl-tvar-p node) (cl-pushnew node acc :test #'eq))
+                        ((tl-tcon-p node) (mapc #'walk (tl-tcon-args node))))))
+      (walk type))
+    acc))
+
+(defun tl-type-parse-scheme (sexp)
+  "Parse SEXP into a type scheme, quantifying its free variables."
+  (let* ((tl-type-parse-vars nil)
+         (ty (tl-type-parse sexp)))
+    (tl-tscheme (tl-free-tvars ty) ty)))
+
 (provide 'termlisp-types)
 ;;; termlisp-types.el ends here
