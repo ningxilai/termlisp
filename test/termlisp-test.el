@@ -1285,5 +1285,35 @@
     (should (eq (termlisp-eval "((monad-fmap ReaderDict (lambda (x) x) (reader-ask)) cfg)" env)
                 'cfg))))
 
+(ert-deftest class/prelude-instances ()
+  "The prelude declares Functor/Applicative/Monad with Maybe/List/State/Reader instances."
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-file
+     (expand-file-name "termlisp-prelude.tlsp" termlisp--directory) env)
+    (dolist (c '(Functor Applicative Monad))
+      (should (gethash c (tl-env-class-env env)))
+      (let ((types (mapcar (lambda (i)
+                             (tl-tcon-name (tl-as-tcon (tl-instance-head i))))
+                           (gethash c (tl-env-instance-env env)))))
+        (dolist (ty '(Maybe List State Reader))
+          (should (memq ty types)))))))
+
+(ert-deftest elaborate/method-dictionary-passing ()
+  (let ((env (termlisp-load-prelude (termlisp-make-env '(:elaborate t)))))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(fmap (lambda (x) (+ x 1)) (Just 4))" env))
+                   "(Just 5)"))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval
+                     "(fmap (lambda (x) (+ x 1)) (Cons 1 (Cons 2 Nil)))" env))
+                   "(Cons 2 (Cons 3 Nil))"))))
+
+(ert-deftest elaborate/bind-return ()
+  (let ((env (termlisp-load-prelude (termlisp-make-env '(:elaborate t)))))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval
+                     "(bind (Just 1) (lambda (x) (return (+ x 1))))" env))
+                   "(Just 2)"))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

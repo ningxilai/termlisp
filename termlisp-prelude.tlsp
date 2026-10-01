@@ -80,3 +80,43 @@
 (define ReaderDict (MonadDict reader-bind reader-return reader-fmap))
 (define (reader-ask) (lambda (r) r))
 (define run-reader (lambda (m) m))
+
+;; Type classes (Plan 4: dictionary-passing elaboration)
+;;
+;; A dictionary is one record per class.  The generic methods below take
+;; the dictionary as an extra first argument; the elaborator inserts it
+;; automatically at each overloaded call site.  The `monad-*' accessors
+;; above keep working unchanged (they receive the dictionary explicitly).
+
+(datatype FunctorDict (FunctorDict fmap))
+
+(class Functor (f) nil
+  (fmap ((-> a b) -> (f a) -> (f b))))
+(class Applicative (f) nil
+  (pure (a -> (f a)))
+  (ap ((f (-> a b)) -> (f a) -> (f b))))
+(class Monad (m) nil
+  (bind ((m a) -> (-> a (m b)) -> (m b)))
+  (return (a -> (m a))))
+
+(define (fmap (FunctorDict impl) g x) (impl g x))
+(define (bind (MonadDict b r f) m k) (b m k))
+(define (return (MonadDict b r f) x) (r x))
+
+(define FunctorMaybeDict (FunctorDict maybe-fmap))
+(define FunctorListDict (FunctorDict list-fmap))
+(define FunctorStateDict (FunctorDict state-fmap))
+(define FunctorReaderDict (FunctorDict reader-fmap))
+
+(instance (Functor Maybe) FunctorMaybeDict)
+(instance (Functor List) FunctorListDict)
+(instance (Functor State) FunctorStateDict)
+(instance (Functor Reader) FunctorReaderDict)
+(instance (Applicative Maybe))
+(instance (Applicative List))
+(instance (Applicative State))
+(instance (Applicative Reader))
+(instance (Monad Maybe) MaybeDict)
+(instance (Monad List) ListDict)
+(instance (Monad State) StateDict)
+(instance (Monad Reader) ReaderDict)

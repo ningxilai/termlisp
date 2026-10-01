@@ -25,7 +25,8 @@
   vars type (constraints nil))
 (cl-defstruct (tl-constraint (:constructor tl-constraint (class type))) class type)
 (cl-defstruct (tl-cclass (:constructor tl-cclass (name params supers methods))) name params supers methods)
-(cl-defstruct (tl-instance (:constructor tl-instance (class head context methods))) class head context methods)
+(cl-defstruct (tl-instance (:constructor tl-instance (class head context methods &optional dict)))
+  class head context methods dict)
 
 (defun tl-tvar-p (x) (tl-lvar-p x))
 (defun tl-type-p (x) (or (tl-tvar-p x) (tl-tcon-p x)))
@@ -306,6 +307,21 @@ whose type mentions a quantified variable."
 Each element is a `tl-constraint'.  Entry points rebind this to nil so
 that constraints do not leak between top-level forms.")
 
+(defvar tl-elab-active nil
+  "Non-nil while inference should record class-method call sites.
+Bound by the elaborator (see `termlisp-elaborate.el').")
+
+(defvar tl-elab-sites nil
+  "Class-method call sites recorded during inference.
+Each element is `(FORM . CONSTRAINT)', where FORM is the application
+cons cell and CONSTRAINT is the `tl-constraint' emitted for the method.
+Only populated while `tl-elab-active' is non-nil.")
+
+(defvar tl-elab-bindings nil
+  "Final substitution of the most recent inference, for elaboration.
+Set by the define/constant entry points so the elaborator can zonk the
+recorded method-call constraints.")
+
 (defun tl-emit-constraint (c)
   "Record constraint C in the current `tl-infer-constraints'."
   (push c tl-infer-constraints))
@@ -473,11 +489,26 @@ error."
         (setq ty (tl-tarrow pt ty)))
       (cons ty (cdr r)))))
 
+(defun tl-method-scheme-for (env sym)
+  "Return the class-method scheme for SYM in ENV, or nil if not a method.
+A local binding or an ordinary type binding shadows the method."
+  (let ((base (tl-tenv-base env)))
+    (and base
+         (not (assq sym (tl-tenv-locals env)))
+         (gethash sym (tl-env-method-env base)))))
+
 (defun tl-infer-application (env expr)
   "Infer a function application EXPR = (F A1 ... AN)."
   (let* ((head (car expr))
          (args (cdr expr))
-         (rh (tl-infer env head))
+         (msc (and (symbolp head) (tl-method-scheme-for env head)))
+         (rh (if msc
+                 (let ((r (tl-instantiate-scheme msc)))
+                   (dolist (c (cdr r))
+                     (tl-emit-constraint c)
+                     (when tl-elab-active (push (cons expr c) tl-elab-sites)))
+                   (cons (car r) nil))
+               (tl-infer env head)))
          (ftype (car rh))
          (bindings (cdr rh)))
     (dolist (arg args)
@@ -657,13 +688,15 @@ Return `(LOCAL-BINDINGS . SUBST)'."
              (env-tvars (tl-env-free-tvars env))
              (gen-vars (tl-generalized-vars final env-tvars)))
         (if sig
-            (let ((u (tl-unify-types final (tl-skolemize-scheme sig) nil)))
+            (let* ((u (tl-unify-types final (tl-skolemize-scheme sig) nil))
+                   (fb (tl-compose-bindings bindings (cdr u))))
               (unless (car u)
                 (signal 'termlisp-type-error
                         (list (format "Definition of %S does not match its signature" name))))
-              (tl-close-constraints env nil tl-infer-constraints
-                                    (tl-compose-bindings bindings (cdr u)))
+              (setq tl-elab-bindings fb)
+              (tl-close-constraints env nil tl-infer-constraints fb)
               (puthash name sig tyenv))
+          (setq tl-elab-bindings bindings)
           (let ((kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
             (puthash name (tl-generalize final env-tvars kept) tyenv)))))))
 
@@ -679,14 +712,16 @@ Return `(LOCAL-BINDINGS . SUBST)'."
     (let* ((ty (tl-apply-bindings (car r) (cdr r)))
            (bindings (cdr r))
            (env-tvars (tl-env-free-tvars env)))
+      (setq tl-elab-bindings bindings)
       (if (gethash name (tl-env-sig-env env))
           (let* ((sig (gethash name (tl-env-type-env env)))
-                 (u (tl-unify-types ty (tl-skolemize-scheme sig) nil)))
+                 (u (tl-unify-types ty (tl-skolemize-scheme sig) nil))
+                 (fb (tl-compose-bindings bindings (cdr u))))
             (unless (car u)
               (signal 'termlisp-type-error
                       (list (format "Definition of %S does not match its signature" name))))
-            (tl-close-constraints env nil tl-infer-constraints
-                                  (tl-compose-bindings bindings (cdr u)))
+            (setq tl-elab-bindings fb)
+            (tl-close-constraints env nil tl-infer-constraints fb)
             (puthash name sig (tl-env-type-env env))
             ty)
         (if (tl-syntactic-value-p expr)
@@ -706,17 +741,23 @@ Return `(LOCAL-BINDINGS . SUBST)'."
     name))
 
 (defun tl-typecheck-define (env form)
-  "Typecheck a `define' FORM, registering it in ENV."
+  "Typecheck a `define' FORM, registering it in ENV.
+A definition whose name is a class method is skipped: its signature
+comes from the class declaration (registered in `tl-env-method-env'),
+and instance implementations are checked against that signature."
   (let ((target (cadr form)))
-    (if (consp target)
-        (let* ((name (car target))
-               (params (cdr target))
-               (body (caddr form))
-               (clauses (append (gethash name (tl-env-clauses env))
-                                (list (cons params body)))))
-          (puthash name clauses (tl-env-clauses env))
-          (tl-infer-define-clauses env name clauses))
-      (tl-infer-constant env target (caddr form)))))
+    (cond
+     ((and (consp target) (gethash (car target) (tl-env-method-env env)))
+      (car target))
+     ((consp target)
+      (let* ((name (car target))
+             (params (cdr target))
+             (body (caddr form))
+             (clauses (append (gethash name (tl-env-clauses env))
+                              (list (cons params body)))))
+        (puthash name clauses (tl-env-clauses env))
+        (tl-infer-define-clauses env name clauses)))
+     (t (tl-infer-constant env target (caddr form))))))
 
 (defun tl-register-class (env form)
   "Register `(class NAME (PARAM) SUPERS METHOD-DECL...)' in ENV."
@@ -748,11 +789,14 @@ Return `(LOCAL-BINDINGS . SUBST)'."
     name))
 
 (defun tl-register-instance (env form)
-  "Register `(instance (CLASS TYPE))' in ENV (methods defined separately)."
+  "Register `(instance (CLASS TYPE) [DICT])' in ENV.
+The optional DICT is the runtime dictionary value the elaborator inserts
+as the first argument of overloaded method calls."
   (let* ((head (nth 1 form))
          (cname (car head))
          (ty (tl-type-parse (cadr head)))
-         (inst (tl-instance cname ty nil nil)))
+         (dict (nth 2 form))
+         (inst (tl-instance cname ty nil nil dict)))
     (puthash cname (append (gethash cname (tl-env-instance-env env)) (list inst))
              (tl-env-instance-env env))
     cname))
