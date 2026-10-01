@@ -80,6 +80,7 @@ On failure returns `(nil . nil)'."
 (defun tl-type-var-symbol-p (sym)
   "Return non-nil if SYM is a type variable (lowercase-initial)."
   (and (symbolp sym)
+       (not (memq sym '(nil t)))
        (> (length (symbol-name sym)) 0)
        (let ((case-fold-search nil))
          (string-match-p "\\`[a-z]" (symbol-name sym)))))
@@ -89,8 +90,16 @@ On failure returns `(nil . nil)'."
   (let ((parts nil) (cur nil))
     (dolist (x sexp)
       (if (eq x '->)
-          (progn (push (nreverse cur) parts) (setq cur nil))
+          (progn
+            (unless (consp cur)
+              (signal 'termlisp-type-error
+                      (list (format "Malformed arrow type: %S" sexp))))
+            (push (nreverse cur) parts)
+            (setq cur nil))
         (push x cur)))
+    (unless (consp cur)
+      (signal 'termlisp-type-error
+              (list (format "Malformed arrow type: %S" sexp))))
     (push (nreverse cur) parts)
     (nreverse parts)))
 
@@ -99,8 +108,8 @@ On failure returns `(nil . nil)'."
 A single-token SEGMENT is that token; otherwise it is a constructor
 application."
   (if (cdr segment)
-      (tl-tcon (car segment) (mapcar #'tl-type-parse (cdr segment)))
-    (tl-type-parse (car segment))))
+      (tl-tcon (car segment) (mapcar #'tl-type-parse* (cdr segment)))
+    (tl-type-parse* (car segment))))
 
 (defun tl-type-parse-arrow (parts)
   "Parse PARTS as a right-associative arrow chain."
@@ -109,10 +118,8 @@ application."
     (tl-tarrow (tl-type-parse-segment (car parts))
                (tl-type-parse-arrow (cdr parts)))))
 
-(defun tl-type-parse (sexp)
-  "Parse surface type expression SEXP into a type.
-Lowercase-initial symbols are type variables, shared via
-`tl-type-parse-vars'."
+(defun tl-type-parse* (sexp)
+  "Parse SEXP, sharing type variables via `tl-type-parse-vars'."
   (cond
    ((tl-type-var-symbol-p sexp)
     (let ((cell (assq sexp tl-type-parse-vars)))
@@ -124,8 +131,13 @@ Lowercase-initial symbols are type variables, shared via
    ((and (consp sexp) (memq '-> sexp))
     (tl-type-parse-arrow (tl-split-arrow sexp)))
    ((consp sexp)
-    (tl-tcon (car sexp) (mapcar #'tl-type-parse (cdr sexp))))
+    (tl-tcon (car sexp) (mapcar #'tl-type-parse* (cdr sexp))))
    (t (signal 'termlisp-type-error (list (format "Bad type: %S" sexp))))))
+
+(defun tl-type-parse (sexp)
+  "Parse surface type expression SEXP into a type."
+  (let ((tl-type-parse-vars nil))
+    (tl-type-parse* sexp)))
 
 (defun tl-free-tvars (type)
   "Return the list of type variables occurring in TYPE."
@@ -138,8 +150,7 @@ Lowercase-initial symbols are type variables, shared via
 
 (defun tl-type-parse-scheme (sexp)
   "Parse SEXP into a type scheme, quantifying its free variables."
-  (let* ((tl-type-parse-vars nil)
-         (ty (tl-type-parse sexp)))
+  (let ((ty (tl-type-parse sexp)))
     (tl-tscheme (tl-free-tvars ty) ty)))
 
 (provide 'termlisp-types)

@@ -667,5 +667,22 @@
     (should (memq a (tl-free-tvars ty)))
     (should (= (length (tl-free-tvars ty)) 1))))
 
+(ert-deftest type/parse-malformed ()
+  (should-error (tl-type-parse '(a ->)) :type 'termlisp-type-error)
+  (should-error (tl-type-parse '(-> a)) :type 'termlisp-type-error)
+  (should-error (tl-type-parse '(->)) :type 'termlisp-type-error)
+  (should-error (tl-type-parse 42) :type 'termlisp-type-error))
+
+(ert-deftest type/parse-independent ()
+  "Separate parses must not share type variables."
+  (let* ((t1 (tl-type-parse '(a -> a)))
+         (t2 (tl-type-parse '(a -> a))))
+    (should-not (eq (nth 0 (tl-tcon-args t1)) (nth 0 (tl-tcon-args t2))))))
+
+(ert-deftest type/parse-case-sensitive ()
+  (should (tl-tcon-p (tl-type-parse 'A)))
+  (should (eq (tl-tcon-name (tl-type-parse 'A)) 'A))
+  (should (tl-tvar-p (tl-type-parse 'a))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
