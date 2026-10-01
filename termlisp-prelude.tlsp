@@ -89,6 +89,7 @@
 ;; above keep working unchanged (they receive the dictionary explicitly).
 
 (datatype FunctorDict (FunctorDict fmap))
+(datatype ApplicativeDict (ApplicativeDict pure ap))
 
 (class Functor (f) nil
   (fmap ((-> a b) -> (f a) -> (f b))))
@@ -102,20 +103,46 @@
 (define (fmap (FunctorDict impl) g x) (impl g x))
 (define (bind (MonadDict b r f) m k) (b m k))
 (define (return (MonadDict b r f) x) (r x))
+(define (pure (ApplicativeDict p a) x) (p x))
+(define (ap (ApplicativeDict p a) mf mx) (a mf mx))
 
 (define FunctorMaybeDict (FunctorDict maybe-fmap))
 (define FunctorListDict (FunctorDict list-fmap))
 (define FunctorStateDict (FunctorDict state-fmap))
 (define FunctorReaderDict (FunctorDict reader-fmap))
 
+;; Applicative instance implementations
+(define (maybe-pure x) (Just x))
+(define (maybe-ap Nothing _) Nothing)
+(define (maybe-ap (Just f) Nothing) Nothing)
+(define (maybe-ap (Just f) (Just x)) (Just (f x)))
+
+(define (list-pure x) (Cons x Nil))
+(define (list-ap Nil _) Nil)
+(define (list-ap (Cons f fs) xs)
+  (list-append (list-fmap f xs) (list-ap fs xs)))
+
+(define (state-pure v) (lambda (s) (Pair v s)))
+(define (state-ap mf mx) (lambda (s) (state-ap-run (mf s) mx)))
+(define (state-ap-run (Pair f s1) mx) (state-ap-run2 f (mx s1)))
+(define (state-ap-run2 f (Pair x s2)) (Pair (f x) s2))
+
+(define (reader-pure v) (lambda (r) v))
+(define (reader-ap mf mx) (lambda (r) ((mf r) (mx r))))
+
+(define ApplicativeMaybeDict (ApplicativeDict maybe-pure maybe-ap))
+(define ApplicativeListDict (ApplicativeDict list-pure list-ap))
+(define ApplicativeStateDict (ApplicativeDict state-pure state-ap))
+(define ApplicativeReaderDict (ApplicativeDict reader-pure reader-ap))
+
 (instance (Functor Maybe) FunctorMaybeDict)
 (instance (Functor List) FunctorListDict)
 (instance (Functor State) FunctorStateDict)
 (instance (Functor Reader) FunctorReaderDict)
-(instance (Applicative Maybe))
-(instance (Applicative List))
-(instance (Applicative State))
-(instance (Applicative Reader))
+(instance (Applicative Maybe) ApplicativeMaybeDict)
+(instance (Applicative List) ApplicativeListDict)
+(instance (Applicative State) ApplicativeStateDict)
+(instance (Applicative Reader) ApplicativeReaderDict)
 (instance (Monad Maybe) MaybeDict)
 (instance (Monad List) ListDict)
 (instance (Monad State) StateDict)

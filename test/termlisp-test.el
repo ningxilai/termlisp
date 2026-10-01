@@ -1340,5 +1340,20 @@
                      "(bind (Just 1) (lambda (x) (return (+ x 1))))" env))
                    "(Just 2)"))))
 
+(ert-deftest elaborate/applicative ()
+  "Applicative methods resolve to their instance dictionaries.
+A bare `(pure 3)' is ambiguous (its applicative is unconstrained), so
+the test fixes the type to Maybe with a signature-annotated binding."
+  (let ((env (termlisp-make-env '(:elaborate t))))
+    (termlisp-load-prelude env)
+    (should (equal (termlisp-value->string
+                    (termlisp-eval
+                     "(: p3 (Maybe Int)) (define p3 (pure 3)) p3" env))
+                   "(Just 3)"))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval
+                     "(ap (Just (lambda (x) (+ x 1))) (Just 4))" env))
+                   "(Just 5)"))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
