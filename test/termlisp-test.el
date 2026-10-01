@@ -1517,5 +1517,17 @@ the test fixes the type to Maybe with a signature-annotated binding."
                            "(Succ (Succ Zero))"))))
       (delete-file file))))
 
+(ert-deftest load/auto-magic-string ()
+  (let ((file (make-temp-file "termlisp-magic-" nil ".tls")))
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert "(datatype Nat (Zero) (Succ Nat))\n"))
+          (should-not (string-prefix-p termlisp--magic-string
+                                       (with-temp-buffer (insert-file-contents file) (buffer-string))))
+          (termlisp-load file)
+          (should (string-prefix-p termlisp--magic-string
+                                   (with-temp-buffer (insert-file-contents file) (buffer-string)))))
+      (delete-file file))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

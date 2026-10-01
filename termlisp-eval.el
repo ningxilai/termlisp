@@ -26,6 +26,10 @@
 Defined in `termlisp-load.el'; declared here so `termlisp-load-prelude'
 byte-compiles without a free-variable warning.")
 
+(defconst termlisp--magic-string
+  ";;; -*- lexical-binding: t; mode: emacs-lisp; -*-"
+  "First-line magic string marking a term-lisp (.tls) source file.")
+
 ;;; Thunks ---------------------------------------------------------------
 
 (defun tl-force (value)
@@ -400,12 +404,33 @@ known limitation."
     (dolist (form (termlisp-parse string) result)
       (setq result (termlisp-eval-form form env)))))
 
+(defun termlisp--ensure-magic-string (file)
+  "Ensure FILE begins with `termlisp--magic-string', inserting it if absent.
+Writes the file back only when the magic string is missing."
+  (when (and (file-readable-p file) (file-writable-p file))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (unless (looking-at-p (regexp-quote termlisp--magic-string))
+        (goto-char (point-min))
+        (insert termlisp--magic-string "\n")
+        (write-region (point-min) (point-max) file nil 'silent)))))
+
 (defun termlisp-eval-file (file &optional env)
   "Evaluate the contents of FILE in ENV."
+  (termlisp--ensure-magic-string file)
   (termlisp-eval (with-temp-buffer
                    (insert-file-contents file)
                    (buffer-string))
                  env))
+
+(defun termlisp-load (file &optional env)
+  "Load a `.tls' FILE into ENV (or a fresh env), ensuring its magic string.
+Returns ENV."
+  (termlisp--ensure-magic-string file)
+  (let ((termlisp--load-env (or env (termlisp-make-env))))
+    (load (expand-file-name file) nil t)
+    termlisp--load-env))
 
 (defconst termlisp--directory
   (file-name-directory (or load-file-name buffer-file-name))
@@ -415,8 +440,10 @@ known limitation."
   "Load the bundled prelude into ENV (or a fresh env) and return it.
 Loading goes through `load', so `termlisp-load' must be required for the
 `datatype'/`define'/`class'/`instance' macros to be defined."
-  (let ((termlisp--load-env (or env (termlisp-make-env))))
-    (load (expand-file-name "termlisp-prelude.tls" termlisp--directory) nil t)
+  (let ((termlisp--load-env (or env (termlisp-make-env)))
+        (file (expand-file-name "termlisp-prelude.tls" termlisp--directory)))
+    (termlisp--ensure-magic-string file)
+    (load file nil t)
     termlisp--load-env))
 
 (provide 'termlisp-eval)

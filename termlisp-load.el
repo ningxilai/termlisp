@@ -13,10 +13,10 @@
 ;; `.tls' files; while it is loaded those names are reserved and must not be
 ;; used for ordinary elisp definitions.
 ;;
-;; The trailing file-local variable block (`mode: emacs-lisp') in a `.tls'
-;; file is for editing only.  `load' does not process file-local variables,
-;; so the block has no effect on evaluation; it just opens `.tls' files in
-;; `emacs-lisp-mode'.
+;; A `.tls' file starts with a magic string (see
+;; `termlisp--magic-string') that opens it in `emacs-lisp-mode' with
+;; lexical binding.  `load' does not process the file-local variable part
+;; of the magic string, so it has no effect on evaluation.
 
 ;;; Code:
 
