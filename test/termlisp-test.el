@@ -1714,5 +1714,16 @@ the test fixes the type to Maybe with a signature-annotated binding."
   (let ((r (tl-make-grule 'q :normalize 0 '(:quit) '(:done))))
     (should (equal (tl-graph-rewrite-sexp '(:quit) (list r)) '(:done)))))
 
+(ert-deftest graph/quote-is-opaque ()
+  "A rule must not rewrite inside a quoted subterm."
+  (let ((r (tl-make-grule 'g :normalize 0 '(:global $k $c) '(:bind $k $c))))
+    (should (equal (tl-graph-rewrite-sexp '(f (quote (:global a b))) (list r))
+                   '(f (quote (:global a b)))))))
+
+(ert-deftest graph/function-is-opaque ()
+  (let ((r (tl-make-grule 'g :normalize 0 '(a) '(b))))
+    (should (equal (tl-graph-rewrite-sexp '(function (a)) (list r))
+                   '(function (a))))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
