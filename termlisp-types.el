@@ -18,6 +18,7 @@
 
 (declare-function tl-eval-datatype "termlisp-eval" (env form))
 (declare-function tl-eval-datatype-extension "termlisp-eval" (env form))
+(declare-function tl-desugar-do "termlisp-eval" (form))
 
 (cl-defstruct (tl-tcon (:constructor tl-tcon (name args))) name args)
 (cl-defstruct (tl-tscheme (:constructor tl-tscheme (vars type))) vars type)
@@ -300,6 +301,8 @@ error."
    ((symbolp expr) (tl-infer-symbol env expr))
    ((and (consp expr) (eq (car expr) 'lambda))
     (tl-infer-lambda env (cadr expr) (caddr expr)))
+   ((and (consp expr) (eq (car expr) 'do))
+    (tl-infer env (tl-desugar-do expr)))
    ((consp expr) (tl-infer-application env expr))
    (t (signal 'termlisp-type-error (list (format "Cannot infer: %S" expr))))))
 

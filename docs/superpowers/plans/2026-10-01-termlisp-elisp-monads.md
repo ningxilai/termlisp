@@ -394,4 +394,7 @@ git commit -m "test: add monad law tests"
 
 **Known deferrals:** phase-A type-class inference of the monad operand (Plan 4); `Monoid` instances; evaluator-on-cats refactor; `do` for the `Reader`/`State` type-level (untyped phase B).
 
+- `MonadDict` does not yet carry `apply`/`pure` (Applicative) — deferred to Plan 4.
+- The spec surface `(do Maybe ...)` / `return` / `>>=` maps in phase B to `(do MaybeDict ...)` / `monad-return` / `monad-bind`; Plan 4's elaborator will provide the sugar.
+
 **Type/name consistency:** `MonadDict` (bind/return/fmap), `monad-bind`/`monad-return`/`monad-fmap`, instance dictionaries `MaybeDict`/`ListDict`/`StateDict`/`ReaderDict`.

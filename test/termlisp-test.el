@@ -986,6 +986,14 @@
              (expand-file-name "termlisp-prelude.tlsp" termlisp--directory)
              env))))
 
+(ert-deftest typecheck/do ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-file
+     (expand-file-name "termlisp-prelude.tlsp" termlisp--directory) env)
+    (should (termlisp-typecheck "(do MaybeDict (x <- (Just 1)) (return (+ x 1)))" env))
+    (should-error (termlisp-typecheck "(do MaybeDict (x <- (Just 1)) (return (+ x \"s\")))" env)
+                  :type 'termlisp-type-error)))
+
 (ert-deftest api/eval-with-type-check ()
   (let ((env (termlisp-make-env '(:type-check t))))
     (should (equal (termlisp-eval "(define (id x) x) (id 42)" env) 42))
@@ -1169,7 +1177,12 @@
                    "(Cons 5 (Cons 5 Nil))"))
     (should (equal (termlisp-value->string
                     (termlisp-eval "(monad-bind ListDict (Cons 1 (Cons 2 Nil)) (lambda (x) (monad-return ListDict x)))" env))
-                   "(Cons 1 (Cons 2 Nil))"))))
+                   "(Cons 1 (Cons 2 Nil))"))
+    ;; associativity
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(monad-bind ListDict (monad-bind ListDict (Cons 1 (Cons 2 Nil)) (lambda (x) (Cons x (Cons (* x 10) Nil)))) (lambda (y) (Cons (+ y 1) Nil)))" env))
+                   (termlisp-value->string
+                    (termlisp-eval "(monad-bind ListDict (Cons 1 (Cons 2 Nil)) (lambda (x) (monad-bind ListDict (Cons x (Cons (* x 10) Nil)) (lambda (y) (Cons (+ y 1) Nil)))))" env))))))
 
 (ert-deftest monad-laws/state ()
   (let ((env (termlisp-load-prelude)))
@@ -1178,6 +1191,16 @@
                     (termlisp-eval "((monad-bind StateDict (state-put 3) (lambda (x) (monad-return StateDict x))) 7)" env))
                    (termlisp-value->string
                     (termlisp-eval "((state-put 3) 7)" env))))
+    ;; left identity: bind (return a) f = f a
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "((monad-bind StateDict (monad-return StateDict 5) (lambda (x) (state-put (+ x 1)))) 0)" env))
+                   (termlisp-value->string
+                    (termlisp-eval "(((lambda (x) (state-put (+ x 1))) 5) 0)" env))))
+    ;; associativity
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "((monad-bind StateDict (monad-bind StateDict (state-put 1) (lambda (x) (state-return x))) (lambda (y) (state-return y))) 0)" env))
+                   (termlisp-value->string
+                    (termlisp-eval "((monad-bind StateDict (state-put 1) (lambda (x) (monad-bind StateDict (state-return x) (lambda (y) (state-return y))))) 0)" env))))
     ;; fmap over state
     (should (equal (termlisp-value->string
                     (termlisp-eval "((monad-fmap StateDict (lambda (x) (+ x 1)) (state-return 5)) 0)" env))
@@ -1188,6 +1211,12 @@
     ;; left identity
     (should (eq (termlisp-eval "((monad-bind ReaderDict (monad-return ReaderDict 5) (lambda (x) (reader-return (+ x 1)))) cfg)" env)
                 6))
+    ;; right identity
+    (should (eq (termlisp-eval "((monad-bind ReaderDict (reader-ask) (lambda (x) (monad-return ReaderDict x))) cfg)" env)
+                'cfg))
+    ;; associativity
+    (should (eq (termlisp-eval "((monad-bind ReaderDict (monad-bind ReaderDict (reader-ask) (lambda (x) (reader-return x))) (lambda (y) (reader-return y))) cfg)" env)
+                'cfg))
     ;; fmap over reader
     (should (eq (termlisp-eval "((monad-fmap ReaderDict (lambda (x) x) (reader-ask)) cfg)" env)
                 'cfg))))
