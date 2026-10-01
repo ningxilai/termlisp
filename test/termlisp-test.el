@@ -48,5 +48,44 @@
   (should (null (car (tl-unify (list 'f 1) (list 'g 1) nil))))
   (should (null (car (tl-unify 1 2 nil)))))
 
+(ert-deftest unify/var-var ()
+  (let* ((x (tl-make-lvar 'x))
+         (y (tl-make-lvar 'y))
+         (r (tl-unify x y nil)))
+    (should (car r))
+    (should (eq (tl-deref x (cdr r)) y))))
+
+(ert-deftest unify/transitive-deref ()
+  (let* ((x (tl-make-lvar 'x))
+         (y (tl-make-lvar 'y))
+         (r (tl-unify x y nil))
+         (r2 (tl-unify y 5 (cdr r))))
+    (should (car r2))
+    (should (equal (tl-deref x (cdr r2)) 5))))
+
+(ert-deftest unify/already-bound-consistency ()
+  (let* ((x (tl-make-lvar 'x))
+         (r (tl-unify x 1 nil)))
+    (should (car (tl-unify x 1 (cdr r))))
+    (should (null (car (tl-unify x 2 (cdr r)))))))
+
+(ert-deftest unify/occurs-off-by-default ()
+  (let* ((x (tl-make-lvar 'x))
+         (r (tl-unify x (list 'f x) nil)))
+    (should (car r))))
+
+(ert-deftest unify/improper-list ()
+  (let* ((x (tl-make-lvar 'x))
+         (r (tl-unify (cons 'f x) (cons 'f 9) nil)))
+    (should (car r))
+    (should (equal (tl-deref x (cdr r)) 9))))
+
+(ert-deftest unify/failure-contract ()
+  (let* ((x (tl-make-lvar 'x))
+         (y (tl-make-lvar 'y))
+         (r (tl-unify (list 1 x) (list 2 y) nil)))
+    (should (null (car r)))
+    (should (null (cdr r)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

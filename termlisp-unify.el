@@ -35,6 +35,7 @@
 (defun tl-unify (a b bindings &optional occurs-check)
   "Unify A and B under BINDINGS.
 Return a cons `(ok . bindings)'; ok is t on success, nil on failure.
+On failure returns `(nil . nil)'; the bindings are not meaningful.
 When OCCURS-CHECK is non-nil, reject cyclic bindings."
   (let ((pending (list (cons a b))) (ok t))
     (while (and pending ok)
@@ -56,7 +57,7 @@ When OCCURS-CHECK is non-nil, reject cyclic bindings."
           (push (cons (cdr x) (cdr y)) pending))
          ((equal x y))
          (t (setq ok nil)))))
-    (cons ok bindings)))
+    (if ok (cons t bindings) (cons nil nil))))
 
 (provide 'termlisp-unify)
 ;;; termlisp-unify.el ends here
