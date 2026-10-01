@@ -23,5 +23,30 @@
   (should-not (tl-env-option (termlisp-make-env '(:occurs-check nil)) :occurs-check))
   (should (eq (tl-env-option (termlisp-make-env) :missing 'fallback) 'fallback)))
 
+(ert-deftest unify/atom-equal ()
+  (should (car (tl-unify 'a 'a nil)))
+  (should (null (car (tl-unify 'a 'b nil)))))
+
+(ert-deftest unify/var-binding ()
+  (let* ((x (tl-make-lvar 'x))
+         (r (tl-unify x 1 nil)))
+    (should (car r))
+    (should (equal (tl-deref x (cdr r)) 1))))
+
+(ert-deftest unify/structural ()
+  (let* ((x (tl-make-lvar 'x))
+         (r (tl-unify (list 'f x) (list 'f 2) nil)))
+    (should (car r))
+    (should (equal (tl-deref x (cdr r)) 2))))
+
+(ert-deftest unify/occurs-check ()
+  (let* ((x (tl-make-lvar 'x))
+         (r (tl-unify x (list 'f x) nil t)))
+    (should (null (car r)))))
+
+(ert-deftest unify/mismatch ()
+  (should (null (car (tl-unify (list 'f 1) (list 'g 1) nil))))
+  (should (null (car (tl-unify 1 2 nil)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
