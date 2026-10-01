@@ -198,22 +198,35 @@ self-bindings are removed."
     (cl-remove-if (lambda (cell) (eq (car cell) (cdr cell)))
                   (append composed rest))))
 
-(defun tl-register-datatype-types (env name ctors)
+(cl-defun tl-register-datatype-types (env name ctors
+                                          &optional (param-syms nil param-syms-p))
   "Register constructor type schemes for datatype NAME with CTORS.
-Each CTOR is `(CON ARGTYPE...)'.  Lowercase symbols in ARGTYPE are type
-parameters of NAME; argument order is preserved."
-  (let* ((tl-type-parse-vars nil)
+PARAM-SYMS, if non-nil, are the datatype's declared type parameters
+\(reused for extensions).  Returns the datatype's parameter symbols.
+When PARAM-SYMS is explicitly supplied (even nil), CTORS are an
+extension and any type parameter not declared by the datatype is an
+error."
+  (let* ((tl-type-parse-vars
+          (mapcar (lambda (s) (cons s (tl-fresh-tvar))) param-syms))
          (ctor-args (mapcar (lambda (ctor)
                               (cons (car ctor) (mapcar #'tl-type-parse* (cdr ctor))))
                             ctors))
-         (params (mapcar #'cdr (reverse tl-type-parse-vars)))
-         (result (tl-tcon name params)))
-    (dolist (ca ctor-args)
-      (let ((ty result))
-        (dolist (argty (reverse (cdr ca)))
-          (setq ty (tl-tarrow argty ty)))
-        (puthash (car ca) (tl-tscheme params ty)
-                 (tl-env-type-env env))))))
+         (syms (or param-syms (mapcar #'car (reverse tl-type-parse-vars)))))
+    (when param-syms-p
+      (dolist (cell tl-type-parse-vars)
+        (unless (memq (car cell) param-syms)
+          (signal 'termlisp-type-error
+                  (list (format "Undeclared type parameter %S in extension of %S"
+                                (car cell) name))))))
+    (let ((params (mapcar (lambda (s) (cdr (assq s tl-type-parse-vars))) syms))
+          (result (tl-tcon name (mapcar (lambda (s) (cdr (assq s tl-type-parse-vars))) syms))))
+      (dolist (ca ctor-args)
+        (let ((ty result))
+          (dolist (argty (reverse (cdr ca)))
+            (setq ty (tl-tarrow argty ty)))
+          (puthash (car ca) (tl-tscheme params ty)
+                   (tl-env-type-env env))))
+      syms)))
 
 (provide 'termlisp-types)
 ;;; termlisp-types.el ends here

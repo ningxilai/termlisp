@@ -782,5 +782,31 @@
                                    (tl-tarrow (tl-tcon 'Expr nil)
                                               (tl-tcon 'Expr nil))))))))
 
+(ert-deftest typeenv/open-polymorphic-extension ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-eval "(datatype open List (Nil) (Cons a (List a)))" env)
+    (termlisp-eval "(datatype-extension List (Snoc (List a) a))" env)
+    (let* ((sc (gethash 'Snoc (tl-env-type-env env)))
+           (ty (tl-tscheme-type sc))
+           ;; Snoc : List a -> a -> List a
+           (res (nth 1 (tl-tcon-args (nth 1 (tl-tcon-args ty))))))
+      (should (= (length (tl-tscheme-vars sc)) 1))
+      (should (eq (tl-tcon-name res) 'List))
+      (should (= (length (tl-tcon-args res)) 1)))))
+
+(ert-deftest typeenv/extension-undeclared-param ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-eval "(datatype open Expr (Lit Int))" env)
+    (should-error (termlisp-eval "(datatype-extension Expr (Var a))" env)
+                  :type 'termlisp-type-error)))
+
+(ert-deftest typeenv/redeclaration-purges ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-eval "(datatype Foo (A) (B))" env)
+    (termlisp-eval "(datatype Foo (C))" env)
+    (should (null (gethash 'A (tl-env-constructors env))))
+    (should (null (gethash 'B (tl-env-constructors env))))
+    (should (eq (gethash 'C (tl-env-constructors env)) 'Foo))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

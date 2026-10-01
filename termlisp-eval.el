@@ -261,17 +261,24 @@
         value))))
 
 (defun tl-eval-datatype (env form)
-  "Handle `(datatype [open] NAME (CON ARGTYPE...) ...)' in ENV."
+  "Handle `(datatype [open] NAME (CON ARGTYPE...) ...)' in ENV.
+Datatype declarations are type-checked even when `:type-check' is nil:
+constructor argument types are parsed and their schemes registered."
   (let* ((rest (cdr form))
          (open (eq (car rest) 'open))
          (rest (if open (cdr rest) rest))
          (name (car rest))
-         (ctors (cdr rest)))
-    (puthash name (list :open open :constructors (mapcar #'car ctors))
-             (tl-env-datatypes env))
+         (ctors (cdr rest))
+         (old (gethash name (tl-env-datatypes env))))
+    (when old
+      (dolist (c (plist-get old :constructors))
+        (remhash c (tl-env-constructors env))
+        (remhash c (tl-env-type-env env))))
+    (let ((syms (tl-register-datatype-types env name ctors)))
+      (puthash name (list :open open :constructors (mapcar #'car ctors) :params syms)
+               (tl-env-datatypes env)))
     (dolist (ctor ctors)
       (puthash (car ctor) name (tl-env-constructors env)))
-    (tl-register-datatype-types env name ctors)
     name))
 
 (defun tl-eval-datatype-extension (env form)
@@ -282,6 +289,7 @@
     (unless (and existing (plist-get existing :open))
       (signal 'termlisp-eval-error
               (list (format "Cannot extend non-open datatype %S" name))))
+    (tl-register-datatype-types env name ctors (plist-get existing :params))
     (puthash name
              (plist-put existing :constructors
                         (append (plist-get existing :constructors)
@@ -289,7 +297,6 @@
              (tl-env-datatypes env))
     (dolist (ctor ctors)
       (puthash (car ctor) name (tl-env-constructors env)))
-    (tl-register-datatype-types env name ctors)
     name))
 
 (defun tl-eval-top (env form)
