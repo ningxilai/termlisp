@@ -1050,6 +1050,14 @@
     (let ((sc (gethash 'twice (tl-env-type-env env))))
       (should (= (length (tl-tscheme-constraints sc)) 1)))))
 
+(ert-deftest class/ambiguous-constraint-errors ()
+  "A top-level expression whose class variable is unresolved is rejected."
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-file
+     (expand-file-name "termlisp-prelude.tlsp" termlisp--directory) env)
+    (should-error (termlisp-typecheck "(return 7)" env)
+                  :type 'termlisp-type-error)))
+
 (ert-deftest typecheck/do ()
   (let ((env (termlisp-make-env)))
     (termlisp-typecheck-file

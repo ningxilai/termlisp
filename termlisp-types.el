@@ -262,12 +262,15 @@ For a resolvable instance, recursively solve its context."
       (setq insts (cdr insts)))
     (if (and found ok) (cons t bindings) (cons nil nil))))
 
-(defun tl-close-constraints (env gen-vars constraints bindings)
+(defun tl-close-constraints (env gen-vars constraints bindings &optional reject-ambiguous)
   "Zonk CONSTRAINTS under BINDINGS, solving the non-generalizable ones.
 GEN-VARS are the type variables being generalized.  Constraints whose
 type mentions a GEN-VARS variable are returned (deduplicated); the
 rest are solved in ENV, signalling `termlisp-type-error' on an
-unsolved ground constraint."
+unsolved ground constraint.  With REJECT-AMBIGUOUS non-nil (top-level
+expressions, where nothing is generalized), an unsolved constraint
+whose type still has free type variables is also rejected: its class
+variable never resolved to a concrete instance."
   (let ((kept nil))
     (dolist (c constraints)
       (let* ((ty (tl-apply-bindings (tl-constraint-type c) bindings))
@@ -275,10 +278,14 @@ unsolved ground constraint."
         (if (cl-intersection gen-vars (tl-free-tvars ty))
             (push c* kept)
           (unless (car (tl-solve-constraint env c* bindings))
-            (when (null (tl-free-tvars ty))
-              (signal 'termlisp-type-error
-                      (list (format "No instance for %S %S"
-                                    (tl-constraint-class c) ty))))))))
+            (let ((free (tl-free-tvars ty)))
+              (when (or reject-ambiguous (null free))
+                (signal 'termlisp-type-error
+                        (list (if free
+                                  (format "Ambiguous constraint: no instance for %S %S"
+                                          (tl-constraint-class c) ty)
+                                (format "No instance for %S %S"
+                                        (tl-constraint-class c) ty))))))))))
     (cl-remove-duplicates (nreverse kept) :test #'equal)))
 
 (defun tl-generalize (type env-tvars &optional constraints)
@@ -813,7 +820,7 @@ as the first argument of overloaded method calls."
      ((and (consp form) (eq (car form) 'class)) (tl-register-class env form))
      ((and (consp form) (eq (car form) 'instance)) (tl-register-instance env form))
      (t (let ((r (tl-infer (cons nil env) form)))
-          (tl-close-constraints env nil tl-infer-constraints (cdr r))
+          (tl-close-constraints env nil tl-infer-constraints (cdr r) t)
           (car r))))))
 
 (defun termlisp-typecheck-def (env string)
