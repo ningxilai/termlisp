@@ -2060,5 +2060,49 @@ the test fixes the type to Maybe with a signature-annotated binding."
     (tl-graph-apply (tl-graph-root g) rule)
     (should (tl-grule-compiled rule))))
 
+(ert-deftest case/dispatch-heads ()
+  "A compiled pattern's dispatch heads drive the rule index."
+  (should (equal (tl-pat-dispatch-heads '(pcon :x (pvar $v))) '(:x)))
+  (should (equal (tl-pat-dispatch-heads '(pcon :x)) '(:x)))
+  (should (equal (tl-pat-dispatch-heads '(plit 0)) '(0)))
+  (should (equal (tl-pat-dispatch-heads '(pnil)) '(nil)))
+  (should (eq (tl-pat-dispatch-heads '(pvar $x)) :generic))
+  (should (eq (tl-pat-dispatch-heads '(pwild)) :generic))
+  (should (eq (tl-pat-dispatch-heads '(prest $xs)) :generic))
+  (should (equal (tl-pat-dispatch-heads '(pas $w (pcon :y (pvar $v)))) '(:y)))
+  (should (eq (tl-pat-dispatch-heads '(pas $w (pvar $v))) :generic)))
+
+(ert-deftest graph/rule-heads ()
+  "Rules are indexed by the heads they can match, or marked generic."
+  (should (equal (tl-graph--rule-heads
+                  (tl-make-crule 'a :normalize 0
+                                 (list (cons (tl-pat-parse '(pcon :x (pvar $v)))
+                                             '(:y $v)))))
+                 '(:x)))
+  (should (eq (tl-graph--rule-heads
+               (tl-make-crule 'b :normalize 0
+                              (list (cons (tl-pat-parse '(pvar $v)) '$v))))
+              :generic))
+  (should (eq (tl-graph--rule-heads (tl-make-grule 'c :normalize 0 '$x '$x))
+              :generic))
+  (should (equal (tl-graph--rule-heads
+                  (tl-make-grule 'd :normalize 0 '(:global $k $c) '(:bind $k $c)))
+                 '(:global)))
+  (should (equal (tl-graph--rule-heads (tl-make-grule 'e :normalize 0 'foo 'bar))
+                 '(foo))))
+
+(ert-deftest graph/head-index-keeps-priority ()
+  "A generic rule is merged with head-indexed rules in priority order."
+  (let ((specific (tl-make-grule 'spec :normalize 1 '(:x $v) '(:spec $v)))
+        (generic (tl-make-grule 'gen :normalize 0 '$x '(:gen)
+                                (lambda (b)
+                                  (eq (tl-node-head (cdr (assq '$x b))) :x)))))
+    (should (equal (tl-graph-rewrite-sexp '(:x 5) (list specific generic)) '(:gen))))
+  (let ((specific (tl-make-grule 'spec :normalize 0 '(:x $v) '(:spec $v)))
+        (generic (tl-make-grule 'gen :normalize 1 '$x '(:gen)
+                                (lambda (b)
+                                  (eq (tl-node-head (cdr (assq '$x b))) :x)))))
+    (should (equal (tl-graph-rewrite-sexp '(:x 5) (list specific generic)) '(:spec 5)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
