@@ -128,3 +128,9 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Git worktrees
+.worktrees/
+
+# Emacs byte-compiled files
+*.elc
