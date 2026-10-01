@@ -684,5 +684,40 @@
   (should (eq (tl-tcon-name (tl-type-parse 'A)) 'A))
   (should (tl-tvar-p (tl-type-parse 'a))))
 
+(ert-deftest type/subst ()
+  (let* ((a (tl-fresh-tvar))
+         (ty (tl-tarrow a a))
+         (sub (list (cons a (tl-tint)))))
+    (should (equal (tl-type-subst ty sub) (tl-tarrow (tl-tint) (tl-tint))))))
+
+(ert-deftest type/generalize-instantiate ()
+  (let* ((a (tl-fresh-tvar))
+         (ty (tl-tarrow a a))
+         (sc (tl-generalize ty nil))
+         (i1 (tl-instantiate sc))
+         (i2 (tl-instantiate sc)))
+    (should (tl-tscheme-p sc))
+    (should (= (length (tl-tscheme-vars sc)) 1))
+    (should-not (eq (nth 0 (tl-tcon-args i1)) (nth 0 (tl-tcon-args i2))))))
+
+(ert-deftest type/generalize-respects-env ()
+  (let* ((a (tl-fresh-tvar))
+         (sc (tl-generalize (tl-tarrow a a) (list a))))
+    (should (null (tl-tscheme-vars sc)))))
+
+(ert-deftest type/apply-bindings ()
+  (let* ((a (tl-fresh-tvar))
+         (b (tl-fresh-tvar))
+         (binds (list (cons a (tl-tint)) (cons b a))))
+    (should (equal (tl-apply-bindings b binds) (tl-tint)))))
+
+(ert-deftest type/compose-bindings ()
+  (let* ((a (tl-fresh-tvar))
+         (b (tl-fresh-tvar))
+         (b1 (list (cons a b)))
+         (b2 (list (cons b (tl-tint))))
+         (c (tl-compose-bindings b1 b2)))
+    (should (equal (tl-apply-bindings a c) (tl-tint)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

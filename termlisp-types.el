@@ -153,5 +153,44 @@ application."
   (let ((ty (tl-type-parse sexp)))
     (tl-tscheme (tl-free-tvars ty) ty)))
 
+(defun tl-type-subst (type sub)
+  "Apply substitution SUB (alist tvar -> type) to TYPE."
+  (cond
+   ((tl-tvar-p type)
+    (let ((cell (assq type sub))) (if cell (cdr cell) type)))
+   ((tl-tcon-p type)
+    (tl-tcon (tl-tcon-name type)
+             (mapcar (lambda (arg) (tl-type-subst arg sub)) (tl-tcon-args type))))
+   (t type)))
+
+(defun tl-apply-bindings (type bindings)
+  "Fully apply BINDINGS to TYPE."
+  (let ((ty (tl-deref type bindings)))
+    (if (tl-tcon-p ty)
+        (tl-tcon (tl-tcon-name ty)
+                 (mapcar (lambda (arg) (tl-apply-bindings arg bindings))
+                         (tl-tcon-args ty)))
+      ty)))
+
+(defun tl-generalize (type env-tvars)
+  "Generalize TYPE into a scheme, quantifying tvars not in ENV-TVARS."
+  (let* ((ftv (tl-free-tvars type))
+         (vars (cl-remove-if (lambda (v) (memq v env-tvars)) ftv)))
+    (tl-tscheme vars type)))
+
+(defun tl-instantiate (scheme)
+  "Instantiate SCHEME (a `tl-tscheme') with fresh type variables."
+  (if (tl-tscheme-p scheme)
+      (let ((sub (mapcar (lambda (v) (cons v (tl-fresh-tvar)))
+                         (tl-tscheme-vars scheme))))
+        (tl-type-subst (tl-tscheme-type scheme) sub))
+    scheme))
+
+(defun tl-compose-bindings (b1 b2)
+  "Compose substitutions B1 and B2 (apply B2 after B1)."
+  (append
+   (mapcar (lambda (cell) (cons (car cell) (tl-apply-bindings (cdr cell) b2))) b1)
+   b2))
+
 (provide 'termlisp-types)
 ;;; termlisp-types.el ends here
