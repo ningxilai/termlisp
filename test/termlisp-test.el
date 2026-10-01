@@ -604,5 +604,34 @@
          (r (tl-unify-types a (tl-tcon 'List (list a)) nil)))
     (should (null (car r)))))
 
+(ert-deftest type/unify-var-var ()
+  (let* ((a (tl-fresh-tvar))
+         (b (tl-fresh-tvar))
+         (r (tl-unify-types a b nil)))
+    (should (car r))
+    (should (eq (tl-deref a (cdr r)) b))))
+
+(ert-deftest type/unify-arity-mismatch ()
+  (should (null (car (tl-unify-types (tl-tcon 'List (list (tl-tint)))
+                                     (tl-tcon 'List nil) nil))))
+  (should (null (car (tl-unify-types (tl-tcon 'List (list (tl-tint)))
+                                     (tl-tcon 'Maybe (list (tl-tint))) nil)))))
+
+(ert-deftest type/unify-failure-contract ()
+  (let* ((a (tl-fresh-tvar))
+         (input (list (cons a (tl-tint))))
+         (r (tl-unify-types a (tl-tstring) input)))
+    ;; failure returns (nil . nil) and does not mutate the input bindings
+    (should (null (car r)))
+    (should (null (cdr r)))
+    (should (equal input (list (cons a (tl-tint)))))))
+
+(ert-deftest type/unify-occurs-through-binding ()
+  (let* ((a (tl-fresh-tvar))
+         (b (tl-fresh-tvar))
+         (b1 (cdr (tl-unify-types b a nil)))
+         (r (tl-unify-types a (tl-tcon 'List (list b)) b1)))
+    (should (null (car r)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

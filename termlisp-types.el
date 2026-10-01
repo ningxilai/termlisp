@@ -21,6 +21,7 @@
 (defun tl-tvar-p (x) (tl-lvar-p x))
 (defun tl-type-p (x) (or (tl-tvar-p x) (tl-tcon-p x)))
 
+;; LEVEL is intentionally unused in Plan 2 (generalization uses tvars not free in the environment); reserved for level-based generalization in a later plan.
 (defun tl-fresh-tvar (&optional level)
   "Return a fresh type variable."
   (tl-make-lvar (gensym "t") (or level 0)))
