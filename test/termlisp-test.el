@@ -1920,6 +1920,27 @@ the test fixes the type to Maybe with a signature-annotated binding."
     (should (equal (tl-case-template '(:seq (:splice $xs)) (list (cons '$xs (list n1 n2))))
                    '(:seq a b)))))
 
+(ert-deftest case/template-car-instantiated ()
+  "Variables in the car position of a nested list are instantiated."
+  (let ((n (tl-graph-root (tl-graph-build 'x))))
+    (should (equal (tl-case-template '((key $v) $v) (list (cons '$v n)))
+                   '((key x) x)))))
+
+(ert-deftest case/template-map ()
+  "A `(:map $x $xs BODY)' instantiates BODY once per element of a list node."
+  (let ((n (tl-graph-root (tl-graph-build '(a b c)))))
+    (should (equal (tl-case-template '(:seq (:map $x $xs (:wrap $x)))
+                                     (list (cons '$xs n)))
+                   '(:seq (:wrap a) (:wrap b) (:wrap c))))))
+
+(ert-deftest case/template-map-chunks ()
+  "A `(:map-chunks $c $xs 2 BODY)' groups a list into fixed-arity chunks."
+  (let ((n (tl-graph-root (tl-graph-build '(a 1 b 2 c 3)))))
+    (should (equal (tl-case-template '(:seq (:map-chunks $c $xs 2
+                                                         (:pair (:splice $c))))
+                                     (list (cons '$xs n)))
+                   '(:seq (:pair a 1) (:pair b 2) (:pair c 3))))))
+
 (ert-deftest case/parse-rest ()
   (should (equal (tl-pat-parse '(prest $xs)) '(prest $xs))))
 
