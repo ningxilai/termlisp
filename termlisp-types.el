@@ -220,8 +220,20 @@ application."
              (tl-env-type-env env))
     acc))
 
+(defvar tl-infer-constraints nil
+  "Dynamically bound list of constraints collected during inference.
+Each element is a `tl-constraint'.  Entry points rebind this to nil so
+that constraints do not leak between top-level forms.")
+
+(defun tl-emit-constraint (c)
+  "Record constraint C in the current `tl-infer-constraints'."
+  (push c tl-infer-constraints))
+
 (defun tl-instantiate (scheme)
-  "Instantiate SCHEME (a `tl-tscheme') with fresh type variables."
+  "Instantiate SCHEME (a `tl-tscheme') with fresh type variables.
+Returns the instantiated type only; constraints on SCHEME are not
+freshened or emitted here (callers that need them, such as method
+lookup, do so explicitly)."
   (if (tl-tscheme-p scheme)
       (let ((sub (mapcar (lambda (v) (cons v (tl-fresh-tvar)))
                          (tl-tscheme-vars scheme))))
@@ -340,6 +352,16 @@ error."
      (cell (cons (cdr cell) nil))
      ((and base (gethash sym (tl-env-type-env base)))
       (cons (tl-instantiate (gethash sym (tl-env-type-env base))) nil))
+     ((and base (gethash sym (tl-env-method-env base)))
+      (let* ((sc (gethash sym (tl-env-method-env base)))
+             (sub (mapcar (lambda (v) (cons v (tl-fresh-tvar)))
+                          (tl-tscheme-vars sc)))
+             (ty (tl-type-subst (tl-tscheme-type sc) sub)))
+        (dolist (c (tl-tscheme-constraints sc))
+          (tl-emit-constraint
+           (tl-constraint (tl-constraint-class c)
+                          (tl-type-subst (tl-constraint-type c) sub))))
+        (cons ty nil)))
      ((gethash sym tl-builtin-types)
       (cons (tl-instantiate (gethash sym tl-builtin-types)) nil))
      (t (cons (tl-fresh-tvar) nil)))))
@@ -504,6 +526,7 @@ Return `(LOCAL-BINDINGS . SUBST)'."
 (defun tl-infer-define-clauses (env name clauses)
   "Infer NAME from CLAUSES (list of `(PARAMS . BODY)'); register a scheme."
   (let* ((placeholder (tl-fresh-tvar))
+         (tl-infer-constraints nil)
          (tyenv (tl-env-type-env env))
          (sig (and (gethash name (tl-env-sig-env env))
                    (gethash name tyenv))))
@@ -555,7 +578,8 @@ Return `(LOCAL-BINDINGS . SUBST)'."
 
 (defun tl-infer-constant (env name expr)
   "Infer a constant binding NAME = EXPR."
-  (let ((r (tl-infer (cons nil env) expr)))
+  (let* ((tl-infer-constraints nil)
+         (r (tl-infer (cons nil env) expr)))
     (let ((ty (tl-apply-bindings (car r) (cdr r))))
       (if (gethash name (tl-env-sig-env env))
           (let* ((sig (gethash name (tl-env-type-env env)))
@@ -634,15 +658,16 @@ Return `(LOCAL-BINDINGS . SUBST)'."
 
 (defun tl-typecheck-form (env form)
   "Typecheck one top-level FORM in ENV."
-  (cond
-   ((and (consp form) (eq (car form) 'datatype)) (tl-eval-datatype env form))
-   ((and (consp form) (eq (car form) 'datatype-extension))
-    (tl-eval-datatype-extension env form))
-   ((and (consp form) (eq (car form) ':)) (tl-register-signature env form))
-   ((and (consp form) (eq (car form) 'define)) (tl-typecheck-define env form))
-   ((and (consp form) (eq (car form) 'class)) (tl-register-class env form))
-   ((and (consp form) (eq (car form) 'instance)) (tl-register-instance env form))
-   (t (car (tl-infer (cons nil env) form)))))
+  (let ((tl-infer-constraints nil))
+    (cond
+     ((and (consp form) (eq (car form) 'datatype)) (tl-eval-datatype env form))
+     ((and (consp form) (eq (car form) 'datatype-extension))
+      (tl-eval-datatype-extension env form))
+     ((and (consp form) (eq (car form) ':)) (tl-register-signature env form))
+     ((and (consp form) (eq (car form) 'define)) (tl-typecheck-define env form))
+     ((and (consp form) (eq (car form) 'class)) (tl-register-class env form))
+     ((and (consp form) (eq (car form) 'instance)) (tl-register-instance env form))
+     (t (car (tl-infer (cons nil env) form))))))
 
 (defun termlisp-typecheck-def (env string)
   "Typecheck all top-level forms in STRING into ENV.  Return ENV."

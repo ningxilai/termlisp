@@ -1019,6 +1019,16 @@
       (should (memq ct vars))
       (should (memq ct (tl-free-tvars ty))))))
 
+(ert-deftest class/method-use-constraint ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(class Functor (f) nil (fmap ((-> a b) -> (f a) -> (f b))))")
+    (termlisp-eval "(datatype Maybe (Nothing) (Just a))" env)
+    (let ((tl-infer-constraints nil))
+      (tl-infer (cons nil env) '(lambda (g x) (fmap g x)))
+      (should (= (length tl-infer-constraints) 1))
+      (should (tl-constraint-p (car tl-infer-constraints)))
+      (should (eq (tl-constraint-class (car tl-infer-constraints)) 'Functor)))))
+
 (ert-deftest typecheck/do ()
   (let ((env (termlisp-make-env)))
     (termlisp-typecheck-file
