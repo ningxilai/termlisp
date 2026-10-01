@@ -144,5 +144,37 @@
   (should (tl-true-value-p 'True))
   (should-not (tl-true-value-p 'False)))
 
+(defun tl-test-force (v)
+  (if (tl-thunk-p v)
+      (progn (setf (tl-thunk-forced-p v) t) (tl-thunk-value v))
+    v))
+
+(ert-deftest machine/value-equal-forces-thunk-fields ()
+  (let* ((mk (lambda (val) (let ((tk (tl-make-thunk nil nil)))
+                             (setf (tl-thunk-value tk) val) tk)))
+         (a (funcall mk 'X))
+         (b (funcall mk 'X))
+         (c (funcall mk 'Y)))
+    (should (tl-value-equal (list 'Pair a) (list 'Pair b) #'tl-test-force))
+    (should-not (tl-value-equal (list 'Pair a) (list 'Pair c) #'tl-test-force))))
+
+(ert-deftest machine/value-equal-nested ()
+  (should (tl-value-equal '(Pair (Pair A B)) '(Pair (Pair A B)) #'identity))
+  (should (tl-value-equal '(Pair "x") '(Pair "x") #'identity))
+  (should (tl-value-equal '(Pair 1.5) '(Pair 1.5) #'identity))
+  (should-not (tl-value-equal '(Pair "x") '(Pair "y") #'identity)))
+
+(ert-deftest machine/value-equal-nullary-and-mismatch ()
+  (should (tl-value-equal 'True 'True #'identity))
+  (should-not (tl-value-equal 'True 'False #'identity))
+  (should-not (tl-value-equal 'True '(True) #'identity)))
+
+(ert-deftest machine/lookup ()
+  (let ((termlisp--current-env (termlisp-make-env)))
+    (setf (tl-env-globals termlisp--current-env) '((g . 1)))
+    (should (equal (cdr (tl-lookup 'g '())) 1))
+    (should (equal (cdr (tl-lookup 'g '((g . 2)))) 2))
+    (should (null (tl-lookup 'missing '())))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

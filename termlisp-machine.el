@@ -4,7 +4,7 @@
 
 ;;; Commentary:
 ;; Runtime values are: atoms (symbol/number/string), constructor values
-;; (a symbol for nullary, or a list `(Con . fields)'), closures, function
+;; (a symbol for nullary, or a list `(Con field...)'), closures, function
 ;; objects, and thunks.  Constructor fields are stored as thunks (lazy).
 
 ;;; Code:
@@ -31,7 +31,7 @@ Defined in termlisp-eval.el.")
         (b (funcall force b)))
     (cond
      ((and (consp a) (consp b))
-      (and (eq (car a) (car b))
+      (and (tl-value-equal (car a) (car b) force)
            (tl-value-equal (cdr a) (cdr b) force)))
      ((or (consp a) (consp b)) nil)
      (t (equal a b)))))
