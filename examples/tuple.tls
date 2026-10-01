@@ -1,6 +1,0 @@
-(cons a b = Pair a b)
-(car (Pair a b) = a)
-(cdr (Pair a b) = b)
-
-(a = ((cdr (cons 1 2))))
-(a)

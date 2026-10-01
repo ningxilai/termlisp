@@ -1,161 +1,82 @@
-> Disclaimer: This project is at a very early stage, many things may not work.
+> Disclaimer: This project is at an early stage, many things may not work.
 
-Overview
-===
-term-lisp is a language for *term* *lis*t *p*rocessing with first-class pattern matching, inspired by Pie, Haskel, Agda et al.
+# term-lisp
 
-Term rewriting
----
-Right from when Church and Turing defined it, the concept of computation has been two-fold --- it can be presented either as the process of mutating the values of some state (Turing Machine) or by transforming some terms, using a predefined set of equations (Lambda Calculus). term-lisp leans heavily in the second direction. It does not support variables and its functions, are *rules* that describe how to replace a given term with another one. 
+term-lisp is a language for *term* *lis*t *p*rocessing with first-class pattern
+matching, lazy evaluation, tail-call optimization, static types, type classes,
+and monads. It is implemented in Emacs Lisp as an embedded library.
 
-For example, consider how the booleans are defined:
+## Overview
 
-```
-(true = Bool True)
-(false = Bool False)
-```
-This means "when you see the term "true", replace it with the term "Bool True"
+### Term rewriting
 
-Also, note that "Bool True" isn't defined anywhere. That is because in term-lisp, unlike in other lisps, an undefined term is not an error, it is just an undefined term.
+Right from when Church and Turing defined it, the concept of computation has
+been two-fold: it can be presented either as the process of mutating the values
+of some state (Turing Machine) or by transforming terms using a predefined set
+of equations (Lambda Calculus). term-lisp leans heavily in the second direction.
+Its functions are *rules* that describe how to replace a given term with
+another one.
 
-First-class pattern matching
----
-term-lisp supports first-class pattern matching. This means that you can have functions that return patterns. 
+### Data types and open terms
 
-For example, consider how the if expression is defined:
+Data types are declared explicitly, and a term that is not a defined function is
+just a constructor. For example:
 
-```
-(if (:literal true) a b = a)
-(if (:literal false) a b = b)
-```
-Here the terms true and false are automatically expanded, so the expressions above are a shorthand for:
-
-```
-(if (:literal (Bool True)) a b = a)
-(if (:literal (Bool False)) a b = b)
-```
-Lazy evaluation
----
-Term-rewriting languages sometimes have issues with dealing with functions that perform side-effects, such as `print`, as they don't allow for so fine-grained control over when is the function evaluated. To prevent unwanted execution, expressions in term-lisp are evaluated lazily i.e. only when they are needed.
-
-For example, consider this function that prints an error when its arguments are not equal:
-
-```
-(assertEqual a b = (if (eq a b) () (print (error a is-not-equal-to b))))
+```lisp
+(datatype Bool (True) (False))
+(define (if (True) a b) a)
+(define (if (False) a b) b)
 ```
 
-If you wish to define `if` as a function in a non-lazy (strict) language, the `print` function will be called no matter if the two expressions are equal, simply because the result would be evaluated before the `if` function is even called. 
+`True` and `False` are nullary constructors. Data types may also be declared
+`open`, in which case constructors can be added later and pattern matches are
+never considered exhaustive (a failed match is a runtime error):
 
-Language tutorial
-==
-Let's start with BNR form:
-```
-<expression> ::= <atom> | <constructor> | <application> | <definition>
-atom ::= <char> | <atom> <char>
-datatype ::= "(" <atom> <expression>* ")"
-application ::= "(" <atom> <expression>* ")"
-definition ::= "("<atom> <datatype> "=" <expression> ")"
-chain ::= "(" <expression>* ")"
-```
-Like every other Lisp, term-lisp is based on atoms and lists. Atoms are the primitive values, lists contain them e.g. `foo`, `bar` `3` `+` are atoms, `(foo bar 3)` is a list.
-
-
-Regular Lisps are based on the pair/tuple datatype, the `cons` data constructor, which unites two values in a tuple, and the `car` and `cdr` destructors which retrieve the first and second value of a tuple, respectively. 
-
-```
-(assertEqual (car (cons foo bar)) foo)
-(assertEqual (cdr (cons foo bar)) bar)
+```lisp
+(datatype open Expr (Lit Int))
+(datatype-extension Expr (Add Expr Expr))
 ```
 
-In term-lisp, the pair is just one of the datatypes that you can define and use.
+### First-class pattern matching
 
-```
-(cons a b = Pair a b)
-(car (Pair a b) = a)
-(cdr (Pair a b) = b)
-```
-We will review how this is done.
+Definitions are lists of patterns and a body. Patterns include variables,
+wildcards (`_`), constructor destructuring, literal values, rest arguments, and
+functions:
 
-Functional application
----
-Functional application in term-lisp works as in any other Lisp. A list of the type `(function-name argument1 argument2)` evaluates to the function's return expression e.g. `(car (cons foo bar))` evaluates to `foo`.
-
-Datatype
----
-What happens if we construct an expression that looks like function application, but the function being applied is not defined? In most languages, this would result in error, but in term-lisp we will create a new datatype/constructor, e.g. the expression `Pair foo bar` would evaluate to... `Pair foo bar` i.e. we will save a new object of type `Pair`,  containing the values of `foo` and `bar`. What if the functions `foo` and `bar` aren't defined as well? They would evaluate to themselves too, like constructors without arguments. `True` and `False` are constructors without arguments as well.
-
-Function definition
----
-A functional definition is a list of arguments and an expression that does something with these arguments, separated by an equals sign.
-
-For example, here is a function that accepts two arguments and returns a new datatype that unites them into one:
-
-```
-(cons a b = Pair a b)
-```
-Functional definitions support a variety of pattern-matching features.
-
-Functional definitions support *destructuring* arguments. For example, the function
-
-```
-(car (Pair a b) = a)
-```
-accepts one argument which has to be a `Pair` datatype and destructures it to its two elements (which can be referred to by the names `a` and `b` in the resulting expression.
-
-The destructuring can also be used for type-checking. Consider the following function for printing:
-
-```
-(print-pair (Pair a b) = print (Pair a b))
+```lisp
+(define (car (Pair a b)) a)      ; destructuring
+(define (is-zero (:literal 0)) True) ; value matching
+(define (list (:list rest)) rest)    ; remaining arguments
+(define (map a (:lambda fun)) (fun a)) ; passing a function
 ```
 
-The resulting function will behave like `print`, but it will only work with arguments of type `Pair`. 
+### Lazy evaluation and TCO
 
-Functional definitions support *value-matching*, via the `:literal`. For example, consider the implementation of the function `if`:
+Arguments are memoized thunks (call-by-need), so unused arguments are never
+evaluated. Function application and forcing a variable-bound thunk are tail
+steps in an explicit CEK machine, so deep tail recursion does not grow the
+Emacs stack.
 
-```
-(if (:literal true) a b = a)
-```
+### Static types and type classes
 
-This means that the function will only work if the first argument is `true` (this is different from `(if true a b = a)` which will assign the symbol `true` to the value of the first parameter).
+A Hindley–Milner type checker infers types (opt-in via `:type-check`).
+Type classes with dictionary passing are supported (opt-in via `:elaborate`):
 
-Functional definitions also support *multiple implementations* of the same function, like for example the implementation of `if` would be incomplete, as it will fail when the value is `false`. Adding a second implementation makes it total (provided that someone does not define more Bool values).
-
-```
-(if (:literal false) a b = b)
-```
-
-Functional definitions support *passing functions*, via the `:lambda` keyword:
-
-``` 
-(map a (:lambda fun) = fun a)
+```lisp
+(class Functor (f) nil (fmap ((-> a b) -> (f a) -> (f b))))
+(instance (Functor Maybe) FunctorMaybeDict)
+;; (fmap (lambda (x) (+ x 1)) (Just 4)) => (Just 5)
 ```
 
-You can pass an existing function:
+### Monads and `do`
 
-```
-(this-is a = (this is a))
-(assertEqual (map foo this-is) (this is foo))
-```
-Or define one inline (be sure to give it a name):
-```
-(assertEqual (map bar (fun a = (this is a))) (this is bar))
+```lisp
+(do (x <- (Just 1))
+    (y <- (Just 2))
+    (return (+ x y)))       ; => (Just 3)
 ```
 
-Running term-lisp
----
-In the project root, run:
-
-```
-node termlisp.js <file>
-```
-It will evaluate the prelude module, plus your file (if you provided one) and go to REPL mode.
-
-Read [the prelude](/prelude.tls).
-
-Emacs Lisp port
----
-term-lisp is now implemented in Emacs Lisp; the JavaScript implementation is
-superseded. Load it with:
+## Using the library
 
 ```elisp
 (require 'termlisp)
@@ -163,16 +84,16 @@ superseded. Load it with:
 
 API:
 
-- `termlisp-eval` — parse and evaluate a string (or use `termlisp-eval-file`).
-- `termlisp-typecheck` — typecheck a string (or `termlisp-typecheck-file`).
-- `termlisp-load-prelude` — load the bundled `termlisp-prelude.tlsp` into an
-  environment and return it.
+- `termlisp-make-env` — create an environment, with plist options:
+  - `:type-check` — typecheck each top-level form before evaluating it.
+  - `:elaborate` — type-directed elaboration (inserts class-method dictionaries).
+- `termlisp-eval` / `termlisp-eval-file` — parse and evaluate a string / file.
+- `termlisp-parse` — parse a string into a list of S-expressions.
+- `termlisp-typecheck` / `termlisp-typecheck-file` — typecheck a string / file.
+- `termlisp-load-prelude` — load `termlisp-prelude.tlsp` into an environment.
+- `termlisp-value->string` — render a value.
 
-Environments are created with `termlisp-make-env`, which takes plist options:
-
-- `:type-check` — typecheck each form before evaluating it.
-- `:elaborate` — type-directed elaboration (required for class-method
-  dictionary passing, e.g. `(fmap f (Just 4))`).
+Example:
 
 ```elisp
 (let ((env (termlisp-load-prelude (termlisp-make-env '(:elaborate t)))))
@@ -180,3 +101,35 @@ Environments are created with `termlisp-make-env`, which takes plist options:
    (termlisp-eval "(fmap (lambda (x) (+ x 1)) (Just 4))" env)))
 ;; => "(Just 5)"
 ```
+
+## Project layout
+
+```
+termlisp.el            ; entry point, public API, loader
+termlisp-base.el       ; errors, options, environment struct
+termlisp-reader.el     ; S-expression reader
+termlisp-unify.el      ; unification kernel (generic structural core)
+termlisp-types.el      ; HM inference, type classes, constraints
+termlisp-elaborate.el  ; dictionary-passing elaborator
+termlisp-machine.el    ; runtime objects (thunks, closures, functions)
+termlisp-pattern.el    ; pattern parsing and matching
+termlisp-builtins.el   ; primitive functions
+termlisp-eval.el       ; lazy TCO evaluator, `do`, top-level forms
+termlisp-data-reader.el; cats-based Reader monad
+termlisp-prelude.tlsp  ; the standard prelude
+examples/              ; example programs
+test/                  ; ERT test suite
+vendor/cats/           ; vendored emacs-cats (GPLv3)
+```
+
+## Development
+
+```
+make test      ; run the ERT suite
+make compile   ; byte-compile
+make clean     ; remove .elc files
+```
+
+## License
+
+GPL-3.0-or-later. See `LICENSE`. `vendor/cats` is GPLv3.

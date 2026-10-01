@@ -1,2 +1,0 @@
-(print (if (eq (a(b)) (a(b))) booleans-work-again booleans-don't-work))
-(print (if (eq (a(c)) ((a(v)))) booleans-don't-work booleans-work))

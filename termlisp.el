@@ -14,13 +14,19 @@
 
 (add-to-list 'load-path (expand-file-name "vendor/cats" termlisp--root))
 
-;; These soft requires must become hard requires in a later task, once all
-;; modules exist.
-(dolist (feature '(termlisp-base termlisp-reader termlisp-unify
-                   termlisp-machine termlisp-pattern termlisp-builtins
-                   termlisp-types termlisp-elaborate termlisp-eval
-                   termlisp-data-reader))
-  (require feature nil t))
+(require 'termlisp-base)
+(require 'termlisp-reader)
+(require 'termlisp-unify)
+(require 'termlisp-machine)
+(require 'termlisp-pattern)
+(require 'termlisp-builtins)
+(require 'termlisp-types)
+(require 'termlisp-elaborate)
+(require 'termlisp-eval)
+
+;; The Reader monad depends on the vendored cats library; load it when
+;; available (the core language does not require it).
+(require 'termlisp-data-reader nil t)
 
 (provide 'termlisp)
 ;;; termlisp.el ends here
