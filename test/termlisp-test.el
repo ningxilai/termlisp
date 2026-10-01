@@ -1675,5 +1675,31 @@ the test fixes the type to Maybe with a signature-annotated binding."
                    '(:seq (:bind (quote current-global-map) "C-c f" foo)
                           (:add-hook text-mode-hook (function foo)))))))
 
+(ert-deftest graph/cyclic-rule-signals ()
+  "A cyclic rule must be bounded by fuel, not crash the Lisp stack."
+  (let* ((g (tl-graph-build '(a)))
+         (r (tl-make-grule 'c :normalize 0 '$x '(f $x))))
+    (should-error (tl-graph-rewrite g (list r) 100)
+                  :type 'termlisp-eval-error)))
+
+(ert-deftest graph/normal-form-respects-guard ()
+  (let* ((g (tl-graph-build '(:set bar 1)))
+         (r (tl-make-grule 'g :normalize 0 '(:set $v $val) '(:custom $v $val)
+                           (lambda (b) (eq (tl-node-head (cdr (assq '$v b))) 'foo)))))
+    (should (tl-graph-normal-form-p g (list r)))))
+
+(ert-deftest graph/guard-gets-proper-alist ()
+  (let* ((g (tl-graph-build '(:set foo 1)))
+         (seen nil)
+         (r (tl-make-grule 'g :normalize 0 '(:set $v $val) '(:custom $v $val)
+                           (lambda (b) (setq seen b) (mapcar #'car b) t))))
+    (tl-graph-rewrite g (list r))
+    (should (consp (car seen)))))   ; every entry is a cons
+
+(ert-deftest graph/unbound-template-variable ()
+  (let* ((g (tl-graph-build '(a)))
+         (r (tl-make-grule 'u :normalize 0 '(a) '(f $y))))
+    (should-error (tl-graph-rewrite g (list r)) :type 'termlisp-eval-error)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

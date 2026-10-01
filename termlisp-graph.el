@@ -49,9 +49,10 @@ PATTERN is matched against a node, TEMPLATE instantiated to rewrite it.
 GUARD, when non-nil, is called with the bindings and must return non-nil."
   name phase priority pattern template guard)
 
-(defconst tl-graph--match-ok '(tl-match-ok)
+(defconst tl-graph--match-ok (list (cons 'tl-graph-match-ok t))
   "Sentinel binding alist returned for a match with no variables.
-Distinguishes a successful match with an empty binding set from failure.")
+Distinguishes a successful match with an empty binding set from failure.
+A proper alist so guards may safely iterate its entries.")
 
 (defun tl-graph--pvar-p (x)
   "Return non-nil if X is a pattern variable (a symbol named \"$...\")."
@@ -90,7 +91,11 @@ Distinguishes a successful match with an empty binding set from failure.")
   "Instantiate TEMPLATE into a node, reusing nodes bound in BINDINGS."
   (cond
    ((tl-graph--pvar-p template)
-    (cdr (assq template bindings)))
+    (let ((cell (assq template bindings)))
+      (if cell
+          (cdr cell)
+        (signal 'termlisp-eval-error
+                (list (format "Unbound template variable: %S" template))))))
    ((consp template)
     (tl-make-node (car template)
                   (mapcar (lambda (sub) (tl-graph-instantiate sub bindings))
@@ -117,9 +122,13 @@ Signals `termlisp-eval-error' if the rewrite makes no progress."
   '(:surface :normalize :desugar :context :control :load :action :backend)
   "Reduction phases, applied in order.  Rules only move forward.")
 
-(defun tl-graph--preorder (node)
-  "Return NODE and its descendants in pre-order (leftmost-outermost)."
-  (cons node (mapcan #'tl-graph--preorder (tl-node-children node))))
+(defun tl-graph--preorder (node &optional seen)
+  "Return NODE and its descendants in pre-order, without revisiting nodes."
+  (let ((seen (or seen (make-hash-table :test #'eq))))
+    (unless (gethash node seen)
+      (puthash node t seen)
+      (cons node (mapcan (lambda (c) (tl-graph--preorder c seen))
+                         (tl-node-children node))))))
 
 (defun tl-graph--rules-for (phase rules)
   "Rules of PHASE, sorted by ascending priority."
@@ -157,8 +166,11 @@ Signals `termlisp-eval-error' when FUEL (default 10000) is exhausted."
   (catch 'reducible
     (dolist (node (tl-graph--preorder (tl-graph-root graph)))
       (dolist (rule rules)
-        (when (tl-graph-match (tl-grule-pattern rule) node nil)
-          (throw 'reducible nil))))
+        (let ((bindings (tl-graph-match (tl-grule-pattern rule) node nil)))
+          (when (and bindings
+                     (or (null (tl-grule-guard rule))
+                         (funcall (tl-grule-guard rule) bindings)))
+            (throw 'reducible nil)))))
     t))
 
 (provide 'termlisp-graph)
