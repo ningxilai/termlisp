@@ -1163,6 +1163,23 @@
                     (termlisp-eval "(do ListDict (x <- (Cons 1 (Cons 2 Nil))) (return (+ x 10)))" env))
                    "(Cons 11 (Cons 12 Nil))"))))
 
+(ert-deftest do/type-directed-maybe ()
+  (let ((env (termlisp-make-env '(:elaborate t))))
+    (termlisp-load-prelude env)
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(do (x <- (Just 1)) (y <- (Just 2)) (return (+ x y)))" env))
+                   "(Just 3)"))
+    (should (eq (termlisp-eval
+                 "(do (x <- (Just 1)) (y <- Nothing) (return (+ x y)))" env)
+                'Nothing))))
+
+(ert-deftest do/type-directed-list ()
+  (let ((env (termlisp-make-env '(:elaborate t))))
+    (termlisp-load-prelude env)
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(do (x <- (Cons 1 (Cons 2 Nil))) (return (+ x 10)))" env))
+                   "(Cons 11 (Cons 12 Nil))"))))
+
 (ert-deftest do/requires-return ()
   (let ((env (termlisp-load-prelude)))
     (should-error (termlisp-eval "(do MaybeDict (x <- (Just 1)))" env)

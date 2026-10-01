@@ -112,26 +112,54 @@
 
 ;;; do-notation ----------------------------------------------------------
 
-(defun tl-desugar-do (form)
-  "Desugar `(do DICT STMT...)' into nested monad-bind/monad-return calls.
-Each STMT is `(NAME <- EXPR)' or a bare monadic expression; the block must
-end with `(return EXPR)'.  The block is desugared here so it may appear as a
-top-level or nested `do' form (handled in both `tl-eval-top' and `tl-run')."
-  (let* ((dict (cadr form))
-         (stmts (cddr form))
+(defun tl-do-has-dict-p (form)
+  "Non-nil if FORM is `(do DICT STMT...)' (explicit monad operand)."
+  (let ((second (cadr form)))
+    (not (or (and (consp second) (eq (cadr second) '<-))
+             (and (consp second) (eq (car second) 'return))))))
+
+(defun tl-desugar-do-method (form)
+  "Desugar `(do STMT...)' to `bind'/`return' class-method calls.
+The monad type is left to inference; the elaborator inserts the resolved
+instance dictionary at each method call site."
+  (let* ((stmts (cdr form))
          (last (car (last stmts)))
          (init (butlast stmts))
          (acc nil))
     (unless (and (consp last) (eq (car last) 'return))
       (signal 'termlisp-eval-error '("do block must end with (return e)")))
-    (setq acc (list 'monad-return dict (cadr last)))
+    (setq acc (list 'return (cadr last)))
     (dolist (stmt (reverse init))
       (if (and (consp stmt) (eq (cadr stmt) '<-))
-          (setq acc (list 'monad-bind dict (caddr stmt)
-                          (list 'lambda (list (car stmt)) acc)))
-        (setq acc (list 'monad-bind dict stmt
-                        (list 'lambda (list (gensym "ignored")) acc)))))
+          (setq acc (list 'bind (caddr stmt) (list 'lambda (list (car stmt)) acc)))
+        (setq acc (list 'bind stmt (list 'lambda (list (gensym "ignored")) acc)))))
     acc))
+
+(defun tl-desugar-do (form)
+  "Desugar `(do ...)' into nested bind/return calls.
+With an explicit dictionary, `(do DICT STMT...)' becomes
+monad-bind/monad-return calls; without one, `(do STMT...)' becomes
+class-method `bind'/`return' calls for type-directed elaboration.  Each STMT
+is `(NAME <- EXPR)' or a bare monadic expression; the block must end with
+`(return EXPR)'.  The block is desugared here so it may appear as a top-level
+or nested `do' form (handled in `tl-eval-top' and `tl-run')."
+  (if (tl-do-has-dict-p form)
+      (let* ((dict (cadr form))
+             (stmts (cddr form))
+             (last (car (last stmts)))
+             (init (butlast stmts))
+             (acc nil))
+        (unless (and (consp last) (eq (car last) 'return))
+          (signal 'termlisp-eval-error '("do block must end with (return e)")))
+        (setq acc (list 'monad-return dict (cadr last)))
+        (dolist (stmt (reverse init))
+          (if (and (consp stmt) (eq (cadr stmt) '<-))
+              (setq acc (list 'monad-bind dict (caddr stmt)
+                              (list 'lambda (list (car stmt)) acc)))
+            (setq acc (list 'monad-bind dict stmt
+                            (list 'lambda (list (gensym "ignored")) acc)))))
+        acc)
+    (tl-desugar-do-method form)))
 
 ;;; Driver ---------------------------------------------------------------
 
@@ -337,11 +365,20 @@ constructor argument types are parsed and their schemes registered."
    (t (tl-run form nil))))
 
 (defun termlisp-eval (string &optional env)
-  "Parse and evaluate STRING in ENV (creating a fresh env if nil)."
+  "Parse and evaluate STRING in ENV (creating a fresh env if nil).
+
+A top-level `do' is desugared before inference/elaboration so that a
+type-directed `(do ...)' exposes its `bind'/`return' class-method calls to
+the elaborator.  A `do' nested inside a larger expression is instead
+desugared at evaluation time by `tl-run' and is therefore not elaborated:
+nested type-directed `do' (without an explicit monad operand) remains a
+known limitation."
   (let* ((env (or env (termlisp-make-env)))
          (termlisp--current-env env)
          (result nil))
     (dolist (form (termlisp-parse string) result)
+      (when (and (consp form) (eq (car form) 'do))
+        (setq form (tl-desugar-do form)))
       (if (tl-env-option env :elaborate)
           (setq form (tl-elaborate-form env form))
         (when (and (tl-env-option env :type-check)
