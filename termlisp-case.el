@@ -10,7 +10,23 @@
 ;;   (pcon HEAD PAT...) match constructor HEAD with subpatterns PAT...
 ;;   (pas NAME PAT)    match PAT and also bind the whole value to NAME
 ;;   (pnil)            match the empty list
+;;   (prest NAME)      bind NAME to the remaining sibling nodes as a list
 ;; `tl-pat-parse' turns surface patterns into these compiled patterns.
+;;
+;; `prest' may only appear as the final element of a constructor's
+;; subpatterns, e.g. `(pcon :hooks (pvar $a) (prest $rest))'.  It binds
+;; `$rest' to the (possibly empty) list of the application node's remaining
+;; children, so a variadic rule can capture an argument list without a
+;; `(:rest)' marker.  Use the binding with a `(:splice $rest)' template
+;; element to splice those nodes back into the replacement.
+;;
+;; A constructor whose sole subpattern is a list pattern, e.g.
+;; `(pcon :hooks (plist (pvar $a) (pvar $b) (prest $rest)))', matches its
+;; whole child list against that pattern (a `plist' chain plus an optional
+;; trailing `(prest NAME)').  This is the direct analogue of the design's
+;; "structural patterns over the argument list" and is the recommended way
+;; to write repeatable keywords.  A `plist' in any other argument position
+;; is an ordinary cons/nil pattern over a single child.
 ;;
 ;; `tl-case-compile' turns a list of `(PATTERN . TEMPLATE)' clauses into a
 ;; decision tree (an Idris `CaseBuilder'-style dispatcher):
@@ -47,6 +63,7 @@ Signal `termlisp-error' on an unknown form."
     (`(pcon ,head . ,pats) (cons 'pcon (cons head (mapcar #'tl-pat-parse pats))))
     (`(pas ,name ,pat) (list 'pas name (tl-pat-parse pat)))
     (`(plist . ,pats) (tl-pat-parse-list pats))
+    (`(prest ,name) (list 'prest name))
     (_ (signal 'termlisp-error (list (format "Bad pattern: %S" sexp))))))
 
 (defun tl-pat-parse-list (pats)
@@ -82,13 +99,20 @@ the nullary application `(HEAD)'."
                 (eq (tl-node-head node) nil))
        (cons t bindings)))
     (`(pcon ,head . ,pats)
-     (if (null pats)
-         (when (and (not (tl-node-application node))
-                    (eq (tl-node-head node) head))
-           (cons t bindings))
+     (cond
+      ((null pats)
+       (when (and (not (tl-node-application node))
+                  (eq (tl-node-head node) head))
+         (cons t bindings)))
+      ;; A sole list subpattern matches the whole child list, so a variadic
+      ;; application can be written `(pcon HEAD (plist ...))'.
+      ((and (null (cdr pats)) (tl-pat-list-pattern-p (car pats)))
        (when (and (tl-node-application node)
                   (eq (tl-node-head node) head))
-         (tl-pat-match-seq pats (tl-node-children node) bindings))))
+         (tl-pat-match-list (car pats) (tl-node-children node) bindings)))
+      ((and (tl-node-application node)
+            (eq (tl-node-head node) head))
+       (tl-pat-match-seq pats (tl-node-children node) bindings))))
     (`(pas ,name ,sub)
      (let ((r (tl-pat-match sub node bindings)))
        (when r
@@ -100,17 +124,68 @@ the nullary application `(HEAD)'."
 
 (defun tl-pat-match-seq (pats nodes bindings)
   "Match PATS against NODES positionally, extending BINDINGS.
-Exact arity is required; a leftover pattern or node fails the match."
+Exact arity is required unless the final pattern is a `(prest NAME)',
+which binds NAME to the list of remaining NODES (possibly empty)."
   (let ((ok t))
     (while (and ok pats)
-      (if (null nodes)
-          (setq ok nil)
+      (cond
+       ((eq (car-safe (car pats)) 'prest)
+        (unless (null (cdr pats))
+          (signal 'termlisp-error
+                  '("A (prest NAME) pattern must be the last list element")))
+        (let ((r (tl-pat-bind-list (cadr (car pats)) nodes bindings)))
+          (if r (setq bindings r) (setq ok nil)))
+        (setq pats nil nodes nil))
+       ((null nodes) (setq ok nil))
+       (t
         (let ((r (tl-pat-match (car pats) (car nodes) bindings)))
           (if r
               (setq bindings (cdr r) pats (cdr pats) nodes (cdr nodes))
-            (setq ok nil)))))
+            (setq ok nil))))))
     (when (and ok (null pats) (null nodes))
       (cons t bindings))))
+
+(defun tl-pat-bind-list (name nodes bindings)
+  "Extend BINDINGS with NAME bound to the node list NODES.
+Return the extended bindings, or nil when NAME is already bound to a
+different list (non-linear pattern)."
+  (let ((cell (assq name bindings)))
+    (cond ((null cell) (cons (cons name nodes) bindings))
+          ((equal (cdr cell) nodes) bindings)
+          (t nil))))
+
+(defun tl-pat-list-pattern-p (pat)
+  "Return non-nil when compiled PAT is a cons/nil list pattern.
+A list pattern used as the sole subpattern of a `pcon' is matched against
+the constructor's whole child list by `tl-pat-match-list'."
+  (pcase pat
+    (`(pnil) t)
+    (`(pcon cons . ,_) t)
+    (_ nil)))
+
+(defun tl-pat-match-list (pat nodes bindings)
+  "Match compiled list PAT against NODES, a list of graph nodes.
+PAT is a cons/nil chain as produced by `tl-pat-parse-list'.  A trailing
+`(prest NAME)' or a bare `(pvar NAME)' binds the remaining NODES."
+  (pcase pat
+    (`(pnil) (when (null nodes) (cons t bindings)))
+    ;; `tl-pat-parse-list' wraps every element in a cons, so a trailing
+    ;; `(prest NAME)' appears as the head of the final cell.
+    (`(pcon cons (prest ,name) (pnil))
+     (let ((r (tl-pat-bind-list name nodes bindings)))
+       (when r (cons t r))))
+    (`(pcon cons ,head ,tail)
+     (when nodes
+       (let ((r (tl-pat-match head (car nodes) bindings)))
+         (when r (tl-pat-match-list tail (cdr nodes) (cdr r))))))
+    (`(prest ,name)
+     (let ((r (tl-pat-bind-list name nodes bindings)))
+       (when r (cons t r))))
+    (`(pvar ,name)
+     (let ((r (tl-pat-bind-list name nodes bindings)))
+       (when r (cons t r))))
+    (_ (signal 'termlisp-error
+               (list (format "Bad list pattern: %S" pat))))))
 
 (defun tl-pat-strip-pas (pat)
   "Return PAT with any outer `pas' wrappers removed."
@@ -120,10 +195,26 @@ Exact arity is required; a leftover pattern or node fails the match."
 
 (defun tl-pat-variable-p (pat)
   "Return non-nil when PAT is irrefutable (matches any value).
-A `pvar', a `pwild', or a `pas' wrapping either is irrefutable.  `pas' is
-transparent here because its binding is recovered when the winning clause
-is matched, not while dispatching."
-  (memq (car-safe (tl-pat-strip-pas pat)) '(pvar pwild)))
+A `pvar', a `pwild', a `prest', or a `pas' wrapping one is irrefutable.
+`pas' is transparent here because its binding is recovered when the winning
+clause is matched, not while dispatching."
+  (memq (car-safe (tl-pat-strip-pas pat)) '(pvar pwild prest)))
+
+(defun tl-pat-contains-rest-p (pat)
+  "Return non-nil when PAT varies a constructor's arity.
+That is a `(prest NAME)' pattern anywhere, or a constructor whose sole
+subpattern is a list pattern (matched against the whole child list).  Such
+clauses cannot be dispatched by the column-wise decision tree, so
+`tl-case-compile' falls back to a linear scan for them."
+  (pcase pat
+    (`(prest . ,_) t)
+    (`(pas ,_ ,sub) (tl-pat-contains-rest-p sub))
+    (`(pcon . ,_)
+     (let ((subs (cddr pat)))
+       (or (and (consp subs) (null (cdr subs))
+                (tl-pat-list-pattern-p (car subs)))
+           (cl-some #'tl-pat-contains-rest-p subs))))
+    (_ nil)))
 
 (defun tl-pat-dispatch-key (pat)
   "Return the dispatch key for refutable pattern PAT, or nil.
@@ -239,13 +330,20 @@ row is irrefutable (it matches everything left to match)."
 Each clause is `(PATTERN . TEMPLATE)' where PATTERN is a compiled pattern
 from `tl-pat-parse'.  Clauses are matched in order; the tree dispatches on
 the leftmost column with a refutable pattern and, at a leaf, records the
-index of the winning clause."
-  (let ((rows nil)
-        (index 0))
-    (dolist (clause clauses)
-      (setq rows (append rows (list (cons (list (car clause)) index))))
-      (setq index (1+ index)))
-    (tl-ct-build-rows rows)))
+index of the winning clause.
+
+When any clause contains a `(prest NAME)' pattern its constructor arity is
+not fixed, so the column-wise tree cannot dispatch it; such clause lists
+compile to `(ct-linear)', which `tl-case-match' evaluates by scanning the
+clauses in order."
+  (if (cl-some (lambda (clause) (tl-pat-contains-rest-p (car clause))) clauses)
+      '(ct-linear)
+    (let ((rows nil)
+          (index 0))
+      (dolist (clause clauses)
+        (setq rows (append rows (list (cons (list (car clause)) index))))
+        (setq index (1+ index)))
+      (tl-ct-build-rows rows))))
 
 (defun tl-case--con-match-p (value head arity)
   "Return non-nil when VALUE is the constructor HEAD applied to ARITY args.
@@ -290,7 +388,20 @@ consumes its column, mirroring `tl-ct-row-refine'."
      (let ((r (tl-pat-match (car (nth index clauses)) root nil)))
        (when r (cons index (cdr r)))))
     (`(ct-fail) nil)
+    (`(ct-linear) (tl-case-match-linear clauses root))
     (_ (signal 'termlisp-error (list (format "Bad case tree: %S" tree))))))
+
+(defun tl-case-match-linear (clauses root)
+  "Return `(INDEX . BINDINGS)' for the first clause of CLAUSES matching ROOT.
+Used for clause lists containing rest patterns, which bypass the decision
+tree; see `tl-case-compile'."
+  (let ((index 0))
+    (catch 'found
+      (dolist (clause clauses)
+        (let ((r (tl-pat-match (car clause) root nil)))
+          (when r (throw 'found (cons index (cdr r)))))
+        (setq index (1+ index)))
+      nil)))
 
 (defun tl-case-match-alts (alts clauses column scrutinees value root)
   "Dispatch VALUE over ALTS for COLUMN, continuing on the matching branch."
@@ -364,6 +475,46 @@ node list into the surrounding list; any other atom is literal."
    ((consp template)
     (cons (car template) (tl-case--template-list (cdr template) bindings)))
    (t template)))
+
+;;; Integration with the term-graph rewriter.
+
+(defun tl-graph-crule-match (node rule)
+  "Match NODE against clause-based RULE.
+Return `(INDEX . BINDINGS)' for the first matching clause, or nil.  RULE's
+clauses are compiled to a decision tree once and the tree is memoised in the
+rule's `compiled' slot."
+  (let ((tree (or (tl-grule-compiled rule)
+                  (setf (tl-grule-compiled rule)
+                        (tl-case-compile (tl-grule-clauses rule))))))
+    (tl-case-match tree (tl-grule-clauses rule) node)))
+
+(defun tl-graph-crule-instantiate (rule match)
+  "Build the replacement node for clause-based RULE and MATCH.
+MATCH is `(INDEX . BINDINGS)' from `tl-graph-crule-match'; the winning
+clause's TEMPLATE is instantiated with `tl-case-template' and rebuilt into a
+graph.  A `(:splice $name)' template element splices the node list bound to
+a `(prest $name)' pattern."
+  (let* ((clause (nth (car match) (tl-grule-clauses rule)))
+         (sexp (tl-case-template (cdr clause) (cdr match))))
+    (tl-graph-root (tl-graph-build sexp))))
+
+(defun tl-graph-apply-crule (node rule)
+  "If clause-based RULE matches NODE, rewrite NODE in place.  Return t or nil.
+Compiles RULE's clauses once, dispatches NODE through the resulting case
+tree, checks RULE's guard, and commits the winning clause's template."
+  (let ((match (tl-graph-crule-match node rule)))
+    (when (and match
+               (or (null (tl-grule-guard rule))
+                   (funcall (tl-grule-guard rule) (cdr match))))
+      (tl-graph--commit node rule (tl-graph-crule-instantiate rule match)))))
+
+(defun tl-graph-crule-applicable-p (node rule)
+  "Return non-nil when clause-based RULE matches NODE and passes its guard.
+Used by `tl-graph-normal-form-p'."
+  (let ((match (tl-graph-crule-match node rule)))
+    (and match
+         (or (null (tl-grule-guard rule))
+             (funcall (tl-grule-guard rule) (cdr match))))))
 
 (provide 'termlisp-case)
 ;;; termlisp-case.el ends here
