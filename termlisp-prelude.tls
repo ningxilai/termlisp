@@ -1,4 +1,4 @@
-;;; term-lisp standard prelude
+;;; term-lisp standard prelude -*- lexical-binding: t; -*-
 
 ;; Booleans
 (datatype Bool (True) (False))
@@ -164,3 +164,7 @@
 
 ;; Assertions
 (define (assertEqual a b) (if (eq a b) True False))
+
+;;; Local Variables:
+;;; mode: emacs-lisp
+;;; End:

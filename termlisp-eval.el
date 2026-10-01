@@ -21,6 +21,11 @@
 (defvar termlisp--current-env nil
   "Dynamically bound evaluation context during `tl-run'.")
 
+(defvar termlisp--load-env nil
+  "Term-lisp environment used while loading `.tls' files.
+Defined in `termlisp-load.el'; declared here so `termlisp-load-prelude'
+byte-compiles without a free-variable warning.")
+
 ;;; Thunks ---------------------------------------------------------------
 
 (defun tl-force (value)
@@ -364,6 +369,23 @@ constructor argument types are parsed and their schemes registered."
    ((and (consp form) (eq (car form) 'do)) (tl-run (tl-desugar-do form) nil))
    (t (tl-run form nil))))
 
+(defun termlisp-eval-form (form &optional env)
+  "Evaluate a single already-read term-lisp FORM in ENV.
+Handles top-level `do' desugaring like `termlisp-eval', and honors the
+`:type-check' and `:elaborate' options of ENV."
+  (let* ((env (or env (termlisp-make-env)))
+         (termlisp--current-env env)
+         (form (if (and (consp form) (eq (car form) 'do))
+                   (tl-desugar-do form)
+                 form)))
+    (if (tl-env-option env :elaborate)
+        (setq form (tl-elaborate-form env form))
+      (when (and (tl-env-option env :type-check)
+                 (not (and (consp form)
+                           (memq (car form) '(datatype datatype-extension)))))
+        (tl-typecheck-form env form)))
+    (tl-eval-top env form)))
+
 (defun termlisp-eval (string &optional env)
   "Parse and evaluate STRING in ENV (creating a fresh env if nil).
 
@@ -373,19 +395,10 @@ the elaborator.  A `do' nested inside a larger expression is instead
 desugared at evaluation time by `tl-run' and is therefore not elaborated:
 nested type-directed `do' (without an explicit monad operand) remains a
 known limitation."
-  (let* ((env (or env (termlisp-make-env)))
-         (termlisp--current-env env)
-         (result nil))
+  (let ((env (or env (termlisp-make-env)))
+        (result nil))
     (dolist (form (termlisp-parse string) result)
-      (when (and (consp form) (eq (car form) 'do))
-        (setq form (tl-desugar-do form)))
-      (if (tl-env-option env :elaborate)
-          (setq form (tl-elaborate-form env form))
-        (when (and (tl-env-option env :type-check)
-                   (not (and (consp form)
-                             (memq (car form) '(datatype datatype-extension)))))
-          (tl-typecheck-form env form)))
-      (setq result (tl-eval-top env form)))))
+      (setq result (termlisp-eval-form form env)))))
 
 (defun termlisp-eval-file (file &optional env)
   "Evaluate the contents of FILE in ENV."
@@ -399,12 +412,12 @@ known limitation."
   "Directory containing the termlisp sources.")
 
 (defun termlisp-load-prelude (&optional env)
-  "Load the bundled prelude into ENV, returning the environment."
-  (let ((env (or env (termlisp-make-env))))
-    (termlisp-eval-file
-     (expand-file-name "termlisp-prelude.tlsp" termlisp--directory)
-     env)
-    env))
+  "Load the bundled prelude into ENV (or a fresh env) and return it.
+Loading goes through `load', so `termlisp-load' must be required for the
+`datatype'/`define'/`class'/`instance' macros to be defined."
+  (let ((termlisp--load-env (or env (termlisp-make-env))))
+    (load (expand-file-name "termlisp-prelude.tls" termlisp--directory) nil t)
+    termlisp--load-env))
 
 (provide 'termlisp-eval)
 ;;; termlisp-eval.el ends here

@@ -1,0 +1,6 @@
+;;; -*- lexical-binding: t; -*-
+(fmap (lambda (x) (+ x 1)) (Just 4))
+
+;;; Local Variables:
+;;; mode: emacs-lisp
+;;; End:

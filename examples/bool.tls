@@ -1,0 +1,6 @@
+;;; -*- lexical-binding: t; -*-
+(if (eq (a b) (a b)) booleans-work booleans-differ)
+
+;;; Local Variables:
+;;; mode: emacs-lisp
+;;; End:

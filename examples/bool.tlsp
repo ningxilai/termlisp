@@ -1,1 +1,0 @@
-(if (eq (a b) (a b)) booleans-work booleans-differ)

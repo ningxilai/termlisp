@@ -1,1 +1,0 @@
-(fmap (lambda (x) (+ x 1)) (Just 4))

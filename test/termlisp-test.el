@@ -117,7 +117,7 @@
   (should-error (termlisp-parse "(#1=(a . #1#))") :type 'termlisp-parse-error))
 
 (ert-deftest reader/parse-file ()
-  (let ((file (make-temp-file "termlisp-reader-" nil ".tlsp")))
+  (let ((file (make-temp-file "termlisp-reader-" nil ".tls")))
     (unwind-protect
         (progn
           (with-temp-file file (insert "(a)\n(b c)\n"))
@@ -531,12 +531,12 @@
 (ert-deftest acceptance/examples ()
   (let ((env (termlisp-load-prelude)))
     (should (eq (termlisp-eval-file
-                 (expand-file-name "examples/bool.tlsp" termlisp--directory)
+                 (expand-file-name "examples/bool.tls" termlisp--directory)
                  env)
                 'booleans-work)))
   (should (equal (termlisp-value->string
                   (termlisp-eval-file
-                   (expand-file-name "examples/nat.tlsp" termlisp--directory)))
+                   (expand-file-name "examples/nat.tls" termlisp--directory)))
                  "(Succ (Succ (Succ Zero)))")))
 
 (ert-deftest reader/trailing-comment ()
@@ -1029,7 +1029,7 @@
   "The prelude must typecheck without error."
   (let ((env (termlisp-make-env)))
     (should (termlisp-typecheck-file
-             (expand-file-name "termlisp-prelude.tlsp" termlisp--directory)
+             (expand-file-name "termlisp-prelude.tls" termlisp--directory)
              env))))
 
 (ert-deftest class/declare-and-methods ()
@@ -1090,7 +1090,7 @@
   "A top-level expression whose class variable is unresolved is rejected."
   (let ((env (termlisp-make-env)))
     (termlisp-typecheck-file
-     (expand-file-name "termlisp-prelude.tlsp" termlisp--directory) env)
+     (expand-file-name "termlisp-prelude.tls" termlisp--directory) env)
     (should-error (termlisp-typecheck "(return 7)" env)
                   :type 'termlisp-type-error)))
 
@@ -1125,7 +1125,7 @@
 (ert-deftest typecheck/do ()
   (let ((env (termlisp-make-env)))
     (termlisp-typecheck-file
-     (expand-file-name "termlisp-prelude.tlsp" termlisp--directory) env)
+     (expand-file-name "termlisp-prelude.tls" termlisp--directory) env)
     (should (termlisp-typecheck "(do MaybeDict (x <- (Just 1)) (return (+ x 1)))" env))
     (should-error (termlisp-typecheck "(do MaybeDict (x <- (Just 1)) (return (+ x \"s\")))" env)
                   :type 'termlisp-type-error)))
@@ -1390,7 +1390,7 @@ a bare `(return 1)' would leave the monad ambiguous."
   "The prelude declares Functor/Applicative/Monad with Maybe/List/State/Reader instances."
   (let ((env (termlisp-make-env)))
     (termlisp-typecheck-file
-     (expand-file-name "termlisp-prelude.tlsp" termlisp--directory) env)
+     (expand-file-name "termlisp-prelude.tls" termlisp--directory) env)
     (dolist (c '(Functor Applicative Monad))
       (should (gethash c (tl-env-class-env env)))
       (let ((types (mapcar (lambda (i)
@@ -1473,13 +1473,13 @@ the test fixes the type to Maybe with a signature-annotated binding."
 (ert-deftest acceptance/examples-all ()
   (let ((env (termlisp-load-prelude)))
     (should (= (termlisp-eval-file
-                (expand-file-name "examples/lists.tlsp" termlisp--directory)
+                (expand-file-name "examples/lists.tls" termlisp--directory)
                 env)
                3)))
   (let ((env (termlisp-load-prelude (termlisp-make-env '(:elaborate t)))))
     (should (equal (termlisp-value->string
                     (termlisp-eval-file
-                     (expand-file-name "examples/classes.tlsp" termlisp--directory)
+                     (expand-file-name "examples/classes.tls" termlisp--directory)
                      env))
                    "(Just 5)"))))
 
@@ -1499,6 +1499,23 @@ the test fixes the type to Maybe with a signature-annotated binding."
   (let ((a (tl-fresh-tvar)))
     (should (car (tl-unify-types (tl-tcon 'List (list a)) (tl-tcon 'List (list (tl-tint))) nil)))
     (should (equal (tl-deref a (cdr (tl-unify-types (tl-tcon 'List (list a)) (tl-tcon 'List (list (tl-tint))) nil))) (tl-tint)))))
+
+(ert-deftest load/tls-as-elisp ()
+  (let ((file (make-temp-file "termlisp-load-" nil ".tls")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert ";;; -*- lexical-binding: t; -*-\n"
+                    "(datatype Nat (Zero) (Succ Nat))\n"
+                    "(define (plus Zero b) b)\n"
+                    "(define (plus (Succ a) b) (Succ (plus a b)))\n"))
+          (let ((termlisp--load-env (termlisp-make-env)))
+            (load file nil t)
+            (should (equal (termlisp-value->string
+                            (termlisp-eval-form '(plus (Succ Zero) (Succ Zero))
+                                                termlisp--load-env))
+                           "(Succ (Succ Zero))"))))
+      (delete-file file))))
 
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

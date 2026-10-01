@@ -90,7 +90,7 @@ API:
 - `termlisp-eval` / `termlisp-eval-file` — parse and evaluate a string / file.
 - `termlisp-parse` — parse a string into a list of S-expressions.
 - `termlisp-typecheck` / `termlisp-typecheck-file` — typecheck a string / file.
-- `termlisp-load-prelude` — load `termlisp-prelude.tlsp` into an environment.
+- `termlisp-load-prelude` — load `termlisp-prelude.tls` into an environment.
 - `termlisp-value->string` — render a value.
 
 Example:
@@ -116,7 +116,7 @@ termlisp-pattern.el    ; pattern parsing and matching
 termlisp-builtins.el   ; primitive functions
 termlisp-eval.el       ; lazy TCO evaluator, `do`, top-level forms
 termlisp-data-reader.el; cats-based Reader monad
-termlisp-prelude.tlsp  ; the standard prelude
+termlisp-prelude.tls   ; the standard prelude
 examples/              ; example programs
 test/                  ; ERT test suite
 vendor/cats/           ; vendored emacs-cats (GPLv3)

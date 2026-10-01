@@ -1,0 +1,6 @@
+;;; -*- lexical-binding: t; -*-
+(length (map-list (lambda (x) (+ x 1)) (Cons 1 (Cons 2 (Cons 3 Nil)))))
+
+;;; Local Variables:
+;;; mode: emacs-lisp
+;;; End:

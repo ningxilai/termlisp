@@ -1,4 +1,9 @@
+;;; -*- lexical-binding: t; -*-
 (datatype Nat (Zero) (Succ Nat))
 (define (plus Zero b) b)
 (define (plus (Succ a) b) (Succ (plus a b)))
 (plus (Succ (Succ Zero)) (Succ Zero))
+
+;;; Local Variables:
+;;; mode: emacs-lisp
+;;; End:
