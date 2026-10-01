@@ -29,7 +29,7 @@
 (defun termlisp-make-env (&optional options)
   "Create a fresh evaluation environment, merging OPTIONS over defaults."
   (tl-env--make
-   :options (append options termlisp-default-options)))
+   :options (append options (copy-sequence termlisp-default-options))))
 
 (defun tl-env-option (env key &optional default)
   "Return option KEY of ENV, or DEFAULT if unset."

@@ -19,5 +19,9 @@
     (should (= (tl-env-option env :fuel) 10))
     (should (eq (tl-env-option env :occurs-check) t))))
 
+(ert-deftest base/env-option-nil-override ()
+  (should-not (tl-env-option (termlisp-make-env '(:occurs-check nil)) :occurs-check))
+  (should (eq (tl-env-option (termlisp-make-env) :missing 'fallback) 'fallback)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
