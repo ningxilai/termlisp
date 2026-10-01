@@ -887,5 +887,32 @@
     (termlisp-typecheck-def env "(define (zero? (guard n (eq n 0))) (True))")
     (should (gethash 'zero? (tl-env-type-env env)))))
 
+(ert-deftest infer/lambda-pattern ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(define (map1 a (:lambda fun)) (fun a))")
+    (let ((ty (tl-tscheme-type (gethash 'map1 (tl-env-type-env env)))))
+      ;; a -> (a -> b) -> b
+      (should (eq (tl-tcon-name ty) '->))
+      (let* ((a1 (nth 0 (tl-tcon-args ty)))
+             (a2 (nth 1 (tl-tcon-args ty)))
+             (fun-type (nth 0 (tl-tcon-args a2))))
+        (should (eq (tl-tcon-name a2) '->))
+        (should (eq (tl-tcon-name fun-type) '->))
+        (should (eq (nth 0 (tl-tcon-args fun-type)) a1))))))
+
+(ert-deftest infer/or-pattern-bindings ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(datatype Nat (Zero) (Succ Nat))")
+    (termlisp-typecheck-def env "(define (pred (or (Succ n) Zero)) n)")
+    (let ((ty (tl-tscheme-type (gethash 'pred (tl-env-type-env env)))))
+      (should (equal (nth 0 (tl-tcon-args ty)) (tl-tcon 'Nat nil)))
+      (should (equal (nth 1 (tl-tcon-args ty)) (tl-tcon 'Nat nil))))))
+
+(ert-deftest infer/constructor-arity-error ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(datatype Nat (Zero) (Succ Nat))")
+    (should-error (termlisp-typecheck-def env "(define (f (Succ a b)) a)")
+                  :type 'termlisp-type-error)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

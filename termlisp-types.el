@@ -315,13 +315,21 @@ error."
   (let ((acc nil))
     (dotimes (_ n)
       (let ((args (tl-tfun-args cty)))
+        (unless args
+          (signal 'termlisp-type-error
+                  '("Too many arguments in constructor pattern")))
         (push (nth 0 args) acc)
         (setq cty (nth 1 args))))
     (nreverse acc)))
 
 (defun tl-infer-result-of-constructor (cty n)
   "Return the result type of constructor type CTY applied to N args."
-  (dotimes (_ n) (setq cty (nth 1 (tl-tfun-args cty))))
+  (dotimes (_ n)
+    (let ((args (tl-tfun-args cty)))
+      (unless args
+        (signal 'termlisp-type-error
+                '("Too many arguments in constructor pattern")))
+      (setq cty (nth 1 args))))
   cty)
 
 (defun tl-constructor-name-p (env name)
@@ -351,9 +359,10 @@ Return `(LOCAL-BINDINGS . SUBST)'."
         (signal 'termlisp-type-error (list (format "Literal pattern %S mismatches" pat))))
       (cons nil (cdr u))))
    ((and (consp pat) (eq (car pat) :list))
+    ;; List types are deferred; the bound variable is left unconstrained.
     (cons (list (cons (cadr pat) (tl-fresh-tvar))) nil))
    ((and (consp pat) (eq (car pat) :lambda))
-    (cons (list (cons (cadr pat) (tl-fresh-tvar))) nil))
+    (cons (list (cons (cadr pat) expected)) nil))
    ((and (consp pat) (eq (car pat) 'guard))
     (let* ((sub (tl-infer-pattern env (cadr pat) expected))
            (env2 (tl-tenv-extend env (car sub)))
@@ -364,11 +373,12 @@ Return `(LOCAL-BINDINGS . SUBST)'."
         (signal 'termlisp-type-error (list "Guard expression is not Bool")))
       (cons (car sub) (cdr u))))
    ((and (consp pat) (eq (car pat) 'or))
-    (let ((binds nil) (bs nil))
+    (let ((first nil) (bs nil))
       (dolist (p (cdr pat))
         (let ((r (tl-infer-pattern env p expected)))
-          (setq binds (car r) bs (tl-compose-bindings bs (cdr r)))))
-      (cons binds bs)))
+          (unless first (setq first (car r)))
+          (setq bs (tl-compose-bindings bs (cdr r)))))
+      (cons first bs)))
    ((and (consp pat) (eq (car pat) 'and))
     (let ((binds nil) (bs nil))
       (dolist (p (cdr pat))
