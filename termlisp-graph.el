@@ -12,13 +12,15 @@
 (require 'cl-lib)
 (require 'termlisp-base)
 
-(cl-defstruct (tl-node (:constructor tl-make-node (head &optional children)))
+(cl-defstruct (tl-node (:constructor tl-make-node (head &optional children application)))
   "A term graph node.
 HEAD is a symbol/atom operator (or a literal value for leaves).
 CHILDREN is a list of child `tl-node's (shared).
+APPLICATION is non-nil when the node was written as an application `(HEAD ...)',
+distinguishing a nullary application `(a)' from the atom `a'.
 STATE is a control marker (:idle, :active, :done).
 MEMO is the node's rewritten replacement, or nil."
-  head children (state :idle) memo)
+  head children (application nil) (state :idle) memo)
 
 (cl-defstruct (tl-graph (:constructor tl-make-graph (root table)))
   "A term graph: ROOT node plus a sharing TABLE (sexp-key -> node)."
@@ -30,15 +32,17 @@ MEMO is the node's rewritten replacement, or nil."
     (cl-labels ((build (x)
                   (or (gethash x table)
                       (let ((node (if (consp x)
-                                      (tl-make-node (car x) (mapcar #'build (cdr x)))
-                                    (tl-make-node x nil))))
+                                      (tl-make-node (car x) (mapcar #'build (cdr x)) t)
+                                    (tl-make-node x nil nil))))
                         (puthash x node table)
                         node))))
       (tl-make-graph (build sexp) table))))
 
 (defun tl-node->sexp (node)
-  "Render NODE (and its children) back to an s-expression."
-  (if (tl-node-children node)
+  "Render NODE (and its children) back to an s-expression.
+An application node renders as `(HEAD ...)', including nullary `(HEAD)';
+a non-application node renders as its atom HEAD."
+  (if (tl-node-application node)
       (cons (tl-node-head node) (mapcar #'tl-node->sexp (tl-node-children node)))
     (tl-node-head node)))
 
@@ -68,11 +72,12 @@ A proper alist so guards may safely iterate its entries.")
       (if cell (if (eq (cdr cell) node) bindings nil)
         (cons (cons pattern node) bindings))))
    ((consp pattern)
-    (when (eq (tl-node-head node) (car pattern))
+    (when (and (tl-node-application node)
+               (eq (tl-node-head node) (car pattern)))
       (tl-graph-match-seq (cdr pattern) (tl-node-children node) bindings)))
    (t
-    (when (and (eq (tl-node-head node) pattern)
-               (null (tl-node-children node)))
+    (when (and (not (tl-node-application node))
+               (eq (tl-node-head node) pattern))
       (or bindings tl-graph--match-ok)))))
 
 (defun tl-graph-match-seq (patterns nodes bindings)
@@ -99,8 +104,9 @@ A proper alist so guards may safely iterate its entries.")
    ((consp template)
     (tl-make-node (car template)
                   (mapcar (lambda (sub) (tl-graph-instantiate sub bindings))
-                          (cdr template))))
-   (t (tl-make-node template nil))))
+                          (cdr template))
+                  t))
+   (t (tl-make-node template nil nil))))
 
 (defun tl-graph-apply (node rule)
   "If RULE matches NODE, rewrite NODE in place.  Return t, or nil if no match.
@@ -111,10 +117,12 @@ Signals `termlisp-eval-error' if the rewrite makes no progress."
                    (funcall (tl-grule-guard rule) bindings)))
       (let ((new (tl-graph-instantiate (tl-grule-template rule) bindings)))
         (if (and (eq (tl-node-head node) (tl-node-head new))
+                 (eq (tl-node-application node) (tl-node-application new))
                  (equal (tl-node-children node) (tl-node-children new)))
             (signal 'termlisp-eval-error
                     (list (format "Non-progressing rewrite: %S" (tl-grule-name rule))))
           (setf (tl-node-head node) (tl-node-head new))
+          (setf (tl-node-application node) (tl-node-application new))
           (setf (tl-node-children node) (tl-node-children new))
           t)))))
 
