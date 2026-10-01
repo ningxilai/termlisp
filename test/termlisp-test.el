@@ -1837,5 +1837,29 @@ the test fixes the type to Maybe with a signature-annotated binding."
 (ert-deftest case/parse-error ()
   (should-error (tl-pat-parse '(bogus x)) :type 'termlisp-error))
 
+(ert-deftest case/match-var-and-wild ()
+  (let ((n (tl-graph-root (tl-graph-build 'foo))))
+    (should (tl-pat-match '(pvar $x) n nil))
+    (should (tl-pat-match '(pwild) n nil))))
+
+(ert-deftest case/match-con ()
+  (let ((n (tl-graph-root (tl-graph-build '(:bind m k c)))))
+    (should (tl-pat-match '(pcon :bind (pvar $m) (pvar $k) (pvar $c)) n nil))
+    (should-not (tl-pat-match '(pcon :hook (pvar $x)) n nil))))
+
+(ert-deftest case/match-literal-and-list ()
+  (let ((n (tl-graph-root (tl-graph-build '0))))
+    (should (tl-pat-match '(plit 0) n nil))
+    (should-not (tl-pat-match '(plit 1) n nil)))
+  (let ((n (tl-graph-root (tl-graph-build '(cons a (cons b nil))))))
+    (should (tl-pat-match (tl-pat-parse '(plist (pvar $x) (pvar $y))) n nil))
+    (should-not (tl-pat-match (tl-pat-parse '(plist (pvar $x))) n nil))))
+
+(ert-deftest case/match-as ()
+  (let ((n (tl-graph-root (tl-graph-build '(f a)))))
+    (let ((r (tl-pat-match '(pas $whole (pcon f (pvar $x))) n nil)))
+      (should (car r))
+      (should (eq (cdr (assq '$whole (cdr r))) n)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
