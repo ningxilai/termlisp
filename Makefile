@@ -5,7 +5,7 @@ EMACS ?= emacs
 # Fetch the emacs-cats submodule on demand.  The file dependency means the
 # recipe runs only when the submodule has not been checked out yet.
 vendor/cats/cats.el:
-	GIT_TERMINAL_PROMPT=0 git submodule update --init --recursive
+	git submodule update --init --recursive
 
 submodule: vendor/cats/cats.el
 	@:
