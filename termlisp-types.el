@@ -5,9 +5,9 @@
 ;;; Commentary:
 ;; Types are either a type variable (a `tl-lvar') or a type constructor
 ;; application `tl-tcon'.  Substitutions are alists tvar -> type.  The type
-;; unifier shares `tl-deref' with the term kernel and uses `tl-occurs-type' to
-;; walk type constructors; like ACL2's one-way unifier, it leaves bindings
-;; unchanged on failure.
+;; unifier shares the generic kernel in `termlisp-unify' by teaching it to
+;; decompose a `tl-tcon' into its name and arguments; like ACL2's one-way
+;; unifier, it leaves bindings unchanged on failure.
 
 ;;; Code:
 
@@ -31,6 +31,14 @@
 (defun tl-tvar-p (x) (tl-lvar-p x))
 (defun tl-type-p (x) (or (tl-tvar-p x) (tl-tcon-p x)))
 
+(cl-defmethod tl-decompose ((x tl-tcon))
+  "Decompose a type constructor into its name and argument list."
+  (cons (tl-tcon-name x) (tl-tcon-args x)))
+
+(cl-defmethod tl-rebuild (head children)
+  "Rebuild a type constructor from its name HEAD and argument CHILDREN."
+  (tl-tcon head children))
+
 ;; LEVEL is intentionally unused in Plan 2 (generalization uses tvars not free in the environment); reserved for level-based generalization in a later plan.
 (defun tl-fresh-tvar (&optional level)
   "Return a fresh type variable."
@@ -46,46 +54,10 @@
   (when (and (tl-tcon-p ty) (eq (tl-tcon-name ty) '->))
     (tl-tcon-args ty)))
 
-(defun tl-occurs-type (var type bindings)
-  "Return non-nil if VAR occurs in TYPE under BINDINGS.
-Like `tl-occurs', but traverses the argument types of a `tl-tcon'."
-  (let ((work (list type)) (found nil))
-    (while (and work (not found))
-      (let ((t0 (tl-deref (pop work) bindings)))
-        (cond ((eq t0 var) (setq found t))
-              ((tl-tcon-p t0)
-               (when (tl-tvar-p (tl-tcon-name t0))
-                 (push (tl-tcon-name t0) work))
-               (dolist (a (tl-tcon-args t0)) (push a work))))))
-    found))
-
 (defun tl-unify-types (a b bindings)
   "Unify types A and B under BINDINGS.  Return `(ok . bindings)'.
 On failure returns `(nil . nil)'."
-  (let ((pending (list (cons a b))) (ok t))
-    (while (and pending ok)
-      (let* ((pair (pop pending))
-             (x (tl-deref (car pair) bindings))
-             (y (tl-deref (cdr pair) bindings)))
-        (cond
-         ((eq x y))
-         ((tl-tvar-p x)
-          (if (tl-occurs-type x y bindings) (setq ok nil)
-            (setq bindings (cons (cons x y) bindings))))
-         ((tl-tvar-p y)
-          (if (tl-occurs-type y x bindings) (setq ok nil)
-            (setq bindings (cons (cons y x) bindings))))
-         ((and (tl-tcon-p x) (tl-tcon-p y))
-          (if (= (length (tl-tcon-args x)) (length (tl-tcon-args y)))
-              (progn
-                (push (cons (tl-tcon-name x) (tl-tcon-name y)) pending)
-                (let ((ax (tl-tcon-args x)) (ay (tl-tcon-args y)))
-                  (while ax
-                    (push (cons (car ax) (car ay)) pending)
-                    (setq ax (cdr ax) ay (cdr ay)))))
-            (setq ok nil)))
-         (t (setq ok nil)))))
-    (if ok (cons t bindings) (cons nil nil))))
+  (tl-unify-generic a b bindings #'tl-tvar-p t))
 
 (defvar tl-type-parse-vars nil
   "Alist of type-variable symbols to type variables, bound during parsing.")
@@ -170,11 +142,13 @@ application."
   "Return the list of type variables occurring in TYPE."
   (let ((acc nil))
     (cl-labels ((walk (node)
-                  (cond ((tl-tvar-p node) (cl-pushnew node acc :test #'eq))
-                        ((tl-tcon-p node)
-                         (when (tl-tvar-p (tl-tcon-name node))
-                           (cl-pushnew (tl-tcon-name node) acc :test #'eq))
-                         (mapc #'walk (tl-tcon-args node))))))
+                  (let ((d (tl-decompose node)))
+                    (if d
+                        (progn
+                          (walk (car d))
+                          (mapc #'walk (cdr d)))
+                      (when (tl-tvar-p node)
+                        (cl-pushnew node acc :test #'eq))))))
       (walk type))
     acc))
 
@@ -195,12 +169,12 @@ Borrowed from clover's `canonical-term-string'."
                           (setq counter (1+ counter))
                           (push (cons ty key) index)
                           key))))
-                   ((tl-tcon-p ty)
-                    (let ((name (tl-tcon-name ty)))
+                   ((tl-decompose ty)
+                    (let* ((d (tl-decompose ty)) (name (car d)))
                       (format "(%s%s)"
                               (if (tl-tvar-p name) (canon name) name)
                               (mapconcat (lambda (a) (concat " " (canon a)))
-                                         (tl-tcon-args ty) ""))))
+                                         (cdr d) ""))))
                    (t (format "%S" ty)))))
       (canon type))))
 
@@ -238,19 +212,19 @@ from clover's `remove-duplicates-by-key'."
    ((tl-tvar-p type)
     (let ((cell (assq type sub))) (if cell (cdr cell) type)))
    ((tl-tcon-p type)
-    (let ((name (tl-tcon-name type)))
-      (tl-tcon (if (tl-tvar-p name) (tl-type-subst name sub) name)
-               (mapcar (lambda (arg) (tl-type-subst arg sub)) (tl-tcon-args type)))))
+    (let* ((d (tl-decompose type)) (name (car d)))
+      (tl-rebuild (if (tl-tvar-p name) (tl-type-subst name sub) name)
+                  (mapcar (lambda (arg) (tl-type-subst arg sub)) (cdr d)))))
    (t type)))
 
 (defun tl-apply-bindings (type bindings)
   "Fully apply BINDINGS to TYPE."
   (let ((ty (tl-deref type bindings)))
     (if (tl-tcon-p ty)
-        (let ((name (tl-tcon-name ty)))
-          (tl-tcon (if (tl-tvar-p name) (tl-apply-bindings name bindings) name)
-                   (mapcar (lambda (arg) (tl-apply-bindings arg bindings))
-                           (tl-tcon-args ty))))
+        (let* ((d (tl-decompose ty)) (name (car d)))
+          (tl-rebuild (if (tl-tvar-p name) (tl-apply-bindings name bindings) name)
+                      (mapcar (lambda (arg) (tl-apply-bindings arg bindings))
+                              (cdr d))))
       ty)))
 
 (defun tl-generalized-vars (type env-tvars)

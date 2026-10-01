@@ -1442,5 +1442,22 @@ the test fixes the type to Maybe with a signature-annotated binding."
                      env))
                    "(Just 5)"))))
 
+(ert-deftest core/decompose-cons ()
+  (should (equal (tl-decompose '(f a b)) (cons 'f (list '(a b)))))
+  (should (null (tl-decompose 'x))))
+
+(ert-deftest core/decompose-tcon ()
+  (let ((ty (tl-tcon 'List (list (tl-tint)))))
+    (should (equal (tl-decompose ty) (cons 'List (list (tl-tint)))))))
+
+(ert-deftest core/unify-cons-and-tcon ()
+  ;; same kernel, two representations
+  (let ((x (tl-make-lvar 'x)))
+    (should (car (tl-unify (list 'f x) (list 'f 1) nil)))
+    (should (equal (tl-deref x (cdr (tl-unify (list 'f x) (list 'f 1) nil))) 1)))
+  (let ((a (tl-fresh-tvar)))
+    (should (car (tl-unify-types (tl-tcon 'List (list a)) (tl-tcon 'List (list (tl-tint))) nil)))
+    (should (equal (tl-deref a (cdr (tl-unify-types (tl-tcon 'List (list a)) (tl-tcon 'List (list (tl-tint))) nil))) (tl-tint)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
