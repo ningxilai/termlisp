@@ -719,5 +719,28 @@
          (c (tl-compose-bindings b1 b2)))
     (should (equal (tl-apply-bindings a c) (tl-tint)))))
 
+(ert-deftest type/compose-bindings-overlap ()
+  (let* ((a (tl-fresh-tvar)) (b (tl-fresh-tvar))
+         (b1 (list (cons a b)))
+         (b2 (list (cons a (tl-tint)) (cons b (tl-tstring))))
+         (c (tl-compose-bindings b1 b2)))
+    ;; a resolves through b1 then b2 => String
+    (should (equal (tl-apply-bindings a c) (tl-tstring)))
+    ;; exactly one cell for a
+    (should (= (length (cl-remove-if-not (lambda (cell) (eq (car cell) a)) c)) 1))))
+
+(ert-deftest type/compose-bindings-no-growth ()
+  (let* ((a (tl-fresh-tvar)) (b (tl-fresh-tvar))
+         (c (tl-compose-bindings (list (cons a b)) (list (cons b (tl-tint))))))
+    (dotimes (_ 5) (setq c (tl-compose-bindings c (list (cons b (tl-tint))))))
+    (should (< (length c) 5))))
+
+(ert-deftest type/compose-bindings-cycle-safe ()
+  "Composing inverse bindings must not create a self-binding that hangs."
+  (let* ((a (tl-fresh-tvar)) (b (tl-fresh-tvar))
+         (c (tl-compose-bindings (list (cons a b)) (list (cons b a)))))
+    (should (null (assq a c)))
+    (should (equal (tl-apply-bindings b c) a))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

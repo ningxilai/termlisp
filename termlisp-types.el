@@ -187,10 +187,16 @@ application."
     scheme))
 
 (defun tl-compose-bindings (b1 b2)
-  "Compose substitutions B1 and B2 (apply B2 after B1)."
-  (append
-   (mapcar (lambda (cell) (cons (car cell) (tl-apply-bindings (cdr cell) b2))) b1)
-   b2))
+  "Compose substitutions B1 and B2 (apply B2 after B1).
+Result is first-wins for `tl-deref' (assq); duplicate keys from B2 and
+self-bindings are removed."
+  (let ((composed
+         (mapcar (lambda (cell)
+                   (cons (car cell) (tl-apply-bindings (cdr cell) b2)))
+                 b1))
+        (rest (cl-remove-if (lambda (cell) (assq (car cell) b1)) b2)))
+    (cl-remove-if (lambda (cell) (eq (car cell) (cdr cell)))
+                  (append composed rest))))
 
 (provide 'termlisp-types)
 ;;; termlisp-types.el ends here
