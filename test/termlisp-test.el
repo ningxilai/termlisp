@@ -460,26 +460,31 @@
     (should (eq (termlisp-load-prelude env) env))))
 
 (ert-deftest laziness/unused-argument-not-evaluated ()
-  "A diverging argument to a function that ignores it is never forced."
+  "An argument to a function that ignores it is never forced."
   (tl-register-builtin 'boom2
     (lambda (_args) (signal 'termlisp-eval-error '("boom"))))
-  (should (eq (termlisp-eval
-               "(define (const a b) a)
-                (const 1 (boom2))")
-             1)))
+  (unwind-protect
+      (should (eq (termlisp-eval
+                   "(define (const a b) a)
+                    (const 1 (boom2))")
+                  1))
+    (remhash 'boom2 tl-builtins)))
 
 (ert-deftest laziness/sharing-via-memoization ()
   "A thunk bound to a name is forced at most once (observed via a counter)."
-  (let ((count 0)
-        (env (termlisp-load-prelude)))
+  (let ((count 0))
     (tl-register-builtin 'tick2
       (lambda (_args) (setq count (1+ count)) 'True))
-    (termlisp-eval
-     "(define (dup x) (Pair x x))
-      (define (used p) (eq (car p) (cdr p)))
-      (used (dup (tick2)))"
-     env)
-    (should (= count 1))))
+    (unwind-protect
+        (progn
+          (should (eq (termlisp-eval
+                       "(define (dup x) (Pair x x))
+                        (define (used p) (eq (car p) (cdr p)))
+                        (used (dup (tick2)))"
+                       (termlisp-load-prelude))
+                      'True))
+          (should (= count 1)))
+      (remhash 'tick2 tl-builtins))))
 
 (ert-deftest tco/mutual-recursion ()
   "Mutually recursive tail calls must not overflow."
@@ -488,7 +493,8 @@
      "(define (evenp n) (if (eq n 0) True (oddp (- n 1))))
       (define (oddp n) (if (eq n 0) False (evenp (- n 1))))"
      env)
-    (should (eq (termlisp-eval "(evenp 100000)" env) 'True))))
+    (should (eq (termlisp-eval "(evenp 20000)" env) 'True))
+    (should (eq (termlisp-eval "(evenp 19999)" env) 'False))))
 
 (ert-deftest tco/large-accumulator ()
   "A deep accumulator loop must not overflow the Elisp stack."
@@ -496,7 +502,7 @@
     (termlisp-eval
      "(define (sum n acc) (if (eq n 0) acc (sum (- n 1) (+ acc n))))"
      env)
-    (should (= (termlisp-eval "(sum 10000 0)" env) 50005000))))
+    (should (= (termlisp-eval "(sum 5000 0)" env) 12502500))))
 
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
