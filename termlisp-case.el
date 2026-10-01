@@ -28,6 +28,19 @@
 ;; to write repeatable keywords.  A `plist' in any other argument position
 ;; is an ordinary cons/nil pattern over a single child.
 ;;
+;; A template `(:map $item $list TEMPLATE)' instantiates TEMPLATE once for
+;; each element of the list-valued node bound to `$list', with `$item' bound
+;; to that element.  The node is viewed as a list `(head . children)', so a
+;; graph application `(a b c)' maps over `a', `b' and `c'; a non-application
+;; node maps as a singleton.  This is the template counterpart of matching a
+;; list-valued argument, which the graph represents with the first element as
+;; the application head.
+;;
+;; `(:map-chunks $chunk $list ARITY TEMPLATE)' is the same but groups the list
+;; into consecutive ARITY-element chunks and binds `$chunk' to each chunk's
+;; node list (use `(:splice $chunk)' to emit it), which is how a repeatable
+;; keyword is lowered to its fixed-arity sub-forms in a single rewrite.
+;;
 ;; `tl-case-compile' turns a list of `(PATTERN . TEMPLATE)' clauses into a
 ;; decision tree (an Idris `CaseBuilder'-style dispatcher):
 ;;   (ct-case COLUMN ALTS)     scrutinise position COLUMN
@@ -438,26 +451,119 @@ tree; see `tl-case-compile'."
   "Return non-nil if X is a `(:splice $name)' template element."
   (and (consp x) (eq (car x) :splice) (tl-case--pvar-p (cadr x))))
 
+(defun tl-case--map-p (x)
+  "Return non-nil if X is a `(:map $item $list TEMPLATE)' element."
+  (and (consp x) (eq (car x) :map)
+       (= (length x) 4)
+       (tl-case--pvar-p (nth 1 x))
+       (tl-case--pvar-p (nth 2 x))))
+
+(defun tl-case--value-node (x)
+  "Return X as a graph node.
+A node is returned unchanged; a cons is built into a fresh graph; any other
+atom is wrapped as a leaf node.  Used to view the head of an application as
+the first element of its list representation."
+  (cond ((tl-node-p x) x)
+        ((consp x) (tl-graph-root (tl-graph-build x)))
+        (t (tl-make-node x nil nil))))
+
+(defun tl-case--list-elements (node)
+  "Return the elements of NODE viewed as a list of nodes.
+An application `(HEAD . CHILDREN)' is the list `(HEAD CHILDREN...)', so its
+elements are the head and the children; any other node is a singleton list.
+This is how a list-valued argument (whose graph node has the first element
+as its head) is mapped over."
+  (if (tl-node-application node)
+      (cons (tl-case--value-node (tl-node-head node))
+            (tl-node-children node))
+    (list node)))
+
+(defun tl-case--map-nodes (value)
+  "Return VALUE as a list of nodes to map over.
+VALUE is either a single list-valued node (viewed as a list by
+`tl-case--list-elements') or an already-bound node list, such as a
+`(prest NAME)' capture."
+  (if (tl-node-p value) (tl-case--list-elements value) value))
+
+(defun tl-case--map-template (template bindings)
+  "Instantiate the body of a `(:map $item $list TEMPLATE)' element.
+The bound node for `$list' is viewed as a list (see
+`tl-case--list-elements'); TEMPLATE is instantiated once per element with
+`$item' bound to that element.  Returns the list of instantiated sexps."
+  (let ((item (nth 1 template))
+        (list-var (nth 2 template))
+        (body (nth 3 template)))
+    (let ((cell (assq list-var bindings)))
+      (unless cell
+        (signal 'termlisp-error
+                (list (format "Unbound map variable: %S" list-var))))
+      (mapcar (lambda (node)
+                (tl-case-template body (cons (cons item node) bindings)))
+              (tl-case--map-nodes (cdr cell))))))
+
+(defun tl-case--map-chunks-p (x)
+  "Return non-nil if X is a `(:map-chunks $chunk $list ARITY TEMPLATE)' element."
+  (and (consp x) (eq (car x) :map-chunks)
+       (= (length x) 5)
+       (tl-case--pvar-p (nth 1 x))
+       (tl-case--pvar-p (nth 2 x))
+       (integerp (nth 3 x))
+       (> (nth 3 x) 0)))
+
+(defun tl-case--map-chunks-template (template bindings)
+  "Instantiate the body of a `(:map-chunks $chunk $list ARITY TEMPLATE)'.
+The bound node for `$list' is viewed as a list and grouped into consecutive
+chunks of ARITY elements (the final chunk may be shorter); TEMPLATE is
+instantiated once per chunk with `$chunk' bound to that chunk's node list,
+so a `(:splice $chunk)' inside TEMPLATE splices the chunk.  Returns the
+list of instantiated sexps."
+  (let ((chunk-var (nth 1 template))
+        (list-var (nth 2 template))
+        (arity (nth 3 template))
+        (body (nth 4 template)))
+    (let ((cell (assq list-var bindings)))
+      (unless cell
+        (signal 'termlisp-error
+                (list (format "Unbound map variable: %S" list-var))))
+      (let ((nodes (tl-case--map-nodes (cdr cell)))
+            (out nil))
+        (while nodes
+          (let ((chunk (cl-subseq nodes 0 arity)))
+            (setq nodes (nthcdr arity nodes))
+            (push (tl-case-template body (cons (cons chunk-var chunk) bindings))
+                  out)))
+        (nreverse out)))))
+
 (defun tl-case--template-list (templates bindings)
-  "Instantiate TEMPLATES in order, splicing `(:splice $name)' elements."
+  "Instantiate TEMPLATES in order, splicing `(:splice $name)' and `:map' elements."
   (let (out)
     (dolist (template templates)
-      (if (tl-case--splice-p template)
-          (let ((cell (assq (cadr template) bindings)))
-            (unless cell
-              (signal 'termlisp-error
-                      (list (format "Unbound splice variable: %S"
-                                    (cadr template)))))
-            (dolist (node (cdr cell))
-              (push (tl-node->sexp node) out)))
-        (push (tl-case-template template bindings) out)))
+      (cond
+       ((tl-case--splice-p template)
+        (let ((cell (assq (cadr template) bindings)))
+          (unless cell
+            (signal 'termlisp-error
+                    (list (format "Unbound splice variable: %S"
+                                  (cadr template)))))
+          (dolist (node (cdr cell))
+            (push (tl-node->sexp node) out))))
+       ((tl-case--map-p template)
+        (dolist (sexp (tl-case--map-template template bindings))
+          (push sexp out)))
+       ((tl-case--map-chunks-p template)
+        (dolist (sexp (tl-case--map-chunks-template template bindings))
+          (push sexp out)))
+       (t (push (tl-case-template template bindings) out))))
     (nreverse out)))
 
 (defun tl-case-template (template bindings)
   "Instantiate TEMPLATE into an s-expression using BINDINGS.
 A `$name' symbol becomes the s-expression of its bound node; a cons recurses
 into its elements; `(:splice $name)' splices the s-expressions of the bound
-node list into the surrounding list; any other atom is literal."
+node list into the surrounding list; `(:map $item $list TEMPLATE)' instantiates
+TEMPLATE once per element of the list-valued node bound to `$list';
+`(:map-chunks $chunk $list ARITY TEMPLATE)' does the same per ARITY-element
+chunk; any other atom is literal."
   (cond
    ((tl-case--pvar-p template)
     (let ((cell (assq template bindings)))
@@ -472,8 +578,13 @@ node list into the surrounding list; any other atom is literal."
                 (list (format "Unbound splice variable: %S"
                               (cadr template)))))
       (mapcar #'tl-node->sexp (cdr cell))))
+   ((tl-case--map-p template)
+    (tl-case--map-template template bindings))
+   ((tl-case--map-chunks-p template)
+    (tl-case--map-chunks-template template bindings))
    ((consp template)
-    (cons (car template) (tl-case--template-list (cdr template) bindings)))
+    (cons (tl-case-template (car template) bindings)
+          (tl-case--template-list (cdr template) bindings)))
    (t template)))
 
 ;;; Integration with the term-graph rewriter.
