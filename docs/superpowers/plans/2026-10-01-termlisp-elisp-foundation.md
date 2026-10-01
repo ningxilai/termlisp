@@ -67,7 +67,34 @@ ls vendor/cats
 
 Expected: files like `cats.el`, `cats-macros.el`, `cats-data-state.el`, `LICENSE`.
 
-- [ ] **Step 3: Write the ERT test harness**
+- [ ] **Step 3: Write the loader and the ERT test harness**
+
+Create `termlisp.el`. It conditionally loads whichever modules exist, so
+tests can run from the very first task:
+
+```elisp
+;;; termlisp.el --- Lazy term-rewriting language -*- lexical-binding: t; -*-
+
+;;; Commentary:
+;; Embedded library API for term-lisp.
+
+;;; Code:
+
+(defvar termlisp--root
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Root directory of the termlisp package.")
+
+(add-to-list 'load-path (expand-file-name "vendor/cats" termlisp--root))
+
+(dolist (feature '(termlisp-base termlisp-reader termlisp-unify
+                   termlisp-machine termlisp-pattern termlisp-builtins
+                   termlisp-eval))
+  (when (locate-library (symbol-name feature))
+    (require feature)))
+
+(provide 'termlisp)
+;;; termlisp.el ends here
+```
 
 Create `test/termlisp-test.el`:
 
@@ -107,7 +134,7 @@ clean:
 
 ```bash
 cd /home/iris/termlisp
-git add LICENSE vendor Makefile test/termlisp-test.el
+git add LICENSE vendor Makefile termlisp.el test/termlisp-test.el
 git commit -m "chore: relicense to GPLv3, vendor cats, add ERT harness"
 ```
 
@@ -1280,37 +1307,16 @@ Insert before `(provide 'termlisp-eval)`:
    env))
 ```
 
-- [ ] **Step 4: Create `termlisp.el`**
+- [ ] **Step 4: Add the public API stub to `termlisp.el`**
+
+`termlisp.el` already exists from Task 1 (conditional loader). Append the
+`termlisp-typecheck` stub before the `(provide 'termlisp)` line:
 
 ```elisp
-;;; termlisp.el --- Lazy term-rewriting language -*- lexical-binding: t; -*-
-
-;;; Commentary:
-;; Embedded library API for term-lisp.
-
-;;; Code:
-
-(require 'termlisp-base)
-(require 'termlisp-reader)
-(require 'termlisp-unify)
-(require 'termlisp-machine)
-(require 'termlisp-pattern)
-(require 'termlisp-builtins)
-(require 'termlisp-eval)
-
-(defvar termlisp--root
-  (file-name-directory (or load-file-name buffer-file-name))
-  "Root directory of the termlisp package.")
-
-(add-to-list 'load-path (expand-file-name "vendor/cats" termlisp--root))
-
 (defun termlisp-typecheck (string &optional env)
   "Typecheck STRING in ENV.  Implemented in Plan 2; returns ENV for now."
   (ignore string)
   (or env (termlisp-make-env)))
-
-(provide 'termlisp)
-;;; termlisp.el ends here
 ```
 
 - [ ] **Step 5: Run test to verify it passes**
