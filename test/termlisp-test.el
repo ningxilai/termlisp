@@ -6,6 +6,7 @@
 (require 'ert)
 (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name)))
 (require 'termlisp)
+(require 'termlisp-graph)
 
 (ert-deftest base/env-defaults ()
   (let ((env (termlisp-make-env)))
@@ -1528,6 +1529,30 @@ the test fixes the type to Maybe with a signature-annotated binding."
           (should (string-prefix-p termlisp--magic-string
                                    (with-temp-buffer (insert-file-contents file) (buffer-string)))))
       (delete-file file))))
+
+(ert-deftest graph/build-atom ()
+  (let* ((g (tl-graph-build 'foo))
+         (n (tl-graph-root g)))
+    (should (tl-node-p n))
+    (should (eq (tl-node-head n) 'foo))
+    (should (null (tl-node-children n)))))
+
+(ert-deftest graph/build-application ()
+  (let* ((g (tl-graph-build '(f a b)))
+         (n (tl-graph-root g)))
+    (should (eq (tl-node-head n) 'f))
+    (should (= (length (tl-node-children n)) 2))
+    (should (eq (tl-node-head (car (tl-node-children n))) 'a))))
+
+(ert-deftest graph/sharing ()
+  "Structurally identical subterms share one node."
+  (let* ((g (tl-graph-build '(pair (f x) (f x))))
+         (kids (tl-node-children (tl-graph-root g))))
+    (should (eq (car kids) (cadr kids)))))
+
+(ert-deftest graph/node-state ()
+  (let ((n (tl-make-node 'f nil)))
+    (should (eq (tl-node-state n) :idle))))
 
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
