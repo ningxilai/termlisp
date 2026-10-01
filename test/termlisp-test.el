@@ -1054,5 +1054,27 @@
         (mx (cats-pure (tl-data-reader) 41)))
     (should (= (tl-run-reader (cats-apply mf mx) :e) 42))))
 
+(ert-deftest monad/maybe-fmap ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(monad-fmap MaybeDict (lambda (x) (+ x 1)) (Just 4))" env))
+                   "(Just 5)"))
+    (should (eq (termlisp-eval "(monad-fmap MaybeDict (lambda (x) (+ x 1)) Nothing)" env)
+                'Nothing))))
+
+(ert-deftest monad/list-fmap-and-append ()
+  (let ((env (termlisp-load-prelude)))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(monad-fmap ListDict (lambda (x) (+ x 1)) (Cons 1 (Cons 2 Nil)))" env))
+                   "(Cons 2 (Cons 3 Nil))"))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(list-append (Cons 1 (Cons 2 Nil)) (Cons 3 Nil))" env))
+                   "(Cons 1 (Cons 2 (Cons 3 Nil)))"))))
+
+(ert-deftest monad/list-bind-nil ()
+  (let ((env (termlisp-load-prelude)))
+    (should (eq (termlisp-eval "(monad-bind ListDict Nil (lambda (x) (Cons x Nil)))" env)
+                'Nil))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here

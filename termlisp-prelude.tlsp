@@ -35,7 +35,7 @@
 
 ;; Monads (phase B: explicit dictionaries)
 
-(datatype MonadDict (MonadDict bind return fmap))
+(datatype MonadDict (MonadDict tb tr tf))
 (datatype Maybe (Nothing) (Just a))
 (datatype List (Nil) (Cons a (List a)))
 
