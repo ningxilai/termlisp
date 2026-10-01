@@ -161,3 +161,6 @@
 (define (filter f (Cons x xs)) (if (f x) (Cons x (filter f xs)) (filter f xs)))
 (define (foldr f z Nil) z)
 (define (foldr f z (Cons x xs)) (f x (foldr f z xs)))
+
+;; Assertions
+(define (assertEqual a b) (if (eq a b) True False))

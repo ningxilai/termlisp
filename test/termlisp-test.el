@@ -1420,5 +1420,14 @@ the test fixes the type to Maybe with a signature-annotated binding."
     (should (= (termlisp-eval "(foldr (lambda (x acc) (+ x acc)) 0 (Cons 1 (Cons 2 (Cons 3 Nil))))" env)
                6))))
 
+(ert-deftest prelude/assert-equal ()
+  (let ((env (termlisp-load-prelude)))
+    (should (eq (termlisp-eval "(assertEqual (Cons 1 Nil) (Cons 1 Nil))" env) 'True))
+    (should (eq (termlisp-eval "(assertEqual (Cons 1 Nil) (Cons 2 Nil))" env) 'False))))
+
+(ert-deftest prelude/boolean-law ()
+  (let ((env (termlisp-load-prelude)))
+    (should (eq (termlisp-eval "(and (not (and True False)) (or True False))" env) 'True))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
