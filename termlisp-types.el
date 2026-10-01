@@ -229,7 +229,24 @@ error."
       syms)))
 
 (defun tl-tenv-locals (env) (if (consp env) (car env) nil))
-(defun tl-tenv-base (env) (if (consp env) (cdr env) env))
+
+(defun tl-tenv-base (env)
+  "Return the underlying `tl-env' of ENV (nil if none)."
+  (cond ((null env) nil)
+        ((tl-env-p env) env)
+        ((consp env) (tl-tenv-base (cdr env)))
+        (t env)))
+
+(defun tl-tenv-extend (env bindings)
+  "Return ENV with BINDINGS prepended to its local bindings."
+  (cons (append bindings (tl-tenv-locals env)) (tl-tenv-base env)))
+
+(defun tl-zonk-env (env bindings)
+  "Apply BINDINGS to the local types in ENV."
+  (cons (mapcar (lambda (cell)
+                  (cons (car cell) (tl-apply-bindings (cdr cell) bindings)))
+                (tl-tenv-locals env))
+        (tl-tenv-base env)))
 
 (defun tl-infer (env expr)
   "Infer the type of EXPR in ENV.  Return `(type . bindings)'."
@@ -254,14 +271,14 @@ error."
 
 (defun tl-infer-lambda (env params body)
   "Infer `(lambda PARAMS BODY)'."
-  (let ((locals (tl-tenv-locals env))
-        (ptypes nil))
+  (let ((ptypes nil)
+        (pbinds nil))
     (dolist (p params)
       (let ((tv (tl-fresh-tvar)))
-        (push (cons p tv) locals)
+        (push (cons p tv) pbinds)
         (push tv ptypes)))
     (setq ptypes (nreverse ptypes))
-    (let* ((env2 (cons locals (tl-tenv-base env)))
+    (let* ((env2 (tl-tenv-extend env (nreverse pbinds)))
            (r (tl-infer env2 body))
            (ty (car r)))
       (dolist (pt (reverse ptypes))
@@ -276,7 +293,7 @@ error."
          (ftype (car rh))
          (bindings (cdr rh)))
     (dolist (arg args)
-      (let* ((ra (tl-infer env arg))
+      (let* ((ra (tl-infer (tl-zonk-env env bindings) arg))
              (aty (car ra))
              (res (tl-fresh-tvar)))
         (setq bindings (tl-compose-bindings bindings (cdr ra)))

@@ -835,5 +835,22 @@
     (should (equal (car (tl-infer (cons nil env) 'Zero)) (tl-tcon 'Nat nil)))
     (should (equal (car (tl-infer (cons nil env) '(Succ Zero))) (tl-tcon 'Nat nil)))))
 
+(ert-deftest infer/shared-variable-linked ()
+  "Two uses of the same local function variable must share its result type."
+  (let ((env (termlisp-make-env)))
+    (termlisp-eval "(datatype Pair (Pair a b))" env)
+    (let* ((ty (car (tl-infer (cons nil env) '(lambda (f) (Pair (f 1) (f 2))))))
+           (pairty (nth 1 (tl-tcon-args ty)))
+           (p1 (nth 0 (tl-tcon-args pairty)))
+           (p2 (nth 1 (tl-tcon-args pairty))))
+      (should (eq p1 p2)))))
+
+(ert-deftest infer/conflicting-uses-rejected ()
+  "Using the same function at two incompatible types must be rejected."
+  (let ((env (termlisp-make-env)))
+    (termlisp-eval "(datatype Pair (Pair a b))" env)
+    (should-error (tl-infer (cons nil env) '(lambda (f) (Pair (f 1) (f "s"))))
+                  :type 'termlisp-type-error)))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
