@@ -21,7 +21,11 @@
 (declare-function tl-desugar-do "termlisp-eval" (form))
 
 (cl-defstruct (tl-tcon (:constructor tl-tcon (name args))) name args)
-(cl-defstruct (tl-tscheme (:constructor tl-tscheme (vars type))) vars type)
+(cl-defstruct (tl-tscheme (:constructor tl-tscheme (vars type &optional constraints)))
+  vars type (constraints nil))
+(cl-defstruct (tl-constraint (:constructor tl-constraint (class type))) class type)
+(cl-defstruct (tl-cclass (:constructor tl-cclass (name params supers methods))) name params supers methods)
+(cl-defstruct (tl-instance (:constructor tl-instance (class head context methods))) class head context methods)
 
 (defun tl-tvar-p (x) (tl-lvar-p x))
 (defun tl-type-p (x) (or (tl-tvar-p x) (tl-tcon-p x)))
@@ -133,6 +137,11 @@ application."
           (push (cons sexp tv) tl-type-parse-vars)
           tv))))
    ((symbolp sexp) (tl-tcon sexp nil))
+   ((and (consp sexp) (eq (car sexp) '->))
+    (if (cdr (cdr sexp))
+        (tl-type-parse-arrow (mapcar #'list (cdr sexp)))
+      (signal 'termlisp-type-error
+              (list (format "Malformed arrow type: %S" sexp)))))
    ((and (consp sexp) (memq '-> sexp))
     (tl-type-parse-arrow (tl-split-arrow sexp)))
    ((consp sexp)
@@ -567,6 +576,39 @@ Return `(LOCAL-BINDINGS . SUBST)'."
           (tl-infer-define-clauses env name clauses))
       (tl-infer-constant env target (caddr form)))))
 
+(defun tl-register-class (env form)
+  "Register `(class NAME (PARAM) SUPERS METHOD-DECL...)' in ENV."
+  (let* ((name (nth 1 form))
+         (param (car (nth 2 form)))
+         (supers (nth 3 form))
+         (method-decls (nthcdr 4 form))
+         (methods nil))
+    (dolist (md method-decls)
+      (let* ((mname (car md))
+             (ty (tl-type-parse (cadr md)))
+             (cparam (tl-fresh-tvar)))
+        (push (cons mname
+                    (tl-tscheme (list cparam)
+                                ty
+                                (list (tl-constraint name cparam))))
+              methods)))
+    (setq methods (nreverse methods))
+    (puthash name (tl-cclass name (list param) supers methods)
+             (tl-env-class-env env))
+    (dolist (m methods)
+      (puthash (car m) (cdr m) (tl-env-method-env env)))
+    name))
+
+(defun tl-register-instance (env form)
+  "Register `(instance (CLASS TYPE))' in ENV (methods defined separately)."
+  (let* ((head (nth 1 form))
+         (cname (car head))
+         (ty (tl-type-parse (cadr head)))
+         (inst (tl-instance cname ty nil nil)))
+    (puthash cname (append (gethash cname (tl-env-instance-env env)) (list inst))
+             (tl-env-instance-env env))
+    cname))
+
 (defun tl-typecheck-form (env form)
   "Typecheck one top-level FORM in ENV."
   (cond
@@ -575,6 +617,8 @@ Return `(LOCAL-BINDINGS . SUBST)'."
     (tl-eval-datatype-extension env form))
    ((and (consp form) (eq (car form) ':)) (tl-register-signature env form))
    ((and (consp form) (eq (car form) 'define)) (tl-typecheck-define env form))
+   ((and (consp form) (eq (car form) 'class)) (tl-register-class env form))
+   ((and (consp form) (eq (car form) 'instance)) (tl-register-instance env form))
    (t (car (tl-infer (cons nil env) form)))))
 
 (defun termlisp-typecheck-def (env string)

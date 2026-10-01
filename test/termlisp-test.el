@@ -708,6 +708,16 @@
   (should (eq (tl-tcon-name (tl-type-parse 'A)) 'A))
   (should (tl-tvar-p (tl-type-parse 'a))))
 
+(ert-deftest type/parse-prefix-arrow ()
+  (let ((ty (tl-type-parse '(-> a b))))
+    (should (tl-tcon-p ty))
+    (should (eq (tl-tcon-name ty) '->))
+    (should (tl-tvar-p (nth 0 (tl-tcon-args ty))))
+    (should (tl-tvar-p (nth 1 (tl-tcon-args ty)))))
+  (let ((ty (tl-type-parse '(-> a b c))))
+    (should (eq (tl-tcon-name ty) '->))
+    (should (eq (tl-tcon-name (nth 1 (tl-tcon-args ty))) '->))))
+
 (ert-deftest type/subst ()
   (let* ((a (tl-fresh-tvar))
          (ty (tl-tarrow a a))
@@ -985,6 +995,18 @@
     (should (termlisp-typecheck-file
              (expand-file-name "termlisp-prelude.tlsp" termlisp--directory)
              env))))
+
+(ert-deftest class/declare-and-methods ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(class Functor (f) nil (fmap ((-> a b) -> (f a) -> (f b))))")
+    (should (gethash 'Functor (tl-env-class-env env)))
+    (should (gethash 'fmap (tl-env-method-env env)))))
+
+(ert-deftest class/instance-registration ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-typecheck-def env "(class Functor (f) nil (fmap ((-> a b) -> (f a) -> (f b))))")
+    (termlisp-typecheck-def env "(instance (Functor Maybe))")
+    (should (= (length (gethash 'Functor (tl-env-instance-env env))) 1))))
 
 (ert-deftest typecheck/do ()
   (let ((env (termlisp-make-env)))
