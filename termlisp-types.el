@@ -228,5 +228,67 @@ error."
                    (tl-env-type-env env))))
       syms)))
 
+(defun tl-tenv-locals (env) (if (consp env) (car env) nil))
+(defun tl-tenv-base (env) (if (consp env) (cdr env) env))
+
+(defun tl-infer (env expr)
+  "Infer the type of EXPR in ENV.  Return `(type . bindings)'."
+  (cond
+   ((numberp expr) (cons (tl-tint) nil))
+   ((stringp expr) (cons (tl-tstring) nil))
+   ((symbolp expr) (tl-infer-symbol env expr))
+   ((and (consp expr) (eq (car expr) 'lambda))
+    (tl-infer-lambda env (cadr expr) (caddr expr)))
+   ((consp expr) (tl-infer-application env expr))
+   (t (signal 'termlisp-type-error (list (format "Cannot infer: %S" expr))))))
+
+(defun tl-infer-symbol (env sym)
+  "Infer the type of a bare symbol SYM."
+  (let ((cell (assq sym (tl-tenv-locals env)))
+        (base (tl-tenv-base env)))
+    (cond
+     (cell (cons (cdr cell) nil))
+     ((and base (gethash sym (tl-env-type-env base)))
+      (cons (tl-instantiate (gethash sym (tl-env-type-env base))) nil))
+     (t (cons (tl-fresh-tvar) nil)))))
+
+(defun tl-infer-lambda (env params body)
+  "Infer `(lambda PARAMS BODY)'."
+  (let ((locals (tl-tenv-locals env))
+        (ptypes nil))
+    (dolist (p params)
+      (let ((tv (tl-fresh-tvar)))
+        (push (cons p tv) locals)
+        (push tv ptypes)))
+    (setq ptypes (nreverse ptypes))
+    (let* ((env2 (cons locals (tl-tenv-base env)))
+           (r (tl-infer env2 body))
+           (ty (car r)))
+      (dolist (pt (reverse ptypes))
+        (setq ty (tl-tarrow pt ty)))
+      (cons ty (cdr r)))))
+
+(defun tl-infer-application (env expr)
+  "Infer a function application EXPR = (F A1 ... AN)."
+  (let* ((head (car expr))
+         (args (cdr expr))
+         (rh (tl-infer env head))
+         (ftype (car rh))
+         (bindings (cdr rh)))
+    (dolist (arg args)
+      (let* ((ra (tl-infer env arg))
+             (aty (car ra))
+             (res (tl-fresh-tvar)))
+        (setq bindings (tl-compose-bindings bindings (cdr ra)))
+        (setq ftype (tl-apply-bindings ftype bindings))
+        (setq aty (tl-apply-bindings aty bindings))
+        (let ((u (tl-unify-types ftype (tl-tarrow aty res) bindings)))
+          (unless (car u)
+            (signal 'termlisp-type-error
+                    (list (format "Cannot apply %S to %S" head arg))))
+          (setq bindings (cdr u))
+          (setq ftype (tl-apply-bindings res bindings)))))
+    (cons (tl-apply-bindings ftype bindings) bindings)))
+
 (provide 'termlisp-types)
 ;;; termlisp-types.el ends here

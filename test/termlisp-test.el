@@ -808,5 +808,32 @@
     (should (null (gethash 'B (tl-env-constructors env))))
     (should (eq (gethash 'C (tl-env-constructors env)) 'Foo))))
 
+(ert-deftest infer/literals ()
+  (should (equal (car (tl-infer nil 1)) (tl-tint)))
+  (should (equal (car (tl-infer nil "x")) (tl-tstring))))
+
+(ert-deftest infer/lambda ()
+  (let ((ty (car (tl-infer nil '(lambda (x) x)))))
+    (should (eq (tl-tcon-name ty) '->))
+    (let ((args (tl-tcon-args ty)))
+      (should (eq (nth 0 args) (nth 1 args))))))
+
+(ert-deftest infer/application-identity ()
+  (should (equal (car (tl-infer nil '((lambda (x) x) 1))) (tl-tint))))
+
+(ert-deftest infer/lambda-two-args ()
+  ;; ((lambda (x y) x) 1 "s") : Int
+  (should (equal (car (tl-infer nil '((lambda (x y) x) 1 "s"))) (tl-tint))))
+
+(ert-deftest infer/type-error ()
+  (should-error (tl-infer nil '(1 2)) :type 'termlisp-type-error))
+
+(ert-deftest infer/constructor-type ()
+  (let ((env (termlisp-make-env)))
+    (termlisp-eval "(datatype Nat (Zero) (Succ Nat))" env)
+    ;; Zero : Nat ; (Succ Zero) : Nat
+    (should (equal (car (tl-infer (cons nil env) 'Zero)) (tl-tcon 'Nat nil)))
+    (should (equal (car (tl-infer (cons nil env) '(Succ Zero))) (tl-tcon 'Nat nil)))))
+
 (provide 'termlisp-test)
 ;;; termlisp-test.el ends here
