@@ -268,12 +268,23 @@ inserted without further traversal.  Cycle-safe (equirecursive types)."
                     (cond
                      ((tl-tvar-p node) (funcall f node))
                      ((tl-tcon-p node)
-                      (let ((args (tl-tcon-args node)))
+                      (let* ((args (tl-tcon-args node))
+                             ;; canonicalise the head first: a unioned
+                             ;; (but not yet deref'd) head var must map
+                             ;; to its representative, else instantiation
+                             ;; would leave sibling heads distinct.
+                             (head (tl-type-deref (tl-tcon-name node))))
                         (if (null args)
                             node
                           (or (gethash node memo)
-                              (let ((new (tl-make-node (tl-tcon-name node)
-                                                       nil t)))
+                              (let ((new (tl-make-node
+                                          ;; a higher-kinded head var is
+                                          ;; substituted too, so scheme
+                                          ;; instantiation copies it
+                                          (if (tl-node-var-p head)
+                                              (funcall f head)
+                                            head)
+                                          nil t)))
                                 (puthash node new memo)
                                 (setf (tl-node-children new)
                                       (mapcar #'go args))
@@ -492,6 +503,12 @@ Each element is `(FORM . CONSTRAINT)', where FORM is the application
 cons cell and CONSTRAINT is the `tl-constraint' emitted for the method.
 Only populated while `tl-elab-active' is non-nil.")
 
+(defvar tl-elab-fn-sites nil
+  "Calls to constrained functions recorded during inference.
+Each element is `(FORM . CONSTRAINTS)': the application cons cell and the
+instantiated constraints of the callee's scheme.  Only populated while
+`tl-elab-active' is non-nil.  Used for dictionary passing.")
+
 (defvar tl-elab-bindings nil
   "Final substitution of the most recent inference, for elaboration.
 Set by the define/constant entry points so the elaborator can zonk the
@@ -674,14 +691,26 @@ A local binding or an ordinary type binding shadows the method."
   "Infer a function application EXPR = (F A1 ... AN)."
   (let* ((head (car expr))
          (args (cdr expr))
+         (base (tl-tenv-base env))
          (msc (and (symbolp head) (tl-method-scheme-for env head)))
-         (rh (if msc
-                 (let ((r (tl-instantiate-scheme msc)))
-                   (dolist (c (cdr r))
-                     (tl-emit-constraint c)
-                     (when tl-elab-active (push (cons expr c) tl-elab-sites)))
-                   (cons (car r) nil))
-               (tl-infer env head)))
+         ;; A call to a program function whose scheme carries class
+         ;; constraints: it is a dictionary-passing site.
+         (hsc (and (null msc) (symbolp head) base
+                   (not (assq head (tl-tenv-locals env)))
+                   (gethash head (tl-env-type-env base))))
+         (rh (cond
+              (msc
+               (let ((r (tl-instantiate-scheme msc)))
+                 (dolist (c (cdr r))
+                   (tl-emit-constraint c)
+                   (when tl-elab-active (push (cons expr c) tl-elab-sites)))
+                 (cons (car r) nil)))
+              ((and (tl-tscheme-p hsc) (tl-tscheme-constraints hsc))
+               (let ((r (tl-instantiate-scheme hsc)))
+                 (dolist (c (cdr r)) (tl-emit-constraint c))
+                 (when tl-elab-active (push (cons expr (cdr r)) tl-elab-fn-sites))
+                 (cons (car r) nil)))
+              (t (tl-infer env head))))
          (ftype (car rh))
          (bindings (cdr rh)))
     (dolist (arg args)
@@ -882,21 +911,25 @@ a hard failure.")
                       (setq bindings (cdr u)))))))
             nil)
           (puthash name (tl-tscheme nil (tl-fresh-tvar)) tyenv)
-        (let* ((final (tl-apply-bindings placeholder bindings))
-               (env-tvars (tl-env-free-tvars env))
-               (gen-vars (tl-generalized-vars final env-tvars)))
-          (if sig
-              (let* ((u (tl-unify-types final (tl-skolemize-scheme sig) nil))
-                     (fb (tl-compose-bindings bindings (cdr u))))
-                (unless (car u)
-                  (signal 'termlisp-type-error
-                          (list (format "Definition of %S does not match its signature" name))))
-                (setq tl-elab-bindings fb)
-                (tl-close-constraints env nil tl-infer-constraints fb)
-                (puthash name sig tyenv))
-            (setq tl-elab-bindings bindings)
-            (let ((kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
-              (puthash name (tl-generalize final env-tvars kept) tyenv))))))))
+        (let ((final (tl-apply-bindings placeholder bindings)))
+          ;; The definition's own placeholder is now bound to its type, so
+          ;; it must not count as an ambient variable (which would stop
+          ;; generalization of the very variables it mentions).
+          (remhash name tyenv)
+          (let* ((env-tvars (tl-env-free-tvars env))
+                 (gen-vars (tl-generalized-vars final env-tvars)))
+            (if sig
+                (let* ((u (tl-unify-types final (tl-skolemize-scheme sig) nil))
+                       (fb (tl-compose-bindings bindings (cdr u))))
+                  (unless (car u)
+                    (signal 'termlisp-type-error
+                            (list (format "Definition of %S does not match its signature" name))))
+                  (setq tl-elab-bindings fb)
+                  (tl-close-constraints env nil tl-infer-constraints fb)
+                  (puthash name sig tyenv))
+              (setq tl-elab-bindings bindings)
+              (let ((kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
+                (puthash name (tl-generalize final env-tvars kept) tyenv)))))))))
 
 (defun tl-syntactic-value-p (expr)
   "Return non-nil if EXPR is a syntactic value (value restriction)."

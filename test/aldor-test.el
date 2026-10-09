@@ -996,5 +996,26 @@ builtin operator mapping."
     (should (tl-kind-check env (tl-tcon 'Pair (list (tl-tint) (tl-tstring)))))
     (should-error (tl-kind-check env (tl-tcon 'Pair (list (tl-tint)))))))
 
+;;; Dictionary-passing elaboration
+
+(ert-deftest tl-dictionary-passing ()
+  "Class-constrained definitions and calls elaborate with dictionaries.
+A definition whose inferred scheme carries a class constraint acquires a
+dictionary parameter; a call to that function threads the dictionary, and
+a ground method call resolves a concrete instance dictionary."
+  (let ((env (termlisp-make-env '(:elaborate t :type-check t))))
+    (termlisp-load-prelude env)
+    (should (equal (tl-elaborate-form
+                    env
+                    (car (termlisp-parse
+                          "(define (twice g x) (fmap g (fmap g x)))")))
+                   '(define (twice $dFunctor0 g x)
+                      (fmap $dFunctor0 g (fmap $dFunctor0 g x)))))
+    (should (equal (tl-elaborate-form
+                    env
+                    (car (termlisp-parse
+                          "(fmap (lambda (x) (+ x 1)) (Just 4))")))
+                   '(fmap FunctorMaybeDict (lambda (x) (+ x 1)) (Just 4))))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

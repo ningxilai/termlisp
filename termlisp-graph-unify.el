@@ -133,13 +133,25 @@ With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
                 (tl-gnode--union y x trail)
               (tl-gnode--bind y x trail)))
            ((and (tl-node-application x) (tl-node-application y)
-                 (equal (tl-node-head x) (tl-node-head y))
                  (= (length (tl-node-children x))
-                    (length (tl-node-children y))))
-            (let ((cx (tl-node-children x)) (cy (tl-node-children y)))
-              (while cx
-                (push (cons (car cx) (car cy)) pending)
-                (setq cx (cdr cx) cy (cdr cy)))))
+                    (length (tl-node-children y)))
+                 (let ((hx (tl-node-head x)) (hy (tl-node-head y)))
+                   ;; Heads are compared with `eq': two distinct unbound
+                   ;; variable nodes are `equal' structurally but must
+                   ;; still be unified.
+                   (or (eq hx hy)
+                       (tl-node-var-p hx) (tl-node-var-p hy))))
+            (let ((hx (tl-node-head x)) (hy (tl-node-head y)))
+              ;; Higher-kinded: a variable in head position unifies with
+              ;; the other head (e.g. `(f a)' against `(Maybe Int)').
+              (unless (eq hx hy)
+                (push (cons (if (tl-node-p hx) hx (tl-make-node hx))
+                            (if (tl-node-p hy) hy (tl-make-node hy)))
+                      pending))
+              (let ((cx (tl-node-children x)) (cy (tl-node-children y)))
+                (while cx
+                  (push (cons (car cx) (car cy)) pending)
+                  (setq cx (cdr cx) cy (cdr cy))))))
            ((equal x y))
            (t (setq ok nil) (throw 'tl-gnode-fail nil)))))
       t)

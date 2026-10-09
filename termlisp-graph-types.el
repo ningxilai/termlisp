@@ -67,6 +67,10 @@ TY is a `tl-tcon' or `tl-lvar'; MAP maps a `tl-lvar' to its node."
           (cond
            ((tl-node-var-p n) (push n vars))
            ((tl-node-application n)
+            ;; A higher-kinded head variable `(f a)' is a free variable too.
+            (when (tl-node-p (tl-node-head n))
+              (let ((h (tl-gnode-deref (tl-node-head n))))
+                (when (tl-node-var-p h) (push h vars))))
             (dolist (c (tl-node-children n)) (push c stack)))))))
     vars))
 
