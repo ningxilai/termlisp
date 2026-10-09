@@ -31,6 +31,8 @@
 (require 'cl-lib)
 (require 'pp)
 (require 'termlisp-abn)
+(require 'termlisp-types)
+(require 'termlisp-resolve)
 
 (define-error 'termlisp-aldor-error "Aldor lowering error")
 
@@ -88,6 +90,11 @@ prelude operator stays available at other call sites.")
 (defvar tl-aldor--tuple-fns nil
   "Names of locally defined functions that return a tuple value.")
 
+(defvar tl-aldor--reserved-def-params nil
+  "Hash from a reserved name to its define parameter-node lists.
+Used to resolve an overloaded operator by unifying the operand type
+with the program's own signature versus the prelude one.")
+
 (defvar tl-aldor--local-fn-results nil
   "Alist of locally defined function names to their result type sefo.")
 
@@ -113,7 +120,18 @@ prelude operator stays available at other call sites.")
                 (when res
                   (push (cons name res) tl-aldor--local-fn-results)
                   (when (tl-abn-node-p (tl-aldor--unwrap-type res) 'Comma)
-                    (push name tl-aldor--tuple-fns))))))))))
+                    (push name tl-aldor--tuple-fns)))
+                ;; Reserved overloads: record the parameter type nodes so
+                ;; a call site can be resolved by type unification.
+                (when (and name (memq name tl-aldor--reserved-fns)
+                           (tl-abn-node-p ty 'Apply)
+                           (eq (tl-aldor--sefo-head-name abn ty) '->)
+                           tl-aldor--reserved-def-params)
+                  (let ((params (mapcar (lambda (p) (tl-aldor--sefo-to-type abn p))
+                                        (tl-aldor--fun-param-types abn ty))))
+                    (puthash name
+                             (cons params (gethash name tl-aldor--reserved-def-params))
+                             tl-aldor--reserved-def-params))))))))))
     (let ((tail (cdr node)))
       (while (consp tail)
         (when (consp (car tail))
@@ -210,7 +228,8 @@ Return the generated Emacs Lisp source string."
   (let ((tl-aldor--user-functions nil)
         (tl-aldor--define-mangle nil)
         (tl-aldor--tuple-fns nil)
-        (tl-aldor--local-fn-results nil))
+        (tl-aldor--local-fn-results nil)
+        (tl-aldor--reserved-def-params (make-hash-table :test #'eq)))
     (tl-aldor--scan-defines abn (tl-abn-tree abn))
     (nreverse (tl-aldor--lower-top abn (tl-abn-tree abn) nil))))
 
@@ -765,6 +784,42 @@ annotation, which is followed through ABN's syme table."
          (name (and ty (tl-aldor--sefo-head-name abn ty))))
     (and (memq name tl-aldor--array-type-names) name)))
 
+(defun tl-aldor--sefo-to-type (abn sefo)
+  "Convert an ABN type sefo to a graph type node (constructor names only)."
+  (setq sefo (tl-aldor--unwrap-type sefo))
+  (cond
+   ((tl-abn-node-p sefo 'Apply)
+    (let ((h (tl-aldor--sefo-head-name abn sefo)))
+      (tl-tcon (or h 'Unknown)
+               (mapcar (lambda (a) (tl-aldor--sefo-to-type abn a))
+                       (cddr sefo)))))
+   ((tl-abn-node-p sefo 'Id)
+    (tl-tcon (or (tl-aldor--sefo-head-name abn sefo) 'Unknown) nil))
+   (t (tl-tcon 'Unknown nil))))
+
+(defun tl-aldor--prelude-overload-scheme (name)
+  "Return the prelude scheme whose parameter distinguishes overload NAME."
+  (let ((a (tl-fresh-tvar)) (w (tl-fresh-tvar)))
+    (pcase name
+      ('empty? (tl-tscheme (list a)
+                           (tl-tarrow (tl-tcon 'List (list a)) (tl-tbool))))
+      ('first (tl-tscheme (list a)
+                          (tl-tarrow (tl-tcon 'List (list a)) a)))
+      ('rest (tl-tscheme (list a)
+                         (tl-tarrow (tl-tcon 'List (list a))
+                                    (tl-tcon 'List (list a)))))
+      ('<< (tl-tscheme (list w a)
+                       (tl-tarrow w (tl-tarrow a w)))))))
+
+(defun tl-aldor--prelude-overload-target (name)
+  "The runtime/inlined target for the prelude overload NAME."
+  (cdr (assq name '((<< . tl-output-<<) (empty? . ListEmpty)
+                    (first . ListFirst) (rest . ListRest)))))
+
+(defun tl-aldor--overload-operand-index (name)
+  "Which argument of NAME distinguishes the overload (the value operand)."
+  (if (eq name '<<) 1 0))
+
 (defun tl-aldor--array-index-ir (arr-ty index-ir)
   "Return INDEX-IR adjusted for zero-based Lisp indexing of ARR-TY.
 Aldor's Array is 1-based; PrimitiveArray, String and Vector are
@@ -1043,6 +1098,46 @@ a literal nil."
                       (tl-abn-node-p q 'Id)
                       (eq (tl-abn-id-name q) 'String))))
           `(tl-read-line ,(tl-aldor--lower-expr abn (car args) env)))
+         ;; An overloaded reserved operator the program redefines:
+         ;; choose the method vs the prelude operator by unifying the
+         ;; operand type with each signature (type-driven, not by name).
+         ((and head-id-p
+               tl-aldor--reserved-def-params
+               (memq head-name tl-aldor--reserved-fns)
+               (gethash head-name tl-aldor--reserved-def-params))
+          (let* ((idx (tl-aldor--overload-operand-index head-name))
+                 (operand (nth idx args))
+                 (opnd-sefo (and operand (tl-aldor--expr-type-sefo abn operand)))
+                 (opnd-head (and opnd-sefo
+                                 (tl-aldor--sefo-head-name abn opnd-sefo)))
+                 (opnd-ty (and opnd-sefo (tl-aldor--sefo-to-type abn opnd-sefo)))
+                 ;; A Character operand (notably `newline') prints as a
+                 ;; character, whether or not its syme is resolved.
+                 (char-p (and (eq head-name '<<)
+                              (or (eq opnd-head 'Character)
+                                  (eq (and operand
+                                           (tl-aldor--lower-expr abn operand env))
+                                      'tl-newline))))
+                 (prog-cands (mapcar (lambda (ps) (cons 'program (nth idx ps)))
+                                     (gethash head-name
+                                              tl-aldor--reserved-def-params)))
+                 (prel (tl-aldor--prelude-overload-scheme head-name))
+                 (res (and opnd-ty prel
+                           (tl-resolve-overload-params
+                            opnd-ty
+                            (append prog-cands
+                                    (list (cons 'prelude
+                                                (tl-scheme-nth-param prel idx))))))))
+            (cons (cond
+                   ((eq res 'program)
+                    (or (tl-aldor--mangled-def head) head-name))
+                   (char-p 'tl-output-char)
+                   (res (tl-aldor--prelude-overload-target head-name))
+                   (t
+                    ;; Unresolved (missing type info): keep the existing
+                    ;; source-position-based decision.
+                    (tl-aldor--lower-expr abn head env)))
+                  (mapcar (lambda (a) (tl-aldor--lower-expr abn a env)) args))))
          ;; A prelude type application used as a value, e.g. `List I'.
          ((and head-id-p (tl-aldor--domain-id-p head))
           `(quote ,(tl-aldor--type-data abn node)))

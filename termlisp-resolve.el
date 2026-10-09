@@ -19,28 +19,46 @@
 (require 'cl-lib)
 (require 'termlisp-types)
 
-(defun tl-scheme-first-param (scheme)
-  "Return the first parameter type node of arrow scheme SCHEME, or nil.
+(defun tl-scheme-nth-param (scheme n)
+  "Return the N-th parameter type node of arrow scheme SCHEME, or nil.
 The scheme is instantiated so its quantified variables become fresh."
   (let ((ty (car (tl-instantiate-scheme scheme))))
     (when (and (tl-tcon-p ty) (eq (tl-tcon-name ty) '->))
-      (car (tl-tcon-args ty)))))
+      (nth n (tl-tcon-args ty)))))
+
+(defun tl-scheme-first-param (scheme)
+  "Return the first parameter type node of arrow scheme SCHEME, or nil."
+  (tl-scheme-nth-param scheme 0))
+
+(defun tl-resolve-overload-params (operand-type candidates)
+  "Return the resolved tag for OPERAND-TYPE among CANDIDATES.
+CANDIDATES is a list of `(TAG . PARAM-TYPE)'.  A candidate matches when
+PARAM-TYPE unifies with OPERAND-TYPE.  Among the matches the most
+specific wins: a candidate whose parameter is concrete (a constructor,
+not a bare variable) beats a polymorphic one.  Returns nil when none
+match or the specificity is ambiguous."
+  (let ((specific nil) (any nil))
+    (dolist (cand candidates)
+      (let* ((param (cdr cand))
+             ;; Specificity is judged before unifying, since unifying a
+             ;; bare variable parameter would bind it.
+             (specific-p (and param (not (tl-tvar-p param)))))
+        (when (and param (tl-gnode-unify param operand-type))
+          (push (car cand) any)
+          (when specific-p
+            (push (car cand) specific)))))
+    (cond ((= 1 (length specific)) (car specific))
+          ((null specific) (and (= 1 (length any)) (car any)))
+          (t nil))))
 
 (defun tl-resolve-overload (operand-type candidates)
-  "Return the unique candidate tag whose parameter type unifies with
-OPERAND-TYPE, or nil when none or several do.
-
-CANDIDATES is a list of `(TAG . SCHEME)'.  Each trial unifies a fresh
-instance of the candidate's first parameter with OPERAND-TYPE; a
-variable candidate parameter only ever binds fresh variables, so the
-operand type is left unchanged."
-  (let (matches)
-    (dolist (cand candidates)
-      (let ((param (tl-scheme-first-param (cdr cand))))
-        (when (and param (tl-gnode-unify param operand-type))
-          (push (car cand) matches))))
-    (when (= 1 (length matches))
-      (car matches))))
+  "Return the resolved tag for OPERAND-TYPE among CANDIDATES.
+CANDIDATES is a list of `(TAG . SCHEME)'; each scheme's first parameter
+type is the candidate's parameter."
+  (tl-resolve-overload-params
+   operand-type
+   (mapcar (lambda (c) (cons (car c) (tl-scheme-first-param (cdr c))))
+           candidates)))
 
 (provide 'termlisp-resolve)
 ;;; termlisp-resolve.el ends here
