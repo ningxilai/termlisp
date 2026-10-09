@@ -14,6 +14,19 @@
 ;; is off by default, so recursive (equirecursive) types are representable;
 ;; the graph traversals (`tl-map-type', `tl-canonical-key', unification)
 ;; are cycle-safe accordingly.
+;;
+;; Higher-kinded heads: an application node's head may itself be a
+;; variable (`(f a)').  `tl-map-type' canonicalises and substitutes such a
+;; head, and graph unification unifies a variable head with the other head,
+;; so class parameters (`Functor f') work.  `tl-unify-types' sets the
+;; dynamic `tl-occurrence-check' (from the `:occurs-check' env option) and
+;; reports an infinite type or a kind clash as a `termlisp-type-error'.
+;;
+;; Type classes: predicates are `tl-constraint's; `tl-entail' resolves by
+;; membership, superclass or instance; `tl-improve-constraints' applies
+;; functional dependencies; `tl-split-context'/`tl-close-constraints'
+;; reduce a context to retained (generalized) and deferred predicates,
+;; defaulting ambiguous numerics.  Kinds are checked by `termlisp-kinds'.
 
 ;;; Code:
 
