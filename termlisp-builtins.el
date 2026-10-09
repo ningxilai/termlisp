@@ -75,6 +75,21 @@
   "Return non-nil if V is a termlisp Cons cell."
   (and (consp v) (eq (car v) 'Cons)))
 
+(defun tl-vector-to-list (v)
+  "Convert vector V into the termlisp Cons chain of its elements."
+  (let ((r 'Nil)
+        (i (1- (length v))))
+    (while (>= i 0)
+      (setq r (list 'Cons (aref v i) r))
+      (setq i (1- i)))
+    r))
+
+(defun tl-elements (v)
+  "Return a Cons chain of the elements of V (a vector or a Cons list).
+Used to iterate a value whose static type is unknown, so an Array and a
+List are walkable by the same code."
+  (if (vectorp v) (tl-vector-to-list v) v))
+
 (defun tl-list-to-vector (l)
   "Convert the termlisp Cons chain L into a vector."
   (let ((n 0)
@@ -149,6 +164,11 @@
   (cond ((tl-list-cons-p value)
          (concat "[" (mapconcat #'tl-output--format
                                 (tl-output--list-items value) ",") "]"))
+        ;; Arrays, records and unions are vectors; print them like
+        ;; Aldor's `[a,b,c]'.
+        ((vectorp value)
+         (concat "[" (mapconcat #'tl-output--format (append value nil) ",")
+                 "]"))
         ((eq value 'Nil) "[]")
         ((eq value t) "true")
         ((eq value nil) "false")

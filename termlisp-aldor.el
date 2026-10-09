@@ -1909,13 +1909,13 @@ else is walked as a termlisp Cons list."
                 ,body-ir)))))
      (t
       (let ((ops (tl-aldor--list-walk-ops abn gen)))
-        `(Let ((%walk ,gen-ir) (,var nil))
+        `(Let ((%walk (tl-elements ,gen-ir)) (,var nil))
            ,(tl-aldor--wrap-break
              body
              `(While (not (,(nth 2 ops) %walk))
                 (Setq ,var (,(nth 0 ops) %walk))
                 ,body-ir
-                 (Setq %walk (,(nth 1 ops) %walk))))))))))
+                (Setq %walk (,(nth 1 ops) %walk))))))))))
 
 (defun tl-aldor--lower-generator-to-list (abn gen env)
   "Collect the generator GEN into a termlisp Cons list."
@@ -1998,7 +1998,7 @@ The elements are produced in generator order."
                             ,step-ir))))
                     (t
                      (let ((ops (tl-aldor--list-walk-ops abn gen)))
-                       `(Let ((%walk ,gen-ir) (,var nil))
+                       `(Let ((%walk (tl-elements ,gen-ir)) (,var nil))
                           (While (not (,(nth 2 ops) %walk))
                             (Setq ,var (,(nth 0 ops) %walk))
                             ,step-ir
