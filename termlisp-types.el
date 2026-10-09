@@ -3,11 +3,17 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
-;; Types are either a type variable (a `tl-lvar') or a type constructor
-;; application `tl-tcon'.  Substitutions are alists tvar -> type.  The type
-;; unifier shares the generic kernel in `termlisp-unify' by teaching it to
-;; decompose a `tl-tcon' into its name and arguments; like ACL2's one-way
-;; unifier, it leaves bindings unchanged on failure.
+;; Hindley-Milner inference over the *term graph* (`termlisp-graph').
+;; A type is a graph node: a constructor application `(C a b)' is a
+;; compound node, a bare constructor `Int' is a leaf, and a type variable
+;; is a variable node (see `termlisp-graph-unify').  `tl-tcon' and its
+;; accessors are the surface interface over nodes.  Unification is in
+;; place (union-find), so the `bindings' threaded through the API are
+;; vestigial.  Generalization quantifies free variable nodes; instantiation
+;; copies the graph with fresh variables.  As in Coalton the occurs check
+;; is off by default, so recursive (equirecursive) types are representable;
+;; the graph traversals (`tl-map-type', `tl-canonical-key', unification)
+;; are cycle-safe accordingly.
 
 ;;; Code:
 
