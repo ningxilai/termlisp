@@ -341,9 +341,26 @@ the node it matched, or nil on failure.  The graph is never mutated."
                 (throw 'ok t))))))
       nil)))
 
+(defun tl-entail-by-super (env preds pred)
+  "Non-nil when a predicate in PREDS entails PRED by a superclass.
+If PREDS holds `(C t)' and C has superclass D, then `(D t)' is entailed."
+  (cl-some
+   (lambda (p)
+     (let ((c (gethash (tl-constraint-class p) (tl-env-class-env env))))
+       (and c
+            (cl-some (lambda (sc)
+                       (and (eq (tl-constraint-class sc) (tl-constraint-class pred))
+                            (tl-constraint-eq
+                             (tl-constraint (tl-constraint-class pred)
+                                            (tl-constraint-type p))
+                             pred)))
+                     (tl-cclass-supers c)))))
+   preds))
+
 (defun tl-entail (env preds pred)
-  "Non-nil when PREDS entail PRED by membership or by an instance."
+  "Non-nil when PREDS entail PRED by membership, superclass, or instance."
   (or (cl-some (lambda (p) (tl-constraint-eq p pred)) preds)
+      (tl-entail-by-super env preds pred)
       (tl-entail-by-inst env pred)))
 
 (defun tl-solve-constraint (env c bindings)

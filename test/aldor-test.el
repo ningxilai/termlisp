@@ -956,5 +956,15 @@ builtin operator mapping."
       (should-not (tl-entail-by-inst
                    env (tl-constraint 'Eq (tl-tcon 'List (list (tl-tstring)))))))))
 
+(ert-deftest tl-entail-superclass ()
+  "A predicate is entailed by a superclass of one already held."
+  (let ((env (termlisp-make-env)))
+    (tl-register-class env '(class Eq (a) nil))
+    (tl-register-class env '(class Ord (a) ((Eq (a)))))
+    (should (tl-entail env (list (tl-constraint 'Ord (tl-tint)))
+                       (tl-constraint 'Eq (tl-tint))))
+    (should-not (tl-entail env (list (tl-constraint 'Ord (tl-tint)))
+                           (tl-constraint 'Eq (tl-tstring))))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here
