@@ -76,7 +76,7 @@ Strings count: aset/aref index them like arrays.")
   "Names the current program defines itself.
 Such names shadow the builtin operator mapping of `tl-aldor--ops'.")
 
-(defconst tl-aldor--reserved-fns '(<<)
+(defconst tl-aldor--reserved-fns '(<< empty? first rest)
   "Prelude names a program may redefine for a domain.
 Their method definitions are renamed per definition site so the
 prelude operator stays available at other call sites.")
@@ -661,6 +661,16 @@ to their lowered substitution forms (parameters map to themselves)."
             ;; renamed per site, every other use is the prelude one.
             ((eq name '<<)
              (or (tl-aldor--mangled-def id) 'tl-output-<<))
+            ((memq name '(empty? first rest))
+             (or (tl-aldor--mangled-def id)
+                 (cdr (assq name '((empty? . ListEmpty)
+                                   (first . ListFirst)
+                                   (rest . ListRest))))))
+            ;; `S empty' (an imported prelude value, no source position)
+            ;; is the empty List; a program's own `empty' keeps its name.
+            ((eq name 'empty)
+             (let ((syme (tl-abn-id-syme id)))
+               (if (and syme (not (assq 'srcpos syme))) 'Nil 'empty)))
             ((and (memq name '(stdout newline space eof stdin))
                   (not (memq name tl-aldor--user-functions)))
              (cdr (assq name '((stdout . tl-stdout) (newline . tl-newline)
