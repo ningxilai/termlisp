@@ -1098,6 +1098,18 @@ a ground method call resolves a concrete instance dictionary."
     (termlisp-eval "(define (double x) (num-add x x))" env)
     (should (equal (termlisp-eval "(double 21)" env) 42))))
 
+(ert-deftest tl-numeric-class-arith ()
+  "The Num class covers add/sub/mul; instances resolve by operand type."
+  (let ((env (termlisp-make-env '(:elaborate t :type-check t))))
+    (termlisp-load-prelude env)
+    (should (equal (tl-elaborate-form env (car (termlisp-parse "(num-sub 9 4)")))
+                   '(num-sub IntNumDict 9 4)))
+    (should (equal (tl-elaborate-form env (car (termlisp-parse "(num-mul 3 4)")))
+                   '(num-mul IntNumDict 3 4)))
+    (should (equal (termlisp-eval "(num-mul 3 4)" env) 12))
+    (should (equal (termlisp-eval "(num-sub 9 4)" env) 5))
+    (should (equal (termlisp-eval "(num-add 1.5 2.5)" env) 4.0))))
+
 (ert-deftest tl-nested-instance-dict ()
   "An instance with a context builds its dictionary from sub-dictionaries."
   (let ((env (termlisp-make-env)))

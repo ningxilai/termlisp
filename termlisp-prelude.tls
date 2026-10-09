@@ -150,13 +150,24 @@
 (instance (Monad Reader) ReaderDict)
 
 ;; Numeric type class: overloaded arithmetic, resolved by the operand type.
-(datatype NumDict (NumDict num-add))
+(datatype NumDict (NumDict num-add num-sub num-mul))
 (class Num (a) nil
-  (num-add (a -> a -> a)))
-(define (num-add (NumDict impl) a b) (impl a b))
+  (num-add (a -> a -> a))
+  (num-sub (a -> a -> a))
+  (num-mul (a -> a -> a)))
+(define (num-add (NumDict add sub mul) a b) (add a b))
+(define (num-sub (NumDict add sub mul) a b) (sub a b))
+(define (num-mul (NumDict add sub mul) a b) (mul a b))
 (define (int-num-add a b) (+ a b))
-(define IntNumDict (NumDict int-num-add))
+(define (int-num-sub a b) (- a b))
+(define (int-num-mul a b) (* a b))
+(define IntNumDict (NumDict int-num-add int-num-sub int-num-mul))
+(define (double-num-add a b) (+ a b))
+(define (double-num-sub a b) (- a b))
+(define (double-num-mul a b) (* a b))
+(define DoubleNumDict (NumDict double-num-add double-num-sub double-num-mul))
 (instance (Num Int) IntNumDict)
+(instance (Num DoubleFloat) DoubleNumDict)
 
 ;; List library
 (define (head (Cons x xs)) x)
