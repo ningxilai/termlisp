@@ -54,6 +54,7 @@
     ("and" . and) ("or" . or)
     ("quo" . quo) ("gcd" . cl-gcd) ("^" . expt)
     ("prev" . tl-prev) ("next" . tl-next)
+    ("factorial" . tl-factorial) ("choose" . tl-choose)
     ("explode" . tl-explode)
     ("copy" . tl-copy) ("sort!" . tl-sort!)
     ("nil?" . tl-pointer-null-p)
@@ -1170,7 +1171,9 @@ a literal nil."
                       abn (tl-aldor--expr-type-sefo abn opnd)))
                  (w (tl-aldor--lower-expr abn (car args) env))
                  (v (tl-aldor--lower-expr abn opnd env)))
-            (if (eq ty 'Character)
+            ;; A Character operand prints as a character; `newline' is
+            ;; such a value even when its syme is not resolved.
+            (if (or (eq ty 'Character) (eq v 'tl-newline))
                 `(tl-output-char ,w ,v)
               `(tl-output-<< ,w ,v))))
          (t

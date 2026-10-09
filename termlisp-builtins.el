@@ -221,6 +221,16 @@ Supports `~a' (consume an argument), `~n' (newline) and `~~'."
 (defun tl-prev (n) (1- n))
 (defun tl-next (n) (1+ n))
 
+;; Standard combinators used by the corpus' example libraries.
+(defun tl-factorial (n)
+  "Factorial of N (matching the sample's `n <= 2 => n' base case)."
+  (if (<= n 2) n (* n (tl-factorial (1- n)))))
+
+(defun tl-choose (n k)
+  "Binomial coefficient C(N, K)."
+  (/ (tl-factorial n)
+     (* (tl-factorial k) (tl-factorial (- n k)))))
+
 ;; `explode r' returns the fields of a record/union value as a tuple;
 ;; records are vectors, so this is the identity.
 (defun tl-explode (v) v)
