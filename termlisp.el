@@ -73,13 +73,8 @@
 (require 'termlisp-aldor)
 (require 'termlisp-io)
 
-;; The Reader monad depends on `cats'; load it when that dependency is
-;; available.  The core language does not need it, so a missing `cats'
-;; must not break loading termlisp (its own `require' would otherwise
-;; signal through the optional `require').
-(condition-case nil
-    (require 'termlisp-data-reader)
-  (error nil))
+;; The Reader monad; it depends on `cats', declared in Package-Requires.
+(require 'termlisp-data-reader)
 
 (provide 'termlisp)
 ;;; termlisp.el ends here
