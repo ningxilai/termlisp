@@ -97,10 +97,18 @@ Return the new representative."
       (setf (tl-node-bind node) bind)
       (setf (tl-node-rank node) rank))))
 
+(defvar tl-gnode--fail-reason nil
+  "Why the most recent `tl-gnode-unify' failed: nil, or `infinite-type'.
+Bound and inspected by `tl-unify-types' to report an infinite type rather
+than a mere mismatch.")
+
 (defun tl-gnode-unify (a b &optional occurs-check)
   "Unify nodes A and B, mutating BIND slots.  Return t, or nil (rolled back).
 With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
-\(the default) the system is equirecursive, as in Coalton."
+\(the default) the system is equirecursive, as in Coalton.  On failure
+`tl-gnode--fail-reason' records `infinite-type' when the occurs check
+rejected a cyclic binding."
+  (setq tl-gnode--fail-reason nil)
   (let ((trail nil)
         (pending (list (cons a b)))
         (seen (make-hash-table :test #'eq))
@@ -120,7 +128,8 @@ With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
            ((eq x y))
            ((tl-node-var-p x)
             (when (and occurs-check (tl-gnode-occurs x y))
-              (setq ok nil) (throw 'tl-gnode-fail nil))
+              (setq ok nil tl-gnode--fail-reason 'infinite-type)
+              (throw 'tl-gnode-fail nil))
             ;; A variable binds to the non-variable term (so it derefs
             ;; to it); two variables union by rank.
             (if (tl-node-var-p y)
@@ -128,7 +137,8 @@ With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
               (tl-gnode--bind x y trail)))
            ((tl-node-var-p y)
             (when (and occurs-check (tl-gnode-occurs y x))
-              (setq ok nil) (throw 'tl-gnode-fail nil))
+              (setq ok nil tl-gnode--fail-reason 'infinite-type)
+              (throw 'tl-gnode-fail nil))
             (if (tl-node-var-p x)
                 (tl-gnode--union y x trail)
               (tl-gnode--bind y x trail)))

@@ -81,12 +81,52 @@
   (when (and (tl-tcon-p ty) (eq (tl-tcon-name ty) '->))
     (tl-tcon-args ty)))
 
+(defvar tl-occurrence-check nil
+  "When non-nil, unification performs the occurs check.
+A cyclic (infinite) type is then rejected with a `termlisp-type-error'
+naming it.  Off by default: equirecursive types (as in Coalton) are
+allowed, matching `tl-gtype--default-occurs-check'.")
+
+(defun tl-type-to-datum (type)
+  "Render TYPE as a readable, cycle-safe s-expression datum.
+Type variables become `?N' symbols; an equirecursive cycle is rendered
+with an `!N' back-reference, so the result is always finite."
+  (let ((names (make-hash-table :test #'eq))
+        (n 0))
+    (cl-labels ((go (node)
+                  (let ((node (tl-type-deref node)))
+                    (cond
+                     ((tl-tvar-p node)
+                      (or (gethash node names)
+                          (let ((s (intern (format "?%d" (cl-incf n)))))
+                            (puthash node s names) s)))
+                     ((tl-tcon-p node)
+                      (let ((head (tl-type-deref (tl-tcon-name node))))
+                        (if (gethash node names)
+                            (gethash node names)
+                          (puthash node (intern (format "!%d" (cl-incf n))) names)
+                          (let ((args (tl-tcon-args node)))
+                            (if (null args)
+                                (if (tl-node-var-p head) (go head) head)
+                              (cons (if (tl-node-var-p head) (go head) head)
+                                    (mapcar #'go args)))))))
+                     (t node)))))
+      (go type))))
+
 (defun tl-unify-types (a b bindings)
   "Unify types A and B in place under BINDINGS.  Return `(ok . bindings)'.
-On failure returns `(nil . nil)'; failed attempts are rolled back."
-  (if (tl-gnode-unify a b)
-      (cons t bindings)
-    (cons nil nil)))
+On failure returns `(nil . nil)'; failed attempts are rolled back.  When
+`tl-occurrence-check' is non-nil, a cyclic binding signals a
+`termlisp-type-error' describing the infinite type."
+  (let ((tl-gnode--fail-reason nil))
+    (if (tl-gnode-unify a b tl-occurrence-check)
+        (cons t bindings)
+      (if (eq tl-gnode--fail-reason 'infinite-type)
+          (signal 'termlisp-type-error
+                  (list (format "Infinite type: %S unifies with %S"
+                                (tl-type-to-datum a)
+                                (tl-type-to-datum b))))
+        (cons nil nil)))))
 
 (defun tl-apply-bindings (type bindings)
   "Fully zonk TYPE, dereferencing every variable.  BINDINGS is ignored
@@ -978,7 +1018,8 @@ a hard failure.")
 A definition whose name is a class method is skipped: its signature
 comes from the class declaration (registered in `tl-env-method-env'),
 and instance implementations are checked against that signature."
-  (let ((target (cadr form)))
+  (let ((target (cadr form))
+        (tl-occurrence-check (tl-env-option env :occurs-check)))
     (cond
      ((and (consp target) (gethash (car target) (tl-env-method-env env)))
       (car target))
@@ -1036,7 +1077,8 @@ as the first argument of overloaded method calls."
 
 (defun tl-typecheck-form (env form)
   "Typecheck one top-level FORM in ENV."
-  (let ((tl-infer-constraints nil))
+  (let ((tl-infer-constraints nil)
+        (tl-occurrence-check (tl-env-option env :occurs-check)))
     (cond
      ((and (consp form) (eq (car form) 'datatype)) (tl-eval-datatype env form))
      ((and (consp form) (eq (car form) 'datatype-extension))

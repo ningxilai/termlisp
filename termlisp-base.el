@@ -15,7 +15,7 @@
 (define-error 'termlisp-eval-error "Term-lisp evaluation error" 'termlisp-error)
 
 (defconst termlisp-default-options
-  '(:occurs-check t :fuel 100000 :type-check nil :elaborate nil :phase B)
+  '(:occurs-check nil :fuel 100000 :type-check nil :elaborate nil :phase B)
   "Default evaluation options.")
 
 (cl-defstruct (tl-env (:constructor tl-env--make))

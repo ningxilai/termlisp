@@ -867,6 +867,21 @@ builtin operator mapping."
     (should (tl-gnode-unify b c))
     (should (eq (tl-gnode-deref a) (tl-gnode-deref c)))))
 
+(ert-deftest tl-unify-types-infinite ()
+  "With the occurs check on, a cyclic unify reports an infinite type."
+  (let* ((a (tl-fresh-tvar))
+         (l (tl-tcon 'List (list a)))
+         (tl-occurrence-check t))
+    (should-error (tl-unify-types a l nil) :type 'termlisp-type-error)
+    ;; The default remains equirecursive (no signal, cycle allowed).
+    (let ((tl-occurrence-check nil))
+      (should (car (tl-unify-types a l nil)))))
+  ;; `tl-type-to-datum' renders a cycle with a finite back-reference.
+  (let* ((a (tl-fresh-tvar))
+         (l (tl-tcon 'List (list a))))
+    (tl-unify-types a l nil)
+    (should (string-match-p "!" (format "%S" (tl-type-to-datum l))))))
+
 (ert-deftest tl-graph-decompose-crosscheck ()
   "The generic unifier traverses graph nodes via tl-decompose."
   (let* ((a (tl-make-var-node 'a))
