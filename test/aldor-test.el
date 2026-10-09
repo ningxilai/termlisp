@@ -966,5 +966,24 @@ builtin operator mapping."
     (should-not (tl-entail env (list (tl-constraint 'Ord (tl-tint)))
                            (tl-constraint 'Eq (tl-tstring))))))
 
+(ert-deftest tl-context-reduction ()
+  "split-context, ambiguity detection and defaulting."
+  (let ((a (tl-fresh-tvar)) (b (tl-fresh-tvar)))
+    ;; A predicate mentioning a generalized variable is retained; a
+    ;; ground one is deferred.
+    (let ((sp (tl-split-context
+               nil (list a)
+               (list (tl-constraint 'Eq (tl-tcon 'List (list a)))
+                     (tl-constraint 'Eq (tl-tint))))))
+      (should (= 1 (length (car sp))))
+      (should (= 1 (length (cadr sp)))))
+    ;; An ambiguous Num predicate defaults its variable to Int.
+    (let ((subs (tl-default-subs nil (list (tl-constraint 'Num b)))))
+      (should (equal (cdr (assq b subs)) (tl-tint))))
+    ;; A predicate over an undetermined variable is ambiguous.
+    (should (= 1 (length (tl-ambiguities
+                          nil nil
+                          (list (tl-constraint 'Eq (tl-tcon 'List (list a))))))))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

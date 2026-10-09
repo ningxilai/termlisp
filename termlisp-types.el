@@ -369,32 +369,90 @@ Resolution is graph-native: an instance matches when its head matches
 C's type (non-destructively) and its context is recursively entailed."
   (cons (if (tl-entail-by-inst env c) t nil) bindings))
 
+(defconst tl-default-class-defaults
+  '((Num . Int) (Integral . Int) (Fractional . DoubleFloat)
+    (Eq . Int) (Ord . Int))
+  "Default type constructor for the parameter of a class when it is
+ambiguous (mirrors Coalton/Haskell numeric defaulting).")
+
+(defun tl-split-context (_env gen-vars preds)
+  "Split PREDS into (RETAINED DEFERRED).
+A predicate is RETAINED when its type mentions a GEN-VARS variable (so
+it is generalized with the scheme); otherwise it is DEFERRED and must be
+solved or defaulted at the use site."
+  (let (retained deferred)
+    (dolist (c preds)
+      (if (cl-intersection gen-vars (tl-free-tvars (tl-constraint-type c)))
+          (push c retained)
+        (push c deferred)))
+    (list (nreverse retained) (nreverse deferred))))
+
+(defun tl-ambiguities (_env env-vars preds)
+  "Return the predicates of PREDS whose variables are not determined.
+A variable is determined when it is in ENV-VARS or is the variable of a
+predicate whose own variables are already determined (so fundep-style
+determination is captured; plain HM has none and this reduces to
+\"unchanged variables\")."
+  (let ((det (copy-sequence env-vars)) (changed t))
+    (while changed
+      (setq changed nil)
+      (dolist (c preds)
+        (let ((vs (tl-free-tvars (tl-constraint-type c))))
+          (when (cl-every (lambda (v) (memq v det)) vs)
+            (dolist (v vs)
+              (unless (memq v det) (push v det) (setq changed t)))))))
+    (cl-remove-if
+     (lambda (c)
+       (cl-every (lambda (v) (memq v det))
+                 (tl-free-tvars (tl-constraint-type c))))
+     preds)))
+
+(defun tl-default-subs (_env preds)
+  "Return an alist var-node -> default type for the ambiguous PREDS.
+Uses `tl-default-class-defaults'; a predicate whose class has no default
+contributes nothing."
+  (let (subs)
+    (dolist (c preds)
+      (let ((def (cdr (assq (tl-constraint-class c) tl-default-class-defaults))))
+        (when def
+          (dolist (v (tl-free-tvars (tl-constraint-type c)))
+            (unless (assq v subs)
+              (push (cons v (tl-tcon def nil)) subs))))))
+    subs))
+
 (defun tl-close-constraints (env gen-vars constraints bindings &optional reject-ambiguous)
-  "Zonk CONSTRAINTS under BINDINGS, solving the non-generalizable ones.
-GEN-VARS are the type variables being generalized.  Constraints whose
-type mentions a GEN-VARS variable are returned (deduplicated); the
-rest are solved in ENV, signalling `termlisp-type-error' on an
-unsolved ground constraint.  With REJECT-AMBIGUOUS non-nil (top-level
-expressions, where nothing is generalized), an unsolved constraint
-whose type still has free type variables is also rejected: its class
-variable never resolved to a concrete instance."
-  (let ((kept nil))
-    (dolist (c constraints)
-      (let* ((ty (tl-apply-bindings (tl-constraint-type c) bindings))
-             (c* (tl-constraint (tl-constraint-class c) ty)))
-        (if (cl-intersection gen-vars (tl-free-tvars ty))
-            (push c* kept)
-          (unless (car (tl-solve-constraint env c* bindings))
-            (let ((free (tl-free-tvars ty)))
-              (when (or reject-ambiguous (null free))
-                (signal 'termlisp-type-error
-                        (list (if free
-                                  (format "Ambiguous constraint: no instance for %S %S"
-                                          (tl-constraint-class c) ty)
-                                (format "No instance for %S %S"
-                                        (tl-constraint-class c) ty))))))))))
-    (tl-remove-duplicates-by-key (nreverse kept)
-                                 #'tl-constraint-canonical-key #'equal)))
+  "Zonk CONSTRAINTS, retain the generalizable ones, solve or default the rest.
+GEN-VARS are the type variables being generalized; a constraint whose
+type mentions one is retained.  The deferred constraints are defaulted
+\(see `tl-default-subs') and solved; an unsolved ground constraint -- or,
+with REJECT-AMBIGUOUS, one still mentioning free type variables -- is
+rejected with `termlisp-type-error'."
+  (let* ((zonked (mapcar
+                  (lambda (c)
+                    (tl-constraint (tl-constraint-class c)
+                                   (tl-apply-bindings (tl-constraint-type c) bindings)))
+                  constraints))
+         (split (tl-split-context env gen-vars zonked))
+         (retained (car split))
+         (deferred (cadr split))
+         (defaults (tl-default-subs env deferred))
+         (deferred (mapcar (lambda (c)
+                             (tl-constraint (tl-constraint-class c)
+                                            (tl-type-subst (tl-constraint-type c)
+                                                           defaults)))
+                           deferred)))
+    (dolist (c deferred)
+      (unless (tl-entail env retained c)
+        (let ((free (tl-free-tvars (tl-constraint-type c))))
+          (when (or reject-ambiguous (null free))
+            (signal 'termlisp-type-error
+                    (list (if free
+                              (format "Ambiguous constraint: no instance for %S %S"
+                                      (tl-constraint-class c) (tl-constraint-type c))
+                            (format "No instance for %S %S"
+                                    (tl-constraint-class c) (tl-constraint-type c)))))))))
+    (tl-remove-duplicates-by-key (nreverse retained)
+                                 #'tl-constraint-canonical-key #'tl-constraint-eq)))
 
 (defun tl-generalize (type env-tvars &optional constraints)
   "Generalize TYPE, quantifying tvars not in ENV-TVARS, keeping CONSTRAINTS
