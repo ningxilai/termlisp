@@ -935,5 +935,26 @@ builtin operator mapping."
     ;; An unrelated operand matches neither.
     (should-not (tl-resolve-overload (tl-tint) cands))))
 
+;;; Graph-native instance resolution / entailment
+
+(ert-deftest tl-entail-instances ()
+  "Instances are matched by one-way graph matching, with entailed context."
+  (let ((env (termlisp-make-env)))
+    (tl-register-class env '(class Eq (a) nil))
+    (tl-register-instance env '(instance (Eq Int) EqIntDict))
+    (should (tl-entail-by-inst env (tl-constraint 'Eq (tl-tint))))
+    (should-not (tl-entail-by-inst env (tl-constraint 'Eq (tl-tstring))))
+    ;; Eq a => Eq (List a): the context is entailed recursively.
+    (let ((a (tl-fresh-tvar)))
+      (puthash 'Eq
+               (cons (tl-instance 'Eq (tl-tcon 'List (list a))
+                                  (list (tl-constraint 'Eq a)) nil nil)
+                     (gethash 'Eq (tl-env-instance-env env)))
+               (tl-env-instance-env env))
+      (should (tl-entail-by-inst
+               env (tl-constraint 'Eq (tl-tcon 'List (list (tl-tint))))))
+      (should-not (tl-entail-by-inst
+                   env (tl-constraint 'Eq (tl-tcon 'List (list (tl-tstring)))))))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

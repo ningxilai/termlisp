@@ -291,62 +291,66 @@ inserted without further traversal.  Cycle-safe (equirecursive types)."
   "Return the type variables of TYPE that are not in ENV-TVARS."
   (cl-remove-if (lambda (v) (memq v env-tvars)) (tl-free-tvars type)))
 
-(defun tl-as-tcon (x)
-  "Return X as a type constructor, treating a bare symbol as nullary.
-A type-constructor variable bound in name position yields a bare
-symbol (e.g. the `Maybe' of `Functor Maybe'); this normalizes it."
-  (if (symbolp x) (tl-tcon x nil) x))
+(defun tl-constraint-eq (a b)
+  "Structural equality of two predicates (after zonking)."
+  (and (eq (tl-constraint-class a) (tl-constraint-class b))
+       (equal (tl-apply-bindings (tl-constraint-type a) nil)
+              (tl-apply-bindings (tl-constraint-type b) nil))))
+
+(defun tl-gnode-match (pattern node)
+  "One-way, non-destructive match of PATTERN against NODE.
+Pattern variable nodes are rigid; the result `(t . SUB)' maps each to
+the node it matched, or nil on failure.  The graph is never mutated."
+  (let ((p (tl-type-deref pattern))
+        (n (tl-type-deref node)))
+    (cond
+     ((tl-tvar-p p) (cons t (list (cons p n))))
+     ((and (tl-tcon-p p) (tl-tcon-p n)
+           (eq (tl-tcon-name p) (tl-tcon-name n))
+           (= (length (tl-tcon-args p)) (length (tl-tcon-args n))))
+      (let ((ps (tl-tcon-args p)) (ns (tl-tcon-args n)) (sub nil) (ok t))
+        (while (and ps ok)
+          (let ((r (tl-gnode-match (car ps) (car ns))))
+            (if r (setq sub (append sub (cdr r))) (setq ok nil)))
+          (setq ps (cdr ps) ns (cdr ns)))
+        (and ok (cons t sub))))
+     ((equal p n) (cons t nil))
+     (t nil))))
 
 (defun tl-match-instance (head ty)
-  "Match instance HEAD against type TY.  Return `(t . SUB)' on success.
-Instance-head variables are rigid patterns; variables in TY may be
-bound by SUB.  Returns nil when HEAD does not match TY.
-This is one-way matching in the style of clover's
-`one-way-unify1-term-alist' \"no-change-loser\": bindings are built in a
-local SUB and the caller's state is left untouched on failure."
-  (let ((sub nil) (work (list (cons head ty))) (ok t))
-    (while (and work ok)
-      (let* ((pair (pop work))
-             (h (tl-as-tcon (car pair)))
-             (t2 (tl-as-tcon (tl-deref (cdr pair) sub))))
-        (cond
-         ((tl-tvar-p h)
-          (let ((hd (tl-deref h sub)))
-            (if (tl-tvar-p hd)
-                (push (cons hd t2) sub)
-              (unless (equal hd t2) (setq ok nil)))))
-         ((and (tl-tcon-p h) (tl-tcon-p t2)
-               (eq (tl-tcon-name h) (tl-tcon-name t2))
-               (= (length (tl-tcon-args h)) (length (tl-tcon-args t2))))
-          (let ((ah (tl-tcon-args h)) (at (tl-tcon-args t2)))
-            (while ah (push (cons (car ah) (car at)) work)
-                   (setq ah (cdr ah) at (cdr at)))))
-         ((equal h t2))
-         (t (setq ok nil)))))
-    (and ok (cons t sub))))
+  "Match instance HEAD against type TY, one-way.  Return `(t . SUB)' or nil."
+  (tl-gnode-match head ty))
 
-(defun tl-solve-constraint (env c bindings)
-  "Solve constraint C in ENV under BINDINGS.  Return `(ok . bindings)'.
-For a resolvable instance, recursively solve its context."
-  (let* ((ty (tl-apply-bindings (tl-constraint-type c) bindings))
-         (insts (gethash (tl-constraint-class c) (tl-env-instance-env env)))
-         (found nil)
-         (ok t))
-    (while (and insts (not found) ok)
-      (let ((m (tl-match-instance (tl-instance-head (car insts)) ty)))
-        (when m
-          (setq found t)
-          (let ((sub (cdr m)))
-            (dolist (c2 (tl-instance-context (car insts)))
-              (let ((r (tl-solve-constraint
+(defun tl-entail-by-inst (env pred)
+  "Non-nil when PRED is satisfied by an instance whose context is entailed."
+  (let ((insts (gethash (tl-constraint-class pred) (tl-env-instance-env env))))
+    (catch 'ok
+      (dolist (inst insts)
+        (let ((m (tl-match-instance (tl-instance-head inst)
+                                    (tl-constraint-type pred))))
+          (when (car m)
+            (let ((sub (cdr m)))
+              (when (cl-every
+                     (lambda (c2)
+                       (tl-entail-by-inst
                         env
                         (tl-constraint (tl-constraint-class c2)
-                                       (tl-type-subst (tl-constraint-type c2) sub))
-                        bindings)))
-                (unless (car r) (setq ok nil))
-                (setq bindings (cdr r)))))))
-      (setq insts (cdr insts)))
-    (if (and found ok) (cons t bindings) (cons nil nil))))
+                                       (tl-type-subst
+                                        (tl-constraint-type c2) sub))))
+                     (tl-instance-context inst))
+                (throw 'ok t))))))
+      nil)))
+
+(defun tl-entail (env preds pred)
+  "Non-nil when PREDS entail PRED by membership or by an instance."
+  (or (cl-some (lambda (p) (tl-constraint-eq p pred)) preds)
+      (tl-entail-by-inst env pred)))
+
+(defun tl-solve-constraint (env c bindings)
+  "Resolve constraint C in ENV.  Return `(ok . bindings)'.
+Resolution is graph-native: an instance matches when its head matches
+C's type (non-destructively) and its context is recursively entailed."
+  (cons (if (tl-entail-by-inst env c) t nil) bindings))
 
 (defun tl-close-constraints (env gen-vars constraints bindings &optional reject-ambiguous)
   "Zonk CONSTRAINTS under BINDINGS, solving the non-generalizable ones.
