@@ -62,25 +62,37 @@
 
 (defun tl-gnode--union (x y trail)
   "Union variable roots X and Y, recording the change on TRAIL.
-Return the new representative."
-  (let ((rx (tl-gnode-deref x))
-        (ry (tl-gnode-deref y)))
+Return the new representative, or nil on a kind clash (recorded in
+`tl-gnode--fail-reason').  Known kinds are propagated to the root."
+  (let* ((rx (tl-gnode-deref x))
+         (ry (tl-gnode-deref y))
+         (kx (tl-node-kind rx))
+         (ky (tl-node-kind ry)))
     (cond
      ((eq rx ry) rx)
-     ((> (tl-node-rank rx) (tl-node-rank ry))
-      (push (list ry (tl-node-bind ry) (tl-node-rank ry)) trail)
-      (setf (tl-node-bind ry) rx)
-      rx)
-     ((< (tl-node-rank rx) (tl-node-rank ry))
-      (push (list rx (tl-node-bind rx) (tl-node-rank rx)) trail)
-      (setf (tl-node-bind rx) ry)
-      ry)
+     ((and kx ky (/= kx ky))
+      (setq tl-gnode--fail-reason 'kind-mismatch)
+      nil)
      (t
-      (push (list ry (tl-node-bind ry) (tl-node-rank ry)) trail)
-      (setf (tl-node-bind ry) rx)
-      (push (list rx nil (tl-node-rank rx)) trail)
-      (setf (tl-node-rank rx) (1+ (tl-node-rank rx)))
-      rx))))
+      (let ((root
+             (cond
+              ((> (tl-node-rank rx) (tl-node-rank ry))
+               (push (list ry (tl-node-bind ry) (tl-node-rank ry)) trail)
+               (setf (tl-node-bind ry) rx)
+               rx)
+              ((< (tl-node-rank rx) (tl-node-rank ry))
+               (push (list rx (tl-node-bind rx) (tl-node-rank rx)) trail)
+               (setf (tl-node-bind rx) ry)
+               ry)
+              (t
+               (push (list ry (tl-node-bind ry) (tl-node-rank ry)) trail)
+               (setf (tl-node-bind ry) rx)
+               (push (list rx nil (tl-node-rank rx)) trail)
+               (setf (tl-node-rank rx) (1+ (tl-node-rank rx)))
+               rx))))
+        (when (null (tl-node-kind root))
+          (setf (tl-node-kind root) (or kx ky)))
+        root)))))
 
 (defun tl-gnode--bind (var term trail)
   "Bind representative VAR to TERM, recording the change on TRAIL."
@@ -133,14 +145,16 @@ rejected a cyclic binding."
             ;; A variable binds to the non-variable term (so it derefs
             ;; to it); two variables union by rank.
             (if (tl-node-var-p y)
-                (tl-gnode--union x y trail)
+                (unless (tl-gnode--union x y trail)
+                  (setq ok nil) (throw 'tl-gnode-fail nil))
               (tl-gnode--bind x y trail)))
            ((tl-node-var-p y)
             (when (and occurs-check (tl-gnode-occurs y x))
               (setq ok nil tl-gnode--fail-reason 'infinite-type)
               (throw 'tl-gnode-fail nil))
             (if (tl-node-var-p x)
-                (tl-gnode--union y x trail)
+                (unless (tl-gnode--union y x trail)
+                  (setq ok nil) (throw 'tl-gnode-fail nil))
               (tl-gnode--bind y x trail)))
            ((and (tl-node-application x) (tl-node-application y)
                  (= (length (tl-node-children x))

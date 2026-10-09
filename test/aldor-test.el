@@ -1011,6 +1011,25 @@ builtin operator mapping."
     (should (tl-kind-check env (tl-tcon 'Pair (list (tl-tint) (tl-tstring)))))
     (should-error (tl-kind-check env (tl-tcon 'Pair (list (tl-tint)))))))
 
+(ert-deftest tl-kind-vars ()
+  "Type variables get a kind arity from their use; inconsistent use errors."
+  (let ((env (termlisp-make-env))
+        (f (tl-fresh-tvar))
+        (a (tl-fresh-tvar))
+        (b (tl-fresh-tvar)))
+    ;; `f a -> f a': f is a unary constructor, consistently.
+    (should (tl-kind-check env (tl-tarrow (tl-tcon f (list a))
+                                          (tl-tcon f (list b)))))
+    (should (= 1 (tl-node-kind f)))
+    ;; `f a b': f used at arity 2 now conflicts with arity 1.
+    (should-error (tl-kind-check env (tl-tcon f (list a b)))))
+  ;; A kind clash between two known head variables is caught during unify.
+  (let ((f (tl-fresh-tvar)) (g (tl-fresh-tvar)) (a (tl-fresh-tvar)))
+    (setf (tl-node-kind f) 1)
+    (setf (tl-node-kind g) 2)
+    (should-error (tl-unify-types (tl-tcon f (list a)) (tl-tcon g (list a)) nil)
+                  :type 'termlisp-type-error)))
+
 ;;; Dictionary-passing elaboration
 
 (ert-deftest tl-dictionary-passing ()

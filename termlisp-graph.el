@@ -29,10 +29,12 @@ MEMO is the node's rewritten replacement, or nil.
 
 The remaining slots are for graph unification (see `termlisp-graph-unify'):
 VAR marks a unification variable node, BIND is its union-find parent
-(nil for a representative), and RANK orders unions.  They are disjoint
-from STATE/MEMO, which serve term rewriting."
+(nil for a representative), and RANK orders unions.  KIND is the node's
+kind arity when known (see `termlisp-kinds'): 0 for a proper type, n>0 for
+a type constructor expecting n arguments, nil when unknown.  They are
+disjoint from STATE/MEMO, which serve term rewriting."
   head children (application nil) (state :idle) memo
-  (var nil) (bind nil) (rank 0))
+  (var nil) (bind nil) (rank 0) (kind nil))
 
 (cl-defstruct (tl-graph (:constructor tl-make-graph (root table)))
   "A term graph: ROOT node plus a sharing TABLE (sexp-key -> node)."

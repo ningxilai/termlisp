@@ -121,12 +121,18 @@ On failure returns `(nil . nil)'; failed attempts are rolled back.  When
   (let ((tl-gnode--fail-reason nil))
     (if (tl-gnode-unify a b tl-occurrence-check)
         (cons t bindings)
-      (if (eq tl-gnode--fail-reason 'infinite-type)
-          (signal 'termlisp-type-error
-                  (list (format "Infinite type: %S unifies with %S"
-                                (tl-type-to-datum a)
-                                (tl-type-to-datum b))))
-        (cons nil nil)))))
+      (cond
+       ((eq tl-gnode--fail-reason 'infinite-type)
+        (signal 'termlisp-type-error
+                (list (format "Infinite type: %S unifies with %S"
+                              (tl-type-to-datum a)
+                              (tl-type-to-datum b)))))
+       ((eq tl-gnode--fail-reason 'kind-mismatch)
+        (signal 'termlisp-type-error
+                (list (format "Kind mismatch: %S vs %S"
+                              (tl-type-to-datum a)
+                              (tl-type-to-datum b)))))
+       (t (cons nil nil))))))
 
 (defun tl-apply-bindings (type bindings)
   "Fully zonk TYPE, dereferencing every variable.  BINDINGS is ignored
@@ -968,6 +974,8 @@ a hard failure.")
                   (tl-close-constraints env nil tl-infer-constraints fb)
                   (puthash name sig tyenv))
               (setq tl-elab-bindings bindings)
+              (when (fboundp 'tl-kind-check)
+                (tl-kind-check env final))
               (let ((kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
                 (puthash name (tl-generalize final env-tvars kept) tyenv)))))))))
 
