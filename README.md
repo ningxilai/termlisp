@@ -108,11 +108,10 @@ Example:
 termlisp.el            ; entry point, public API, loader
 termlisp-base.el       ; errors, options, environment struct
 termlisp-reader.el     ; S-expression reader
-termlisp-unify.el      ; unification kernel (generic structural core)
 termlisp-graph.el      ; term-graph rewriting core
 termlisp-graph-unify.el; graph unification (union-find)
 termlisp-types.el      ; HM inference over the term graph
-termlisp-graph-types.el; graph <-> type bridges
+termlisp-free-vars.el  ; free type variables of a type graph
 termlisp-kinds.el      ; kind inference
 termlisp-ir-types.el   ; HM typing for the lowering IR
 termlisp-resolve.el    ; unification-driven overload resolution
@@ -133,9 +132,9 @@ termlisp-prelude.tls   ; the standard prelude
 
 ### Branches
 
-- `main` — the library implementation (this branch).
-- `dev` — the implementation plus tests (`test/`), design docs (`docs/`),
-  and examples (`examples/`).
+- `main` — the library only (this branch); no tests, no test-only support.
+- `dev` — `main` plus the ERT test suite (`test/aldor-test.el`) and the
+  graph <-> surface bridges it exercises (`termlisp-graph-types.el`).
 
 ### Dependencies
 
@@ -153,14 +152,16 @@ The core language loads fine without it; only the Reader monad is skipped.
 
 ## Development
 
+On `main`:
+
 ```
-make test      ; run the ERT suite (on the `dev` branch)
 make compile   ; byte-compile
 make clean     ; remove .elc files
 ```
 
-`cats` is expected on the load path; the Makefile defaults to the elpaca
-sources directory and honours `CATS_DIR`, e.g.
+The ERT suite lives on `dev` (`make test` there runs it).  `cats` is
+expected on the load path; the Makefile defaults to the elpaca sources
+directory and honours `CATS_DIR`, e.g.
 `make test CATS_DIR=$HOME/src/emacs-cats`.
 
 ## License

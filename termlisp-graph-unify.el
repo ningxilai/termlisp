@@ -11,17 +11,12 @@
 ;;
 ;; Following Coalton's type unifier, the occurs check is *off by default*:
 ;; this makes the system equirecursive.  Bindings are undone on failure via
-;; a trail, preserving the no-change-loser discipline of `tl-unify'.
-;;
-;; The generic kernel of `termlisp-unify' can also traverse nodes, via the
-;; `tl-decompose'/`tl-rebuild' methods below, which cross-checks this
-;; implementation against the alist unifier.
+;; a trail, preserving the no-change-loser discipline.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'termlisp-base)
-(require 'termlisp-unify)
 (require 'termlisp-graph)
 
 (defun tl-node-var-p (node)
@@ -191,14 +186,6 @@ rejected a cyclic binding."
         t
       (tl-gnode--rollback trail)
       nil)))
-
-;;; Bridge to the generic unifier (`termlisp-unify').
-
-(cl-defmethod tl-decompose ((x tl-node))
-  "Expose a compound node as (HEAD . CHILDREN) to the generic unifier.
-Only `tl-decompose' is needed: the generic unifier never calls `tl-rebuild'."
-  (when (and (tl-node-application x) (not (tl-node-var x)))
-    (cons (tl-node-head x) (tl-node-children x))))
 
 (provide 'termlisp-graph-unify)
 ;;; termlisp-graph-unify.el ends here

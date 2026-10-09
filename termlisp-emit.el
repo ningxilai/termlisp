@@ -94,14 +94,6 @@ Aldor allows identifiers such as `t', which Emacs Lisp will not let
              ;; form, executed in source order.
              (push (tl-emit--expr form ctx) out))))))
 
-(defun tl-emit-form (form)
-  "Emit a single termlisp top-level FORM."
-  (car (tl-emit-program (list form))))
-
-(defun tl-emit-expr (expr &optional ctx)
-  "Emit termlisp expression EXPR as an Emacs Lisp form."
-  (tl-emit--expr expr (or ctx (tl-emit-ctx--make))))
-
 (defun tl-emit--collect (forms ctx)
   (dolist (form forms)
     (pcase (car-safe form)

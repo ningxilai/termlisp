@@ -26,7 +26,6 @@
 (defun tl-tvector (a) (tl-tcon 'Array (list a)))
 (defun tl-trecord (args) (tl-tcon 'Record args))
 (defun tl-tunion (a) (tl-tcon 'Union (list a)))
-(defun tl-tgenerator (a) (tl-tcon 'Generator (list a)))
 
 (defun tl-ir-unify (a b bindings)
   "Unify A and B under BINDINGS, signalling on mismatch.
@@ -366,12 +365,6 @@ store, unlike plain immutable values."
          (or (memq name '(File TextReader TextWriter Ref Store Array
                           Generator))
              (not (memq name tl-ir-value-type-names))))))
-
-(defun tl-ir-expr-handle-p (env expr)
-  "Infer EXPR in ENV and report whether its type is a handle.
-Used as the type oracle for substitution and store decisions."
-  (let ((r (tl-infer (tl-zonk-env env nil) expr)))
-    (tl-ir-handle-type-p (tl-apply-bindings (car r) (cdr r)))))
 
 (defun tl-typecheck-ir (forms &optional env)
   "Typecheck lowered IR FORMS in ENV (fresh if nil).  Return ENV.

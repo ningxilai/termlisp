@@ -78,11 +78,6 @@
     ("nil" . Nil) ("cons" . Cons))
   "Mapping from Aldor operator names to termlisp function names.")
 
-(defconst tl-aldor--array-type-names
-  '(PrimitiveArray Array Vector String)
-  "Type head names whose application is an element reference.
-Strings count: aset/aref index them like arrays.")
-
 (defvar tl-aldor--user-functions nil
   "Names the current program defines itself.
 Such names shadow the builtin operator mapping of `tl-aldor--ops'.")
@@ -804,12 +799,6 @@ annotation, which is followed through ABN's syme table."
   (when (tl-abn-node-p sefo 'Apply)
     (cl-remove-if-not (lambda (x) (tl-abn-node-p x 'Declare)) (cddr sefo))))
 
-(defun tl-aldor--array-type-p (abn id)
-  "Non-nil when resolved Id ID has an array type."
-  (let* ((ty (tl-aldor--id-type-sefo abn id))
-         (name (and ty (tl-aldor--sefo-head-name abn ty))))
-    (and (memq name tl-aldor--array-type-names) name)))
-
 (defun tl-aldor--sefo-to-type (abn sefo)
   "Convert an ABN type sefo to a graph type node (constructor names only)."
   (setq sefo (tl-aldor--unwrap-type sefo))
@@ -938,16 +927,12 @@ payload expression itself (a literal, say) carries no type."
   (let ((cell (tl-aldor--syme-ref-cell syme 'exporter)))
     (and cell (aref (tl-abn-sefos abn) (cdr cell)))))
 
-(defun tl-aldor--id-type-sefo (abn id)
-  "Return the type sefo of resolved Id ID, or nil."
-  (let ((syme (tl-abn-id-syme id)))
-    (and syme (tl-abn-syme-type abn syme))))
-
 (defun tl-aldor--resolve-type-alias (abn ty)
   "Follow Id type aliases in TY until a structural type is reached."
   (let ((n 0))
     (while (and (< n 8) (tl-abn-node-p ty 'Id))
-      (let ((next (tl-aldor--id-type-sefo abn ty)))
+      (let* ((syme (tl-abn-id-syme ty))
+             (next (and syme (tl-abn-syme-type abn syme))))
         (if (and next (not (equal next ty)))
             (setq ty next
                   n (1+ n))
@@ -975,7 +960,9 @@ type; recv-first projections take the selected field's declared
 type; coercions pass through to the target; other nodes qualify
 only when they carry a resolved identifier."
   (cond
-   ((tl-abn-node-p node 'Id) (tl-aldor--id-type-sefo abn node))
+   ((tl-abn-node-p node 'Id)
+    (let ((syme (tl-abn-id-syme node)))
+      (and syme (tl-abn-syme-type abn syme))))
    ((memq (car node) '(PretendTo RestrictTo CoerceTo Qualify))
     (tl-aldor--expr-type-sefo abn (nth 2 node)))
     ((tl-abn-node-p node 'Apply)
@@ -997,7 +984,7 @@ only when they carry a resolved identifier."
         ((and owner
               (tl-abn-node-p owner 'Apply)
               (memq (tl-aldor--sefo-head-name abn owner)
-                    tl-aldor--array-type-names))
+                    '(PrimitiveArray Array Vector String)))
          (nth 2 owner))
         ((and (= (length node) 3)
               (tl-abn-node-p (nth 2 node) 'Id))
@@ -1277,7 +1264,7 @@ a literal nil."
         ;; the head expression's type; Array indexes are shifted to
         ;; the zero-based Lisp vector.
         ((and (= (length args) 1)
-              (memq head-ty-name tl-aldor--array-type-names))
+              (memq head-ty-name '(PrimitiveArray Array Vector String)))
          `(ArrayRef ,(tl-aldor--lower-expr abn head env)
                     ,(tl-aldor--array-index-ir
                       head-ty-name
@@ -2323,7 +2310,7 @@ rejected."
                             (hit (and rname (assq rname frame)))
                             (field-p (memq ty-name '(Record Union)))
                             (array-p (memq ty-name
-                                           tl-aldor--array-type-names)))
+                                           '(PrimitiveArray Array Vector String))))
                        (unless (and rname hit (or field-p array-p))
                          (signal 'termlisp-aldor-error
                                  (list (format

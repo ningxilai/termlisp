@@ -122,10 +122,6 @@ vertical bars as symbol escapes."
   (and (consp node)
        (if tag (eq (car node) tag) t)))
 
-(defun tl-abn-children (node)
-  "Return the child nodes of annotated NODE."
-  (cdr node))
-
 (defun tl-abn-id-syme (id)
   "Return the resolved syme alist of Id node ID, or nil.
 An unresolved (syme ref . N) annotation -- as carried by ids inside

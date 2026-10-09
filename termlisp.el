@@ -15,8 +15,8 @@
 ;; Loading this file loads the whole package.  The modules fall into a few
 ;; groups (required in dependency order):
 ;;
-;;   core        base, reader, unify, machine, pattern, builtins, numeric
-;;   types       types, kinds, graph-types, ir-types
+;;   core        base, reader, machine, pattern, builtins, numeric
+;;   types       types, kinds, free-vars, ir-types
 ;;   classes     resolve, elaborate
 ;;   runtime     eval, load
 ;;   term graph  graph, graph-unify, case
@@ -37,7 +37,6 @@
 
 (require 'termlisp-base)
 (require 'termlisp-reader)
-(require 'termlisp-unify)
 (require 'termlisp-machine)
 (require 'termlisp-pattern)
 (require 'termlisp-builtins)
@@ -47,7 +46,7 @@
 
 (require 'termlisp-types)
 (require 'termlisp-kinds)
-(require 'termlisp-graph-types)
+(require 'termlisp-free-vars)
 (require 'termlisp-ir-types)
 
 ;;; Type classes and dictionary passing

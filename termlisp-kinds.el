@@ -36,7 +36,6 @@
     (Generator . 1) (Ref . 1) (Store . 1))
   "Arity of the prelude/known type constructors, from which kinds derive.")
 
-(defun tl-kstar () tl-kind-star)
 (defun tl-karr (a b) (tl-make-node 'karr (list a b) t))
 (defun tl-karr-p (k)
   (let ((k (tl-kind-deref k)))

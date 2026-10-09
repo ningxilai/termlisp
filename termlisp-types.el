@@ -33,6 +33,7 @@
 (require 'cl-lib)
 (require 'termlisp-base)
 (require 'termlisp-graph-unify)
+(require 'termlisp-free-vars)
 (require 'termlisp-reader)
 
 (declare-function tl-eval-datatype "termlisp-eval" (env form))
@@ -78,8 +79,6 @@
   "Non-nil when X is a (deref'd) type-variable node."
   (let ((d (tl-type-deref x)))
     (and (tl-node-p d) (tl-node-var d))))
-
-(defun tl-type-p (x) (tl-node-p x))
 
 (defun tl-fresh-tvar (&optional _level)
   "Return a fresh type variable node."
@@ -236,25 +235,6 @@ application."
   "Parse surface type expression SEXP into a type."
   (let ((tl-type-parse-vars nil))
     (tl-type-parse* sexp)))
-
-(defun tl-type-fold (leaf-fn node-fn type)
-  "Fold over the `tl-decompose' structure of TYPE.
-For a leaf (a node with no decomposition) return `(funcall LEAF-FN TYPE)'.
-Otherwise, with decomposition D, fold the head `(car D)' first, then the
-children `(cdr D)' left to right, and return
-`(funcall NODE-FN (car D) HEAD-RESULT CHILDREN-RESULTS)'."
-  (let ((d (tl-decompose type)))
-    (if (null d)
-        (funcall leaf-fn type)
-      (let* ((head (tl-type-fold leaf-fn node-fn (car d)))
-             (children (mapcar (lambda (child)
-                                 (tl-type-fold leaf-fn node-fn child))
-                               (cdr d))))
-        (funcall node-fn (car d) head children)))))
-
-(defun tl-free-tvars (type)
-  "Return the list of unbound type variables occurring in TYPE."
-  (tl-gtype-free-vars type))
 
 (defun tl-canonical-key (type)
   "Return a variable-rename-invariant string key for TYPE.
@@ -478,12 +458,6 @@ If PREDS holds `(C t)' and C has superclass D, then `(D t)' is entailed."
       (tl-entail-by-super env preds pred)
       (tl-entail-by-inst env pred)))
 
-(defun tl-solve-constraint (env c bindings)
-  "Resolve constraint C in ENV.  Return `(ok . bindings)'.
-Resolution is graph-native: an instance matches when its head matches
-C's type (non-destructively) and its context is recursively entailed."
-  (cons (if (tl-entail-by-inst env c) t nil) bindings))
-
 (defconst tl-default-class-defaults
   '((Num . Int) (Integral . Int) (Fractional . DoubleFloat)
     (Eq . Int) (Ord . Int))
@@ -674,12 +648,6 @@ with the same substitution.  A non-scheme is returned as
 (defun tl-instantiate (scheme)
   "Instantiate SCHEME, returning only the instantiated type."
   (car (tl-instantiate-scheme scheme)))
-
-(defun tl-instantiate-constraints (scheme)
-  "Return SCHEME's constraints instantiated with fresh type variables.
-Callers that also need the instantiated type must use
-`tl-instantiate-scheme' so both share one substitution."
-  (cdr (tl-instantiate-scheme scheme)))
 
 (defun tl-skolemize-scheme (scheme)
   "Replace SCHEME's quantified variables with rigid type constants."
