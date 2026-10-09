@@ -23,6 +23,7 @@
 (require 'termlisp-types)
 (require 'termlisp-graph-types)
 (require 'termlisp-ir-types)
+(require 'termlisp-resolve)
 (require 'termlisp-elaborate)
 (require 'termlisp-eval)
 (require 'termlisp-load)

@@ -917,5 +917,23 @@ builtin operator mapping."
       (should-not (eq (tl-gnode-deref (car (tl-node-children i1)))
                       (car q))))))
 
+;;; Unification-driven overload resolution
+
+(ert-deftest tl-resolve-overload ()
+  "The overload whose parameter unifies with the operand type wins."
+  (let* ((list-int (tl-gtype-from-tcon (tl-tcon 'List (list (tl-tint)))))
+         (prog (tl-tscheme nil (tl-tarrow (tl-tcon '% nil) (tl-tbool))))
+         (lst (let ((a (tl-fresh-tvar)))
+                (tl-tscheme (list a)
+                            (tl-tarrow (tl-tcon 'List (list a))
+                                       (tl-tbool)))))
+         (cands (list (cons 'prog prog) (cons 'list lst))))
+    ;; A List operand matches the list method, not the domain method.
+    (should (eq (tl-resolve-overload list-int cands) 'list))
+    ;; A domain value matches the program's method.
+    (should (eq (tl-resolve-overload (tl-tcon '% nil) cands) 'prog))
+    ;; An unrelated operand matches neither.
+    (should-not (tl-resolve-overload (tl-tint) cands))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here
