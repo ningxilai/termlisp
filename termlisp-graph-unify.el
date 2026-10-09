@@ -103,6 +103,7 @@ With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
 \(the default) the system is equirecursive, as in Coalton."
   (let ((trail nil)
         (pending (list (cons a b)))
+        (seen (make-hash-table :test #'eq))
         (ok t))
     (catch 'tl-gnode-fail
       (while pending
@@ -110,6 +111,12 @@ With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
                (x (tl-gnode-deref (car pair)))
                (y (tl-gnode-deref (cdr pair))))
           (cond
+           ;; Skip a compound pair already being unified: with
+           ;; equirecursive types the same pair can recur.
+           ((and (not (tl-node-var-p x)) (not (tl-node-var-p y))
+                 (let ((h (or (gethash x seen)
+                              (puthash x (make-hash-table :test #'eq) seen))))
+                   (prog1 (gethash y h) (puthash y t h)))))
            ((eq x y))
            ((tl-node-var-p x)
             (when (and occurs-check (tl-gnode-occurs x y))

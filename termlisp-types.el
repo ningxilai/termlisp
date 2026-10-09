@@ -13,14 +13,21 @@
 
 (require 'cl-lib)
 (require 'termlisp-base)
-(require 'termlisp-unify)
+(require 'termlisp-graph-unify)
 (require 'termlisp-reader)
 
 (declare-function tl-eval-datatype "termlisp-eval" (env form))
 (declare-function tl-eval-datatype-extension "termlisp-eval" (env form))
 (declare-function tl-desugar-do "termlisp-eval" (form))
 
-(cl-defstruct (tl-tcon (:constructor tl-tcon (name args))) name args)
+;;; Representation: a type is a `tl-node' from `termlisp-graph'.
+;;; A constructor application `(C a b)' is a compound node, a bare
+;;; constructor `Int' is a leaf node, and a type variable is a variable
+;;; node.  Unification is *in place* (union-find), so the `bindings'
+;;; threaded through the API below are vestigial -- kept only so the
+;;; inference code's shape is unchanged.  Following Coalton the occurs
+;;; check is off by default (equirecursive types).
+
 (cl-defstruct (tl-tscheme (:constructor tl-tscheme (vars type &optional constraints)))
   vars type (constraints nil))
 (cl-defstruct (tl-constraint (:constructor tl-constraint (class type))) class type)
@@ -28,21 +35,35 @@
 (cl-defstruct (tl-instance (:constructor tl-instance (class head context methods &optional dict)))
   class head context methods dict)
 
-(defun tl-tvar-p (x) (tl-lvar-p x))
-(defun tl-type-p (x) (or (tl-tvar-p x) (tl-tcon-p x)))
+(defun tl-type-deref (x)
+  "Follow X to its representative when it is a type node."
+  (if (tl-node-p x) (tl-gnode-deref x) x))
 
-(cl-defmethod tl-decompose ((x tl-tcon))
-  "Decompose a type constructor into its name and argument list."
-  (cons (tl-tcon-name x) (tl-tcon-args x)))
+(defun tl-tcon (name args)
+  "Build a type: a compound node when ARGS is non-empty, else a leaf."
+  (if args (tl-make-node name args t) (tl-make-node name)))
 
-(cl-defmethod tl-rebuild (head children)
-  "Rebuild a type constructor from its name HEAD and argument CHILDREN."
-  (tl-tcon head children))
+(defun tl-tcon-p (x)
+  "Non-nil when X is a (deref'd) non-variable type node."
+  (let ((d (tl-type-deref x)))
+    (and (tl-node-p d) (not (tl-node-var d)))))
 
-;; LEVEL is intentionally unused in Plan 2 (generalization uses tvars not free in the environment); reserved for level-based generalization in a later plan.
-(defun tl-fresh-tvar (&optional level)
-  "Return a fresh type variable."
-  (tl-make-lvar (gensym "t") (or level 0)))
+(defun tl-tcon-name (x)
+  (tl-node-head (tl-type-deref x)))
+
+(defun tl-tcon-args (x)
+  (tl-node-children (tl-type-deref x)))
+
+(defun tl-tvar-p (x)
+  "Non-nil when X is a (deref'd) type-variable node."
+  (let ((d (tl-type-deref x)))
+    (and (tl-node-p d) (tl-node-var d))))
+
+(defun tl-type-p (x) (tl-node-p x))
+
+(defun tl-fresh-tvar (&optional _level)
+  "Return a fresh type variable node."
+  (tl-make-var-node (gensym "t")))
 
 (defun tl-tarrow (a b) (tl-tcon '-> (list a b)))
 (defun tl-tint () (tl-tcon 'Int nil))
@@ -55,9 +76,21 @@
     (tl-tcon-args ty)))
 
 (defun tl-unify-types (a b bindings)
-  "Unify types A and B under BINDINGS.  Return `(ok . bindings)'.
-On failure returns `(nil . nil)'."
-  (tl-unify-generic a b bindings #'tl-tvar-p t))
+  "Unify types A and B in place under BINDINGS.  Return `(ok . bindings)'.
+On failure returns `(nil . nil)'; failed attempts are rolled back."
+  (if (tl-gnode-unify a b)
+      (cons t bindings)
+    (cons nil nil)))
+
+(defun tl-apply-bindings (type bindings)
+  "Fully zonk TYPE, dereferencing every variable.  BINDINGS is ignored
+because unification is in place."
+  (ignore bindings)
+  (tl-map-type #'identity type))
+
+(defun tl-compose-bindings (bindings _new)
+  "Bindings are vestigial under in-place unification; return BINDINGS."
+  bindings)
 
 (defvar tl-type-parse-vars nil
   "Alist of type-variable symbols to type variables, bound during parsing.")
@@ -154,37 +187,42 @@ children `(cdr D)' left to right, and return
         (funcall node-fn (car d) head children)))))
 
 (defun tl-free-tvars (type)
-  "Return the list of type variables occurring in TYPE."
-  (let ((acc nil))
-    (tl-type-fold
-     (lambda (node) (when (tl-tvar-p node) (cl-pushnew node acc :test #'eq)))
-     (lambda (_head _head-result _children) nil)
-     type)
-    acc))
+  "Return the list of unbound type variables occurring in TYPE."
+  (tl-gtype-free-vars type))
 
 (defun tl-canonical-key (type)
   "Return a variable-rename-invariant string key for TYPE.
 Type variables are numbered in order of first appearance, so
 alpha-equivalent types (e.g. `(a -> a)' and `(b -> b)') share a key.
+Equirecursive cycles are rendered as back-references `#N'.
 The key is an over-approximation: callers that need exact equality
-confirm within the bucket (see `tl-remove-duplicates-by-key').
-Borrowed from clover's `canonical-term-string'."
-  (let ((index nil) (counter 0))
-    (tl-type-fold
-     (lambda (ty)
-       (if (tl-tvar-p ty)
-           (let ((cell (assq ty index)))
-             (if cell (cdr cell)
-               (let ((key (format "?%d" counter)))
-                 (setq counter (1+ counter))
-                 (push (cons ty key) index)
-                 key)))
-         (format "%S" ty)))
-     (lambda (name head children)
-       (format "(%s%s)"
-               (if (tl-tvar-p name) head name)
-               (mapconcat (lambda (s) (concat " " s)) children "")))
-     type)))
+confirm within the bucket (see `tl-remove-duplicates-by-key')."
+  (let ((index nil) (counter 0) (seen (make-hash-table :test #'eq)) (n 0))
+    (cl-labels ((go (node)
+                  (let ((node (tl-type-deref node)))
+                    (cond
+                     ((tl-tvar-p node)
+                      (let ((cell (assq node index)))
+                        (if cell (cdr cell)
+                          (let ((key (format "?%d" counter)))
+                            (setq counter (1+ counter))
+                            (push (cons node key) index)
+                            key))))
+                     ((tl-tcon-p node)
+                      (let ((args (tl-tcon-args node)))
+                        (if (null args)
+                            (format "%S" (tl-tcon-name node))
+                          (let ((hit (gethash node seen)))
+                            (if hit
+                                (format "#%d" hit)
+                              (puthash node n seen)
+                              (setq n (1+ n))
+                              (format "(%s%s)"
+                                      (tl-tcon-name node)
+                                      (mapconcat (lambda (c) (concat " " (go c)))
+                                                 args "")))))))
+                     (t (format "%S" node))))))
+      (go type))))
 
 (defun tl-constraint-canonical-key (c)
   "Return a variable-rename-invariant string key for constraint C."
@@ -215,30 +253,32 @@ from clover's `remove-duplicates-by-key'."
     (tl-tscheme (tl-free-tvars ty) ty)))
 
 (defun tl-map-type (f type)
-  "Apply F to each type variable in TYPE (shallow at each node), rebuilding.
-F is applied to a variable wherever it occurs, including the head position of
-a `tl-tcon' (the higher-kinded `(f a)' case); its result is inserted without
-further traversal.  Non-constructor, non-variable leaves are returned as-is."
-  (cond
-   ((tl-tvar-p type) (funcall f type))
-   ((tl-tcon-p type)
-    (let* ((d (tl-decompose type)) (name (car d)))
-      (tl-rebuild (if (tl-tvar-p name) (funcall f name) name)
-                  (mapcar (lambda (arg) (tl-map-type f arg)) (cdr d)))))
-   (t type)))
+  "Apply F to each type variable in TYPE, rebuilding the node graph.
+F is applied to a variable node wherever it occurs; its result is
+inserted without further traversal.  Cycle-safe (equirecursive types)."
+  (let ((memo (make-hash-table :test #'eq)))
+    (cl-labels ((go (node)
+                  (let ((node (tl-type-deref node)))
+                    (cond
+                     ((tl-tvar-p node) (funcall f node))
+                     ((tl-tcon-p node)
+                      (let ((args (tl-tcon-args node)))
+                        (if (null args)
+                            node
+                          (or (gethash node memo)
+                              (let ((new (tl-make-node (tl-tcon-name node)
+                                                       nil t)))
+                                (puthash node new memo)
+                                (setf (tl-node-children new)
+                                      (mapcar #'go args))
+                                new)))))
+                     (t node)))))
+      (go type))))
 
 (defun tl-type-subst (type sub)
-  "Apply substitution SUB (alist tvar -> type) to TYPE."
+  "Apply substitution SUB (alist var-node -> type) to TYPE."
   (tl-map-type
    (lambda (tv) (let ((cell (assq tv sub))) (if cell (cdr cell) tv)))
-   type))
-
-(defun tl-apply-bindings (type bindings)
-  "Fully apply BINDINGS to TYPE."
-  (tl-map-type
-   (lambda (tv)
-     (let ((ty (tl-deref tv bindings)))
-       (if (tl-tvar-p ty) ty (tl-apply-bindings ty bindings))))
    type))
 
 (defun tl-generalized-vars (type env-tvars)
@@ -337,7 +377,7 @@ whose type mentions a quantified variable."
                 (lambda (c)
                   (cl-intersection vars (tl-free-tvars (tl-constraint-type c))))
                 constraints)))
-    (tl-tscheme vars type
+    (tl-tscheme vars (tl-map-type #'identity type)
                 (tl-remove-duplicates-by-key kept
                                              #'tl-constraint-canonical-key #'equal))))
 
@@ -429,18 +469,6 @@ Callers that also need the instantiated type must use
 (tl-register-builtin-type
  '<
  (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tarrow (tl-tint) (tl-tbool)))))
-
-(defun tl-compose-bindings (b1 b2)
-  "Compose substitutions B1 and B2 (apply B2 after B1).
-Result is first-wins for `tl-deref' (assq); duplicate keys from B2 and
-self-bindings are removed."
-  (let ((composed
-         (mapcar (lambda (cell)
-                   (cons (car cell) (tl-apply-bindings (cdr cell) b2)))
-                 b1))
-        (rest (cl-remove-if (lambda (cell) (assq (car cell) b1)) b2)))
-    (cl-remove-if (lambda (cell) (eq (car cell) (cdr cell)))
-                  (append composed rest))))
 
 (cl-defun tl-register-datatype-types (env name ctors
                                           &optional (param-syms nil param-syms-p))
