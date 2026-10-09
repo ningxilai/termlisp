@@ -315,6 +315,30 @@ result is left unconstrained rather than aborting the whole program."
 (tl-register-builtin-type 'tl-format
   (tl-tscheme nil (tl-tarrow (tl-fresh-tvar) (tl-tstring))))
 
+;;; Handle / reference types.
+
+(defconst tl-ir-value-type-names
+  '(Int DoubleFloat Bool Char String List Unit -> Record Union)
+  "Type constructors whose values are immutable, substitutable values.
+A `Record'/`Union' is value-like here (its fields are extracted, not
+aliased); reference/handle types are the complement.")
+
+(defun tl-ir-handle-type-p (ty)
+  "Non-nil when TY denotes a handle/reference (identity-carrying) value.
+Such values must be bound to a variable and are candidates for the
+store, unlike plain immutable values."
+  (and (tl-tcon-p ty)
+       (let ((name (tl-tcon-name ty)))
+         (or (memq name '(File TextReader TextWriter Ref Store Array
+                          Generator))
+             (not (memq name tl-ir-value-type-names))))))
+
+(defun tl-ir-expr-handle-p (env expr)
+  "Infer EXPR in ENV and report whether its type is a handle.
+Used as the type oracle for substitution and store decisions."
+  (let ((r (tl-infer (tl-zonk-env env nil) expr)))
+    (tl-ir-handle-type-p (tl-apply-bindings (car r) (cdr r)))))
+
 (defun tl-typecheck-ir (forms &optional env)
   "Typecheck lowered IR FORMS in ENV (fresh if nil).  Return ENV.
 Overloaded names (common in the IR) fall back to unconstrained

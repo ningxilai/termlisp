@@ -25,6 +25,32 @@
 (defvar tl-newline 10
   "The newline Character code.")
 
+;;; Store: handles are integer ids into a global object table.
+;;; A handle is thus a plain value whose copy is the same handle, so
+;;; substitutions never duplicate the underlying object.
+
+(defvar tl-store (make-hash-table :test #'eql)
+  "Global store mapping handle ids to their objects.")
+
+(defvar tl-store-next 0
+  "Next handle id to hand out.")
+
+(defun tl-store-alloc (object)
+  "Store OBJECT and return a fresh handle id."
+  (let ((id (cl-incf tl-store-next)))
+    (puthash id object tl-store)
+    id))
+
+(defun tl-store-ref (id)
+  "Return the object stored under handle ID."
+  (gethash id tl-store))
+
+(defun tl-handle (x)
+  "Resolve handle X (an id, or an object used directly) to its object."
+  (if (integerp x)
+      (or (tl-store-ref x) (error "Bad handle: %S" x))
+    x))
+
 ;;; State monad: a computation is s -> (a . s).
 
 (defun tl-st-return (v)
@@ -67,12 +93,13 @@
           ((and f (string= f "-")) "")
           (t ""))))
 
-(defvar tl-stdin (tl-make-reader (tl--stdin-string))
-  "Standard input as a TextReader.")
+(defvar tl-stdin (tl-store-alloc (tl-make-reader (tl--stdin-string)))
+  "Standard input as a TextReader handle.")
 
-(defun tl-read! (box)
-  "Pop and return the next Character from the reader BOX, or `tl-eof'."
-  (let* ((s (car box))
+(defun tl-read! (handle)
+  "Pop and return the next Character from the reader HANDLE, or `tl-eof'."
+  (let* ((box (tl-handle handle))
+         (s (car box))
          (p (tl-st-run
              (tl-st-bind
               (tl-st-get)
@@ -96,11 +123,12 @@
 
 ;;; Writers.
 
-(defun tl-write! (c box)
-  "Write Character C to the writer BOX; return C."
-  (cond ((eq box 'tl-stdout) (princ (string c)))
-        ((consp box) (setcdr box (concat (cdr box) (string c))))
-        (t (princ (string c))))
+(defun tl-write! (c handle)
+  "Write Character C to the writer HANDLE; return C."
+  (let ((box (tl-handle handle)))
+    (cond ((eq box 'tl-stdout) (princ (string c)))
+          ((consp box) (setcdr box (concat (cdr box) (string c))))
+          (t (princ (string c)))))
   c)
 
 (defun tl-output-char (writer c)
@@ -110,9 +138,10 @@
         (t (princ (string c))))
   writer)
 
-(defun tl-lines (box)
-  "Return a generator closure over the lines of reader BOX."
-  (let* ((s (car box))
+(defun tl-lines (handle)
+  "Return a generator closure over the lines of reader HANDLE."
+  (let* ((box (tl-handle handle))
+         (s (car box))
          (parts (split-string s "\n"))
          (lines (if (and parts (string= (car (last parts)) "") (> (length parts) 0))
                     (butlast parts)
@@ -162,18 +191,21 @@ Aldor's String is 0-based, so indices map directly onto Emacs strings."
 (defvar fileWrite 'fileWrite)
 
 (defun tl-open (path mode)
-  "Open PATH for reading (MODE `fileRead') or writing."
-  (if (eq mode 'fileRead)
-      (list (if (file-readable-p path)
-                (with-temp-buffer (insert-file-contents path) (buffer-string))
-              ""))
-    (cons path "")))
+  "Open PATH for reading (MODE `fileRead') or writing.
+Return a store handle for the file."
+  (tl-store-alloc
+   (if (eq mode 'fileRead)
+       (list (if (file-readable-p path)
+                 (with-temp-buffer (insert-file-contents path) (buffer-string))
+               ""))
+     (cons path ""))))
 
-(defun tl-close! (f)
-  "Close the file F, flushing a writer's buffer to disk."
-  (when (and (consp f) (stringp (car f)) (stringp (cdr f)))
-    (with-temp-file (car f) (insert (cdr f))))
-  f)
+(defun tl-close! (handle)
+  "Close the file HANDLE, flushing a writer's buffer to disk."
+  (let ((f (tl-handle handle)))
+    (when (and (consp f) (stringp (car f)) (stringp (cdr f)))
+      (with-temp-file (car f) (insert (cdr f)))))
+  handle)
 
 (provide 'termlisp-io)
 ;;; termlisp-io.el ends here

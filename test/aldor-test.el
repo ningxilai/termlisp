@@ -805,5 +805,29 @@ builtin operator mapping."
                    (tl-tscheme-type (gethash 'hd (tl-env-type-env env))))
                   '->)))))
 
+(ert-deftest tl-ir-handle-types ()
+  "The oracle classifies handle/reference types apart from values."
+  (should (tl-ir-handle-type-p (tl-tcon 'File nil)))
+  (should (tl-ir-handle-type-p (tl-tcon 'TextReader nil)))
+  (should (tl-ir-handle-type-p (tl-tcon 'Array (list (tl-tint)))))
+  (should (tl-ir-handle-type-p (tl-tcon 'SomeDomain nil)))
+  (should-not (tl-ir-handle-type-p (tl-tint)))
+  (should-not (tl-ir-handle-type-p (tl-tcon 'List (list (tl-tint)))))
+  (should-not (tl-ir-handle-type-p (tl-tstring))))
+
+(ert-deftest tl-io-store-handles ()
+  "Files are store handles; operations resolve them by id."
+  (let* ((path (make-temp-file "termlisp-io-"))
+         (id (tl-open path 'fileWrite)))
+    (should (integerp id))
+    (tl-write! ?a id)
+    (tl-write! ?b id)
+    (tl-close! id)
+    (let ((rid (tl-open path 'fileRead)))
+      (should (equal (tl-read! rid) ?a))
+      (should (equal (tl-read! rid) ?b))
+      (should (equal (tl-read! rid) tl-eof)))
+    (delete-file path)))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

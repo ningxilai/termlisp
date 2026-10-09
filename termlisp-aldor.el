@@ -1318,14 +1318,40 @@ elements themselves are consumed as boundaries."
                           (if (eq kind 'Break) "break" "iterate")))))
   (list kind))
 
-(defun tl-aldor--user-call-p (node)
-  "Non-nil when NODE applies a function the program defines itself.
-Such a call may have effects, so its result is bound to a variable
-rather than substituted (which would reorder or repeat the call)."
-  (and (tl-abn-node-p node 'Apply)
-       (let ((h (nth 1 node)))
-         (and (tl-abn-node-p h 'Id)
-              (memq (tl-abn-id-name h) tl-aldor--user-functions)))))
+(defconst tl-aldor--stable-ops
+  '(+
+    - * / quo mod ^ gcd min max
+    = ~= < <= > >= and or not
+    cons first rest empty? nil?
+    ListFirst ListRest ListEmpty
+    zero? even? odd?
+    char substring concat rightTrim length
+    bracket)
+  "Operators whose application is a stable (pure, immutable) value.
+Substituting such an expression at each use is sound.")
+
+(defun tl-aldor--stable-rhs-p (node)
+  "Non-nil when re-evaluating NODE is observationally equivalent.
+A literal, identifier, lambda, or tuple of stable values is stable, as
+is a pure operator applied to stable arguments.  Calls to user-defined
+or effectful functions, allocation (`new'), generators and comprehensions
+are not: they may allocate, mutate, or have effects, so their result must
+be bound to a variable exactly once rather than substituted."
+  (cond
+   ((tl-abn-node-p node 'Id) t)
+   ((tl-abn-node-p node 'LitInteger) t)
+   ((tl-abn-node-p node 'LitFloat) t)
+   ((tl-abn-node-p node 'LitString) t)
+   ((tl-abn-node-p node 'LitChar) t)
+   ((tl-abn-node-p node 'Lambda) t)
+   ((tl-abn-node-p node 'Comma)
+    (cl-every #'tl-aldor--stable-rhs-p (cdr node)))
+   ((tl-abn-node-p node 'Apply)
+    (let ((h (nth 1 node)))
+      (and (tl-abn-node-p h 'Id)
+           (memq (tl-abn-id-name h) tl-aldor--stable-ops)
+           (cl-every #'tl-aldor--stable-rhs-p (cddr node)))))
+   (t nil)))
 
 (defun tl-aldor--contains (node tag)
   "Return non-nil when raw ABN NODE contains a node headed by TAG.
@@ -2077,18 +2103,18 @@ rejected."
                                    ,(run rest frame locals))
                            `(Setq ,name ,rhs))
                        (if rest
-                           (if (memq (tl-aldor--sefo-head-name
-                                      abn (nth 2 lhs))
-                                     '(File TextReader TextWriter))
-                               ;; An opaque handle: bind a real variable
-                               ;; so every reference is the same object.
-                               `(Let ((,name ,rhs))
-                                  ,(run rest
-                                        (cons (cons name name) frame)
-                                        (cons name locals)))
-                             (run rest
-                                  (cons (cons name rhs) frame)
-                                  (cons name locals)))
+                           (if (tl-aldor--stable-rhs-p rhs-node)
+                               (run rest
+                                    (cons (cons name rhs) frame)
+                                    (cons name locals))
+                             ;; An unstable value (a handle, allocation,
+                             ;; or effectful call): bind a real variable
+                             ;; so it is evaluated once, in order, and
+                             ;; every reference is the same object.
+                             `(Let ((,name ,rhs))
+                                ,(run rest
+                                      (cons (cons name name) frame)
+                                      (cons name locals))))
                          rhs))))
                  ((tl-abn-node-p lhs 'Id)
                   (let* ((name (tl-abn-id-name lhs))
@@ -2107,7 +2133,7 @@ rejected."
                         `(Setq ,name ,rhs)))
                      ;; A call whose result must be evaluated once, in
                      ;; order, becomes a real variable.
-                     ((and rest (tl-aldor--user-call-p (nth 2 elem)))
+                     ((and rest (not (tl-aldor--stable-rhs-p (nth 2 elem))))
                       `(Let ((,name ,rhs))
                          ,(run rest (cons (cons name name) frame)
                                (cons name locals))))
