@@ -500,11 +500,11 @@ PARAMS is the parameter list; BODY is the rewritten body."
         ('FieldSet (unless (= (length args) 3)
                      (signal 'termlisp-emit-error
                              (list (format "expected 3 arguments: %S" expr))))
-                   ;; aset returns the assigned value, not the array,
-                   ;; and mutates in place: work on a fresh copy.
-                   `(let ((rec (copy-sequence ,(nth 0 args))))
-                      (aset rec ,(nth 1 args) ,(nth 2 args))
-                      rec))
+                    ;; Records are mutable: update the field in place so
+                    ;; aliases observe the change, and return the record.
+                    `(let ((rec ,(nth 0 args)))
+                       (aset rec ,(nth 1 args) ,(nth 2 args))
+                       rec))
         ('UnionCase (tl-emit--binary
                      (lambda (u idx) `(eq (aref ,u 0) ,idx))
                      args expr))

@@ -449,7 +449,7 @@ Return the generated source string."
     (should (equal el '((defun mk (a b) (vector a b))
                         (defun fst (r) (aref r 0))
                         (defun setfst (r v)
-                          (let ((rec (copy-sequence r)))
+                          (let ((rec r))
                             (aset rec 0 v)
                             rec))
                         (defun uin (v) (vector 0 v))

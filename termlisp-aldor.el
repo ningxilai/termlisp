@@ -1325,10 +1325,21 @@ elements themselves are consumed as boundaries."
     cons first rest empty? nil?
     ListFirst ListRest ListEmpty
     zero? even? odd?
-    char substring concat rightTrim length
-    bracket)
+    char substring concat rightTrim length)
   "Operators whose application is a stable (pure, immutable) value.
-Substituting such an expression at each use is sound.")
+Substituting such an expression at each use is sound.  Constructors that
+allocate mutable objects (`bracket', `new', `Record', `Union') are NOT
+stable: each evaluation must be bound once so aliases share the object.")
+
+(defconst tl-aldor--value-type-heads
+  '(AldorInteger Integer SingleInteger MachineInteger DoubleFloat Float
+    Boolean Character String List Generator Unit ->)
+  "Type head names whose values are immutable (safe to substitute).
+Anything else -- Record, Union, Array, File, a domain -- is a handle.")
+
+(defun tl-aldor--handle-type-head-p (head)
+  "Non-nil when type-head name HEAD denotes a mutable/handle type."
+  (and head (not (memq head tl-aldor--value-type-heads))))
 
 (defun tl-aldor--stable-rhs-p (node)
   "Non-nil when re-evaluating NODE is observationally equivalent.
@@ -2103,13 +2114,16 @@ rejected."
                                    ,(run rest frame locals))
                            `(Setq ,name ,rhs))
                        (if rest
-                           (if (tl-aldor--stable-rhs-p rhs-node)
+                           (if (and (tl-aldor--stable-rhs-p rhs-node)
+                                    (not (tl-aldor--handle-type-head-p
+                                          (tl-aldor--sefo-head-name
+                                           abn (nth 2 lhs)))))
                                (run rest
                                     (cons (cons name rhs) frame)
                                     (cons name locals))
-                             ;; An unstable value (a handle, allocation,
-                             ;; or effectful call): bind a real variable
-                             ;; so it is evaluated once, in order, and
+                             ;; A handle/mutable value, allocation, or
+                             ;; effectful call: bind a real variable so
+                             ;; it is evaluated once, in order, and
                              ;; every reference is the same object.
                              `(Let ((,name ,rhs))
                                 ,(run rest
