@@ -1158,14 +1158,22 @@ FUNDEPS, when present, is `(fundeps (A... -> B...)...)' of parameter names."
     name))
 
 (defun tl-register-instance (env form)
-  "Register `(instance (CLASS TYPE) [DICT])' in ENV.
-The optional DICT is the runtime dictionary value the elaborator inserts
-as the first argument of overloaded method calls."
+  "Register `(instance (CLASS TYPE) [CONTEXT] DICT)' in ENV.
+CONTEXT, when present, is a list of `(CLASS TYPE)' predicates the instance
+requires; DICT is then a constructor applied to one sub-dictionary per
+context predicate.  Without a context DICT is the runtime dictionary value
+the elaborator inserts as the first argument of overloaded method calls."
   (let* ((head (nth 1 form))
          (cname (car head))
-         (ty (tl-type-parse (cadr head)))
-         (dict (nth 2 form))
-         (inst (tl-instance cname ty nil nil dict)))
+         (rest (nthcdr 2 form))
+         (ctx-forms (and (consp (car rest)) (car rest)))
+         (dict (if ctx-forms (cadr rest) (car rest)))
+         (tl-type-parse-vars nil)
+         (ty (tl-type-parse* (cadr head)))
+         (context (mapcar (lambda (cf)
+                            (tl-constraint (car cf) (tl-type-parse* (cadr cf))))
+                          ctx-forms))
+         (inst (tl-instance cname ty context nil dict)))
     (puthash cname (append (gethash cname (tl-env-instance-env env)) (list inst))
              (tl-env-instance-env env))
     cname))

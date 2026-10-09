@@ -1085,5 +1085,18 @@ a ground method call resolves a concrete instance dictionary."
     (termlisp-eval "(define (double x) (num-add x x))" env)
     (should (equal (termlisp-eval "(double 21)" env) 42))))
 
+(ert-deftest tl-nested-instance-dict ()
+  "An instance with a context builds its dictionary from sub-dictionaries."
+  (let ((env (termlisp-make-env)))
+    (tl-register-class env '(class C (a) nil))
+    (tl-register-instance env '(instance (C Int) CIntDict))
+    (tl-register-instance env '(instance (C (List a)) ((C a)) c-list-dict))
+    (should (equal (tl-resolve-instance-dict
+                    env (tl-constraint 'C (tl-tint)) nil)
+                   'CIntDict))
+    (should (equal (tl-resolve-instance-dict
+                    env (tl-constraint 'C (tl-tcon 'List (list (tl-tint)))) nil)
+                   '(c-list-dict CIntDict)))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

@@ -33,6 +33,23 @@
 
 (declare-function tl-desugar-do "termlisp-eval" (form))
 
+(defun tl-instance-dict-term (env inst sub)
+  "Return the dictionary term for INST given the matching substitution SUB.
+An instance with a context is built by applying its dictionary constructor
+to one recursively resolved sub-dictionary per context predicate."
+  (if (tl-instance-context inst)
+      (let ((subdicts
+             (mapcar (lambda (c2)
+                       (tl-resolve-instance-dict
+                        env
+                        (tl-constraint (tl-constraint-class c2)
+                                       (tl-type-subst (tl-constraint-type c2) sub))
+                        nil))
+                     (tl-instance-context inst))))
+        (and (cl-every #'identity subdicts)
+             (cons (tl-instance-dict inst) subdicts)))
+    (tl-instance-dict inst)))
+
 (defun tl-resolve-instance-dict (env constraint bindings)
   "Return the dictionary for CONSTRAINT solved in ENV under BINDINGS.
 Return nil when the constraint type is not ground or has no instance."
@@ -42,8 +59,9 @@ Return nil when the constraint type is not ground or has no instance."
                             (tl-env-instance-env env)))
             (found nil))
         (while (and insts (not found))
-          (when (tl-match-instance (tl-instance-head (car insts)) ty)
-            (setq found (tl-instance-dict (car insts))))
+          (let ((m (tl-match-instance (tl-instance-head (car insts)) ty)))
+            (when (car m)
+              (setq found (tl-instance-dict-term env (car insts) (cdr m)))))
           (setq insts (cdr insts)))
         found))))
 
