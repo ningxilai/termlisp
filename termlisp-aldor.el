@@ -644,6 +644,9 @@ to their lowered substitution forms (parameters map to themselves)."
                    (if (nth 1 expr)
                        (tl-aldor--lower-expr abn (nth 1 expr) env)
                      nil)))
+    ;; `ref e' is a one-slot mutable cell (a Ref value); dereference and
+    ;; assignment go through the cell.
+    ('Reference (list 'NewRef (tl-aldor--lower-expr abn (nth 1 expr) env)))
     (_ (signal 'termlisp-aldor-error
                (list (format "Unsupported expression node |%s|" (car expr)))))))
 

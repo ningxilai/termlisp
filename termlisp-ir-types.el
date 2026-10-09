@@ -266,6 +266,12 @@ result is left unconstrained rather than aborting the whole program."
 (tl-ir-register 'ArrayRef #'tl-infer-ir-ArrayRef)
 (tl-ir-register 'ArraySet #'tl-infer-ir-ArraySet)
 (tl-ir-register 'ListToVector #'tl-infer-ir-ListToVector)
+(tl-ir-register
+ 'NewRef
+ (lambda (env expr)
+   (let ((r (tl-infer env (nth 1 expr))))
+     (cons (tl-tcon 'Ref (list (tl-apply-bindings (car r) (cdr r))))
+           (cdr r)))))
 (tl-ir-register 'quote #'tl-infer-ir-quote)
 (tl-ir-register 'funcall #'tl-infer-ir-funcall)
 (tl-ir-register 'ApplyTuple #'tl-infer-ir-ApplyTuple)

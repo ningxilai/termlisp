@@ -420,6 +420,12 @@ PARAMS is the parameter list; BODY is the rewritten body."
                 ,(tl-emit--expr (nth 3 expr) ctx)))
         ;; An Array-typed bracket literal builds a Cons chain first,
         ;; then converts it to the vector that Array represents.
+        ;; `ref e' builds a one-slot mutable cell.
+        ((eq (car expr) 'NewRef)
+         (unless (= (length expr) 2)
+           (signal 'termlisp-emit-error
+                   (list (format "Bad NewRef: %S" expr))))
+         `(vector ,(tl-emit--expr (nth 1 expr) ctx)))
         ((eq (car expr) 'ListToVector)
          (unless (= (length expr) 2)
            (signal 'termlisp-emit-error
