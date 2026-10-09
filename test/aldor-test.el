@@ -878,5 +878,44 @@ builtin operator mapping."
                       l1 (tl-make-node 'Vector (list b) t)
                       nil #'tl-node-var-p nil)))))
 
+;;; Graph-backed HM types
+
+(ert-deftest tl-gtype-basics ()
+  "Surface types convert to nodes and unify in place."
+  (let* ((a (tl-fresh-tvar))
+         (na (tl-gtype-from-tcon (tl-tcon 'List (list a))))
+         (nn (tl-gtype-from-tcon (tl-tcon 'List (list (tl-tint))))))
+    (should (tl-gtype-unify na nn))
+    (should (equal (tl-gtype-to-tcon na)
+                   (tl-tcon 'List (list (tl-tint)))))))
+
+(ert-deftest tl-gtype-mismatch-rolls-back ()
+  "A mismatched constructor fails and unbinds."
+  (let* ((a (tl-fresh-tvar))
+         (na (tl-gtype-from-tcon (tl-tcon 'List (list a))))
+         (nn (tl-gtype-from-tcon (tl-tcon 'Vector (list (tl-tint))))))
+    (should-not (tl-gtype-unify na nn))
+    (should (tl-node-var-p (tl-gnode-deref (car (tl-node-children na)))))))
+
+(ert-deftest tl-gtype-recursive-unify ()
+  "The occurs check is off by default: equirecursive types are allowed."
+  (let* ((a (tl-fresh-tvar))
+         (na (tl-gtype-from-tcon a))
+         (nl (tl-gtype-from-tcon (tl-tcon 'List (list a)))))
+    (should (tl-gtype-unify na nl))
+    (should (eq (tl-gnode-deref na) (tl-gnode-deref nl)))))
+
+(ert-deftest tl-gtype-instantiate-fresh ()
+  "Instantiating a scheme yields fresh variables each time."
+  (let* ((a (tl-fresh-tvar))
+         (na (tl-gtype-from-tcon (tl-tcon 'List (list a))))
+         (q (tl-gtype-quantify na)))
+    (let ((i1 (tl-gtype-instantiate (car q) (cdr q)))
+          (i2 (tl-gtype-instantiate (car q) (cdr q))))
+      (should-not (eq (car (tl-node-children i1))
+                      (car (tl-node-children i2))))
+      (should-not (eq (tl-gnode-deref (car (tl-node-children i1)))
+                      (car q))))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

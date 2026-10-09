@@ -82,6 +82,12 @@ Return the new representative."
       (setf (tl-node-rank rx) (1+ (tl-node-rank rx)))
       rx))))
 
+(defun tl-gnode--bind (var term trail)
+  "Bind representative VAR to TERM, recording the change on TRAIL."
+  (push (list var (tl-node-bind var) (tl-node-rank var)) trail)
+  (setf (tl-node-bind var) term)
+  term)
+
 (defun tl-gnode--rollback (trail)
   "Restore the BIND/RANK changes recorded on TRAIL."
   (dolist (entry trail)
@@ -108,11 +114,17 @@ With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
            ((tl-node-var-p x)
             (when (and occurs-check (tl-gnode-occurs x y))
               (setq ok nil) (throw 'tl-gnode-fail nil))
-            (tl-gnode--union x y trail))
+            ;; A variable binds to the non-variable term (so it derefs
+            ;; to it); two variables union by rank.
+            (if (tl-node-var-p y)
+                (tl-gnode--union x y trail)
+              (tl-gnode--bind x y trail)))
            ((tl-node-var-p y)
             (when (and occurs-check (tl-gnode-occurs y x))
               (setq ok nil) (throw 'tl-gnode-fail nil))
-            (tl-gnode--union y x trail))
+            (if (tl-node-var-p x)
+                (tl-gnode--union y x trail)
+              (tl-gnode--bind y x trail)))
            ((and (tl-node-application x) (tl-node-application y)
                  (equal (tl-node-head x) (tl-node-head y))
                  (= (length (tl-node-children x))
