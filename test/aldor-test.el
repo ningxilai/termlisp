@@ -1071,5 +1071,19 @@ a ground method call resolves a concrete instance dictionary."
                           "(fmap (lambda (x) (+ x 1)) (Just 4))")))
                    '(fmap FunctorMaybeDict (lambda (x) (+ x 1)) (Just 4))))))
 
+(ert-deftest tl-numeric-class ()
+  "Arithmetic is an overloaded class; instances are selected by operand type."
+  (let ((env (termlisp-make-env '(:elaborate t :type-check t))))
+    (termlisp-load-prelude env)
+    (should (equal (tl-elaborate-form
+                    env (car (termlisp-parse "(num-add 1 2)")))
+                   '(num-add IntNumDict 1 2)))
+    (should (equal (tl-elaborate-form
+                    env
+                    (car (termlisp-parse "(define (double x) (num-add x x))")))
+                   '(define (double $dNum0 x) (num-add $dNum0 x x))))
+    (termlisp-eval "(define (double x) (num-add x x))" env)
+    (should (equal (termlisp-eval "(double 21)" env) 42))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

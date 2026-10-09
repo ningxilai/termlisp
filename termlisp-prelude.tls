@@ -149,6 +149,15 @@
 (instance (Monad State) StateDict)
 (instance (Monad Reader) ReaderDict)
 
+;; Numeric type class: overloaded arithmetic, resolved by the operand type.
+(datatype NumDict (NumDict num-add))
+(class Num (a) nil
+  (num-add (a -> a -> a)))
+(define (num-add (NumDict impl) a b) (impl a b))
+(define (int-num-add a b) (+ a b))
+(define IntNumDict (NumDict int-num-add))
+(instance (Num Int) IntNumDict)
+
 ;; List library
 (define (head (Cons x xs)) x)
 (define (tail (Cons x xs)) xs)
