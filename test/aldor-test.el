@@ -985,5 +985,16 @@ builtin operator mapping."
                           nil nil
                           (list (tl-constraint 'Eq (tl-tcon 'List (list a))))))))))
 
+;;; Kind checking
+
+(ert-deftest tl-kind-check ()
+  "Constructors must be applied at their arity; datatype arities register."
+  (let ((env (termlisp-make-env)))
+    (should (tl-kind-check env (tl-tcon 'List (list (tl-tint)))))
+    (should-error (tl-kind-check env (tl-tcon 'Int (list (tl-tint)))))
+    (tl-register-datatype-types env 'Pair '((Pair a b)))
+    (should (tl-kind-check env (tl-tcon 'Pair (list (tl-tint) (tl-tstring)))))
+    (should-error (tl-kind-check env (tl-tcon 'Pair (list (tl-tint)))))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

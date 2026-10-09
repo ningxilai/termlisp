@@ -577,6 +577,8 @@ error."
                                 (car cell) name))))))
     (let ((params (mapcar (lambda (s) (cdr (assq s tl-type-parse-vars))) syms))
           (result (tl-tcon name (mapcar (lambda (s) (cdr (assq s tl-type-parse-vars))) syms))))
+      ;; A datatype's kind is its number of type parameters.
+      (puthash name (length syms) (tl-env-kind-env env))
       (dolist (ca ctor-args)
         (let ((ty result))
           (dolist (argty (reverse (cdr ca)))
@@ -932,6 +934,8 @@ a hard failure.")
   "Register a `(: NAME TYPE)' signature in ENV."
   (let ((name (cadr form))
         (sc (tl-type-parse-scheme (caddr form))))
+    (when (fboundp 'tl-kind-check-scheme)
+      (tl-kind-check-scheme env sc))
     (puthash name sc (tl-env-type-env env))
     (puthash name t (tl-env-sig-env env))
     name))

@@ -25,6 +25,7 @@
   (constructors (make-hash-table :test #'eq))
   (type-env (make-hash-table :test #'eq))
   (sig-env (make-hash-table :test #'eq))
+  (kind-env (make-hash-table :test #'eq))
   (class-env (make-hash-table :test #'eq))
   (instance-env (make-hash-table :test #'eq))
   (method-env (make-hash-table :test #'eq))
