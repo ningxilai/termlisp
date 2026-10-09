@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026  The termlisp authors
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "27.1"))
+;; Package-Requires: ((emacs "27.1") (cats "0.0.1"))
 ;; Keywords: languages, lisp, compilers
 
 ;; This file is part of termlisp.
@@ -32,12 +32,6 @@
 ;; `termlisp-base' for the error hierarchy shared by every module.
 
 ;;; Code:
-
-(defvar termlisp--root
-  (file-name-directory (or load-file-name buffer-file-name))
-  "Root directory of the termlisp package.")
-
-(add-to-list 'load-path (expand-file-name "vendor/cats" termlisp--root))
 
 ;;; Core language
 
@@ -79,9 +73,13 @@
 (require 'termlisp-aldor)
 (require 'termlisp-io)
 
-;; The Reader monad depends on the vendored cats library; load it when
-;; available (the core language does not require it).
-(require 'termlisp-data-reader nil t)
+;; The Reader monad depends on `cats'; load it when that dependency is
+;; available.  The core language does not need it, so a missing `cats'
+;; must not break loading termlisp (its own `require' would otherwise
+;; signal through the optional `require').
+(condition-case nil
+    (require 'termlisp-data-reader)
+  (error nil))
 
 (provide 'termlisp)
 ;;; termlisp.el ends here

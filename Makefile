@@ -1,22 +1,24 @@
 EMACS ?= emacs
 
-.PHONY: test compile clean submodule
+# `cats' is the one external dependency (`termlisp-data-reader').  It is a
+# normal package dependency now, so it is expected on the load-path; by
+# default we take it from the elpaca sources directory.  Override CATS_DIR
+# if you keep a checkout elsewhere, e.g.
+#     make test CATS_DIR=$HOME/src/emacs-cats
+CATS_DIR ?= $(HOME)/.config/emacs/elpaca/sources/cats
+LOAD_PATH = -L . -L test
+ifneq ($(wildcard $(CATS_DIR)/cats.el),)
+LOAD_PATH += -L $(CATS_DIR)
+endif
 
-# Fetch the emacs-cats submodule on demand.  The file dependency means the
-# recipe runs only when the submodule has not been checked out yet.
-vendor/cats/cats.el:
-	git submodule update --init --recursive
+.PHONY: test compile clean
 
-submodule: vendor/cats/cats.el
-	@:
-
-test: submodule clean
-	$(EMACS) -Q --batch -L . -L test -L vendor/cats -l test/aldor-test.el \
+test: clean
+	$(EMACS) -Q --batch $(LOAD_PATH) -l test/aldor-test.el \
 	  -f ert-run-tests-batch-and-exit
 
-compile: submodule
-	$(EMACS) -Q --batch -L . -L test -L vendor/cats \
-	  -f batch-byte-compile termlisp*.el
+compile: clean
+	$(EMACS) -Q --batch $(LOAD_PATH) -f batch-byte-compile termlisp*.el
 
 clean:
-	rm -f *.elc test/*.elc vendor/cats/*.elc
+	rm -f *.elc test/*.elc

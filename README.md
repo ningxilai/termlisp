@@ -109,16 +109,26 @@ termlisp.el            ; entry point, public API, loader
 termlisp-base.el       ; errors, options, environment struct
 termlisp-reader.el     ; S-expression reader
 termlisp-unify.el      ; unification kernel (generic structural core)
-termlisp-types.el      ; HM inference, type classes, constraints
+termlisp-graph.el      ; term-graph rewriting core
+termlisp-graph-unify.el; graph unification (union-find)
+termlisp-types.el      ; HM inference over the term graph
+termlisp-graph-types.el; graph <-> type bridges
+termlisp-kinds.el      ; kind inference
+termlisp-ir-types.el   ; HM typing for the lowering IR
+termlisp-resolve.el    ; unification-driven overload resolution
 termlisp-elaborate.el  ; dictionary-passing elaborator
 termlisp-machine.el    ; runtime objects (thunks, closures, functions)
 termlisp-pattern.el    ; pattern parsing and matching
 termlisp-builtins.el   ; primitive functions
+termlisp-numeric.el    ; exact Fraction/Complex arithmetic over Calc
 termlisp-eval.el       ; lazy TCO evaluator, `do`, top-level forms
 termlisp-load.el       ; load .tls files as elisp
 termlisp-data-reader.el; cats-based Reader monad
+termlisp-io.el         ; State-monad I/O runtime
+termlisp-abn.el        ; Aldor ABN reader
+termlisp-aldor.el      ; Aldor -> termlisp lowering
+termlisp-emit.el       ; termlisp IR -> Emacs Lisp
 termlisp-prelude.tls   ; the standard prelude
-vendor/cats/           ; emacs-cats, as a git submodule
 ```
 
 ### Branches
@@ -127,12 +137,19 @@ vendor/cats/           ; emacs-cats, as a git submodule
 - `dev` — the implementation plus tests (`test/`), design docs (`docs/`),
   and examples (`examples/`).
 
-### Submodule
+### Dependencies
 
-`vendor/cats` is a git submodule pointing at
-<https://github.com/Fuco1/emacs-cats>. The `Makefile` fetches it on demand
-(`make submodule`, and automatically before `make test` / `make compile`), so
-no manual initialization step is needed.
+The only external dependency is
+[cats](https://github.com/Fuco1/emacs-cats), used by the optional Reader
+monad (`termlisp-data-reader.el`). It is declared in `termlisp.el`'s
+`Package-Requires` and installed like any package; with elpaca:
+
+```elisp
+(elpaca cats)
+(elpaca (termlisp :host github :repo "ningxilai/termlisp" :files (:defaults "*.tls")))
+```
+
+The core language loads fine without it; only the Reader monad is skipped.
 
 ## Development
 
@@ -142,6 +159,10 @@ make compile   ; byte-compile
 make clean     ; remove .elc files
 ```
 
+`cats` is expected on the load path; the Makefile defaults to the elpaca
+sources directory and honours `CATS_DIR`, e.g.
+`make test CATS_DIR=$HOME/src/emacs-cats`.
+
 ## License
 
-GPL-3.0-or-later. See `LICENSE`. `vendor/cats` is GPLv3.
+GPL-3.0-or-later. See `LICENSE`.
