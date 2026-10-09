@@ -829,5 +829,54 @@ builtin operator mapping."
       (should (equal (tl-read! rid) tl-eof)))
     (delete-file path)))
 
+;;; Graph unification
+
+(ert-deftest tl-graph-unify-basic ()
+  "Unifying two List applications links their element variables."
+  (let* ((a (tl-make-var-node 'a))
+         (b (tl-make-var-node 'b))
+         (l1 (tl-make-node 'List (list a) t))
+         (l2 (tl-make-node 'List (list b) t)))
+    (should (tl-gnode-unify l1 l2))
+    (should (eq (tl-gnode-deref a) (tl-gnode-deref b)))))
+
+(ert-deftest tl-graph-unify-mismatch-rolls-back ()
+  "A structural mismatch fails and leaves no bindings behind."
+  (let* ((a (tl-make-var-node 'a))
+         (b (tl-make-var-node 'b))
+         (f (tl-make-node 'F (list a) t))
+         (g (tl-make-node 'G (list b) t)))
+    (should-not (tl-gnode-unify f g))
+    (should (null (tl-node-bind a)))
+    (should (null (tl-node-bind b)))))
+
+(ert-deftest tl-graph-unify-occurs ()
+  "The occurs check is optional; the default is equirecursive."
+  (let* ((a (tl-make-var-node 'a))
+         (l (tl-make-node 'List (list a) t)))
+    (should-not (tl-gnode-unify a l t))
+    (should (null (tl-node-bind a)))
+    (should (tl-gnode-unify a l))))       ; cyclic/recursive allowed
+
+(ert-deftest tl-graph-unify-shares ()
+  "Unioning variables shares the whole structural class."
+  (let* ((a (tl-make-var-node 'a))
+         (b (tl-make-var-node 'b))
+         (c (tl-make-var-node 'c)))
+    (should (tl-gnode-unify a b))
+    (should (tl-gnode-unify b c))
+    (should (eq (tl-gnode-deref a) (tl-gnode-deref c)))))
+
+(ert-deftest tl-graph-decompose-crosscheck ()
+  "The generic unifier traverses graph nodes via tl-decompose."
+  (let* ((a (tl-make-var-node 'a))
+         (b (tl-make-var-node 'b))
+         (l1 (tl-make-node 'List (list a) t))
+         (l2 (tl-make-node 'List (list b) t)))
+    (should (car (tl-unify-generic l1 l2 nil #'tl-node-var-p nil)))
+    (should-not (car (tl-unify-generic
+                      l1 (tl-make-node 'Vector (list b) t)
+                      nil #'tl-node-var-p nil)))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

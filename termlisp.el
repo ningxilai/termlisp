@@ -26,6 +26,7 @@
 (require 'termlisp-eval)
 (require 'termlisp-load)
 (require 'termlisp-graph)
+(require 'termlisp-graph-unify)
 (require 'termlisp-case)
 (require 'termlisp-abn)
 (require 'termlisp-emit)
