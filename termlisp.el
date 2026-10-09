@@ -26,6 +26,10 @@
 (require 'termlisp-load)
 (require 'termlisp-graph)
 (require 'termlisp-case)
+(require 'termlisp-abn)
+(require 'termlisp-emit)
+(require 'termlisp-aldor)
+(require 'termlisp-io)
 
 ;; The Reader monad depends on the vendored cats library; load it when
 ;; available (the core language does not require it).

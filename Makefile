@@ -11,7 +11,7 @@ submodule: vendor/cats/cats.el
 	@:
 
 test: submodule clean
-	$(EMACS) -Q --batch -L . -L test -L vendor/cats -l test/termlisp-test.el \
+	$(EMACS) -Q --batch -L . -L test -L vendor/cats -l test/aldor-test.el \
 	  -f ert-run-tests-batch-and-exit
 
 compile: submodule
