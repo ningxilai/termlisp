@@ -1111,5 +1111,17 @@ a ground method call resolves a concrete instance dictionary."
                     env (tl-constraint 'C (tl-tcon 'List (list (tl-tint)))) nil)
                    '(c-list-dict CIntDict)))))
 
+(ert-deftest tl-local-dict-abstraction ()
+  "A constrained local `Let' binding is abstracted over its dictionary,
+and its call sites pass the resolved instance dictionary."
+  (let ((env (termlisp-make-env '(:elaborate t :type-check t))))
+    (termlisp-load-prelude env)
+    (should (equal
+             (tl-elaborate-form
+              env '(Let ((f (lambda (x) (num-add x x))))
+                      (Seq (f 1) (f 2))))
+             '(Let ((f (lambda ($dNum0 x) (num-add $dNum0 x x))))
+                   ((Seq (f IntNumDict 1) (f IntNumDict 2))))))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

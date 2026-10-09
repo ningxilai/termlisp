@@ -70,12 +70,40 @@ Return nil when the constraint type is not ground or has no instance."
 GIVEN is an alist of constraint key -> dictionary parameter symbol."
   (cdr (assoc (tl-constraint-canonical-key constraint) given)))
 
+(defun tl-elaborate-let (env bindings body given)
+  "Elaborate a `Let' BODY, abstracting constrained bindings over dictionaries.
+BINDINGS is the inference substitution; GIVEN maps in-scope constraints to
+dictionary parameters."
+  (let ((cur given) (nb nil))
+    (dolist (b bindings)
+      (let* ((info (assq b tl-elab-let-dicts))
+             (cs (and info (cadr info)))
+             (ds (and info (cddr info)))
+             (expr (cadr b))
+             (new-given cur))
+        (when ds
+          (cl-mapc (lambda (c d)
+                     (push (cons (tl-constraint-canonical-key c) d) new-given))
+                   cs ds))
+        (let ((new-expr
+               (if (and ds (consp expr) (eq (car expr) 'lambda))
+                   (list 'lambda (append ds (cadr expr))
+                         (tl-elaborate-tree env bindings (caddr expr) new-given))
+                 (tl-elaborate-tree env bindings expr cur))))
+          (push (list (car b) new-expr) nb)
+          (setq cur new-given))))
+    (list 'Let (nreverse nb)
+          (mapcar (lambda (e) (tl-elaborate-tree env bindings e cur)) body))))
+
 (defun tl-elaborate-tree (env bindings form given)
   "Rebuild FORM, inserting dictionaries at method and function call sites.
 BINDINGS is the substitution from the inference pass; GIVEN maps the
 enclosing define's constraints to their dictionary parameters."
   (cond
    ((atom form) form)
+   ;; A local binding form: abstract constrained bindings over dictionaries.
+   ((and (consp form) (eq (car form) 'Let))
+    (tl-elaborate-let env (nth 1 form) (cddr form) given))
    ;; A class-method call: a given dictionary or a resolved instance one.
    ((assq form tl-elab-sites)
     (let* ((c (cdr (assq form tl-elab-sites)))
@@ -137,6 +165,7 @@ constraints.  Return the transformed define."
         (tl-elab-active t)
         (tl-elab-sites nil)
         (tl-elab-fn-sites nil)
+        (tl-elab-let-dicts nil)
         (tl-elab-bindings nil))
     (cond
      ((and (consp form) (memq (car form) '(datatype datatype-extension))) form)

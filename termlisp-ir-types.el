@@ -64,13 +64,41 @@ Return the extended bindings."
   (tl-ir-infer-seq env (cdr expr) nil))
 
 (defun tl-infer-ir-Let (env expr)
+  "Infer `(Let ((NAME EXPR) ...) BODY...)'.  Bindings are monomorphic,
+except during dictionary-passing elaboration, where a binding whose type
+generalizes with class constraints is recorded in `tl-elab-let-dicts' and
+bound polymorphically so its dictionary can be abstracted."
   (let ((b nil) (env2 env))
     (dolist (binding (nth 1 expr))
-      (let* ((r (tl-infer (tl-zonk-env env b) (cadr binding)))
+      (let* ((name (car binding))
+             (tl-infer-constraints nil)
+             (r (tl-infer (tl-zonk-env env b) (cadr binding)))
              (ty (tl-apply-bindings (car r) b)))
         (setq b (tl-compose-bindings b (cdr r)))
-        (setq env2 (tl-tenv-extend env2 (list (cons (car binding) ty))))))
+        (setq env2
+              (tl-tenv-extend
+               env2
+               (list (cons name
+                           (if tl-elab-active
+                               (tl-ir-generalize-binding env binding ty)
+                             ty)))))))
     (tl-ir-infer-seq env2 (cddr expr) b)))
+
+(defun tl-ir-generalize-binding (env binding ty)
+  "Generalize a `Let' BINDING of type TY; record its dictionary parameters.
+Return a scheme (or TY unchanged when it does not generalize)."
+  (let* ((base (tl-tenv-base env))
+         (env-tvars (if base (tl-env-free-tvars base) nil))
+         (gen-vars (tl-generalized-vars ty env-tvars))
+         (kept (condition-case nil
+                   (tl-close-constraints base gen-vars tl-infer-constraints nil)
+                 (error nil))))
+    (when kept
+      (let ((dicts (cl-loop for c in kept for i from 0
+                            collect (intern (format "$d%s%d"
+                                                    (tl-constraint-class c) i)))))
+        (push (cons binding (cons kept dicts)) tl-elab-let-dicts)))
+    (tl-generalize ty env-tvars kept)))
 
 (defun tl-infer-ir-Setq (env expr)
   (let* ((name (nth 1 expr))

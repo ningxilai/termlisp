@@ -635,6 +635,12 @@ Each element is `(FORM . CONSTRAINTS)': the application cons cell and the
 instantiated constraints of the callee's scheme.  Only populated while
 `tl-elab-active' is non-nil.  Used for dictionary passing.")
 
+(defvar tl-elab-let-dicts nil
+  "Constrained local `let'/`Let' bindings recorded during elaboration.
+Each element is `(BINDING-CELL . (CONSTRAINTS . DICT-NAMES))': the binding
+form `(NAME EXPR)' and the dictionary parameters to abstract its lambda
+over.  Only populated while `tl-elab-active' is non-nil.")
+
 (defvar tl-elab-bindings nil
   "Final substitution of the most recent inference, for elaboration.
 Set by the define/constant entry points so the elaborator can zonk the
@@ -792,7 +798,12 @@ statement and data forms the Aldor lowering emits.")
   (let ((cell (assq sym (tl-tenv-locals env)))
         (base (tl-tenv-base env)))
     (cond
-     (cell (cons (cdr cell) nil))
+     (cell (let ((v (cdr cell)))
+             (if (tl-tscheme-p v)
+                 (let ((r (tl-instantiate-scheme v)))
+                   (dolist (c (cdr r)) (tl-emit-constraint c))
+                   (cons (car r) nil))
+               (cons v nil))))
      ((and base (gethash sym (tl-env-type-env base)))
       (let ((r (tl-instantiate-scheme (gethash sym (tl-env-type-env base)))))
         (dolist (c (cdr r)) (tl-emit-constraint c))
@@ -835,9 +846,14 @@ A local binding or an ordinary type binding shadows the method."
          (args (cdr expr))
          (base (tl-tenv-base env))
          (msc (and (symbolp head) (tl-method-scheme-for env head)))
+         ;; A *local* binding whose scheme carries class constraints (a
+         ;; generalized `let'): also a dictionary-passing site.
+         (lsc (and (null msc) (symbolp head)
+                   (let ((v (cdr (assq head (tl-tenv-locals env)))))
+                     (and (tl-tscheme-p v) (tl-tscheme-constraints v) v))))
          ;; A call to a program function whose scheme carries class
          ;; constraints: it is a dictionary-passing site.
-         (hsc (and (null msc) (symbolp head) base
+         (hsc (and (null msc) (null lsc) (symbolp head) base
                    (not (assq head (tl-tenv-locals env)))
                    (gethash head (tl-env-type-env base))))
          (rh (cond
@@ -846,6 +862,11 @@ A local binding or an ordinary type binding shadows the method."
                  (dolist (c (cdr r))
                    (tl-emit-constraint c)
                    (when tl-elab-active (push (cons expr c) tl-elab-sites)))
+                 (cons (car r) nil)))
+              (lsc
+               (let ((r (tl-instantiate-scheme lsc)))
+                 (dolist (c (cdr r)) (tl-emit-constraint c))
+                 (when tl-elab-active (push (cons expr (cdr r)) tl-elab-fn-sites))
                  (cons (car r) nil)))
               ((and (tl-tscheme-p hsc) (tl-tscheme-constraints hsc))
                (let ((r (tl-instantiate-scheme hsc)))
