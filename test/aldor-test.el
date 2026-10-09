@@ -767,5 +767,43 @@ builtin operator mapping."
     (should (equal (funcall 'filt 10) 30))
     (should (equal (funcall 'filtLe 10) 6))))
 
+;;; Typing the lowering IR
+
+(ert-deftest tl-ir-typecheck-defines ()
+  "The HM inferencer types emitted IR forms (not just termlisp source)."
+  (let* ((env (tl-typecheck-ir
+               '((define (f x) (+ x 1))
+                 (define (g n)
+                   (Let ((i 1) (acc 0))
+                     (While (<= i n)
+                       (Setq acc (+ acc i))
+                       (Setq i (+ i 1)))
+                     acc)))))
+         (sc (gethash 'f (tl-env-type-env env))))
+    (should (equal (tl-tscheme-type sc) (tl-tarrow (tl-tint) (tl-tint))))
+    (should (equal (tl-tscheme-type (gethash 'g (tl-env-type-env env)))
+                   (tl-tarrow (tl-tint) (tl-tint))))))
+
+(ert-deftest tl-ir-typecheck-data-forms ()
+  "Records, arrays and lists in the IR get structural types."
+  (cl-flet ((result (ty)
+              (while (and (tl-tcon-p ty) (eq (tl-tcon-name ty) '->))
+                (setq ty (nth 1 (tl-tcon-args ty))))
+              ty))
+    (let ((env (tl-typecheck-ir
+                '((define (mk a b) (Record a b))
+                  (define (init n) (NewArray n 0))
+                  (define (hd l) (ListFirst l))))))
+      (should (eq (tl-tcon-name
+                   (result (tl-tscheme-type (gethash 'mk (tl-env-type-env env)))))
+                  'Record))
+      (should (eq (tl-tcon-name
+                   (result (tl-tscheme-type
+                            (gethash 'init (tl-env-type-env env)))))
+                  'Array))
+      (should (eq (tl-tcon-name
+                   (tl-tscheme-type (gethash 'hd (tl-env-type-env env))))
+                  '->)))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

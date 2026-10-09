@@ -492,6 +492,12 @@ error."
                 (tl-tenv-locals env))
         (tl-tenv-base env)))
 
+(defvar tl-infer-ir-heads (make-hash-table :test #'eq)
+  "Special forms of the lowering IR, mapped to their inference functions.
+Each handler is called as (HANDLER ENV EXPR) and returns (TYPE . BINDINGS).
+Populated by `termlisp-ir-types' so the generic inferencer can type the
+statement and data forms the Aldor lowering emits.")
+
 (defun tl-infer (env expr)
   "Infer the type of EXPR in ENV.  Return `(type . bindings)'."
   (cond
@@ -502,6 +508,8 @@ error."
     (tl-infer-lambda env (cadr expr) (caddr expr)))
    ((and (consp expr) (eq (car expr) 'do))
     (tl-infer env (tl-desugar-do expr)))
+   ((and (consp expr) (gethash (car-safe expr) tl-infer-ir-heads))
+    (funcall (gethash (car-safe expr) tl-infer-ir-heads) env expr))
    ((consp expr) (tl-infer-application env expr))
    (t (signal 'termlisp-type-error (list (format "Cannot infer: %S" expr))))))
 
@@ -569,11 +577,14 @@ A local binding or an ordinary type binding shadows the method."
         (setq ftype (tl-apply-bindings ftype bindings))
         (setq aty (tl-apply-bindings aty bindings))
         (let ((u (tl-unify-types ftype (tl-tarrow aty res) bindings)))
-          (unless (car u)
-            (signal 'termlisp-type-error
-                    (list (format "Cannot apply %S to %S" head arg))))
-          (setq bindings (cdr u))
-          (setq ftype (tl-apply-bindings res bindings)))))
+          (cond ((car u)
+                 (setq bindings (cdr u))
+                 (setq ftype (tl-apply-bindings res bindings)))
+                (tl-type-lenient
+                 (setq ftype res))
+                (t
+                 (signal 'termlisp-type-error
+                         (list (format "Cannot apply %S to %S" head arg))))))))
     (cons (tl-apply-bindings ftype bindings) bindings)))
 
 (defun tl-infer-arg-types-of-constructor (cty n)
@@ -695,6 +706,18 @@ Return `(LOCAL-BINDINGS . SUBST)'."
           (cons binds bs)))))
    (t (signal 'termlisp-type-error (list (format "Bad pattern: %S" pat))))))
 
+(defvar tl-type-lenient-clauses nil
+  "When non-nil, clauses of a definition that do not share one type are
+treated as an overloaded name with an unconstrained scheme rather than
+an error.  The lowering IR is full of overloaded primitives, and for a
+type oracle a lenient scheme is more useful than a hard failure.")
+
+(defvar tl-type-lenient nil
+  "When non-nil, unification failures are tolerated (the oracle mode).
+Used when typing the lowering IR, whose higher-order/tuple/overload
+shapes are broader than the HM core; a lenient result is preferred to
+a hard failure.")
+
 (defun tl-infer-define-clauses (env name clauses)
   "Infer NAME from CLAUSES (list of `(PARAMS . BODY)'); register a scheme."
   (let* ((placeholder (tl-fresh-tvar))
@@ -704,51 +727,61 @@ Return `(LOCAL-BINDINGS . SUBST)'."
                    (gethash name tyenv))))
     (puthash name (tl-tscheme nil placeholder) tyenv)
     (let ((bindings nil))
-      (dolist (clause clauses)
-        (let* ((params (car clause))
-               (body (cdr clause))
-               (ptypes (mapcar (lambda (_) (tl-fresh-tvar)) params))
-               (binds nil)
-               (ps params)
-               (pts ptypes))
-          (while ps
-            (let ((r (tl-infer-pattern (tl-zonk-env (cons nil env) bindings)
-                                       (car ps) (car pts))))
-              (setq binds (append (car r) binds)
-                    bindings (tl-compose-bindings bindings (cdr r)))
-              (setq ps (cdr ps) pts (cdr pts))))
-          (let* ((binds-z (mapcar (lambda (cell)
-                                    (cons (car cell)
-                                          (tl-apply-bindings (cdr cell) bindings)))
-                                  binds))
-                 (env2 (tl-tenv-extend (cons nil env) binds-z))
-                 (rb (tl-infer (tl-zonk-env env2 bindings) body)))
-            (setq bindings (tl-compose-bindings bindings (cdr rb)))
-            (let ((ctype (tl-apply-bindings (car rb) bindings)))
-              (dolist (pt (reverse (mapcar (lambda (p)
-                                             (tl-apply-bindings p bindings))
-                                           ptypes)))
-                (setq ctype (tl-tarrow pt ctype)))
-              (let ((u (tl-unify-types placeholder ctype bindings)))
+      (if (catch 'tl-clause-inconsistent
+            (dolist (clause clauses)
+              (let* ((params (car clause))
+                     (body (cdr clause))
+                     (ptypes (mapcar (lambda (_) (tl-fresh-tvar)) params))
+                     (binds nil)
+                     (ps params)
+                     (pts ptypes))
+                (while ps
+                  (let ((r (tl-infer-pattern
+                            (tl-zonk-env (cons nil env) bindings)
+                            (car ps) (car pts))))
+                    (setq binds (append (car r) binds)
+                          bindings (tl-compose-bindings bindings (cdr r)))
+                    (setq ps (cdr ps) pts (cdr pts))))
+                (let* ((binds-z (mapcar (lambda (cell)
+                                          (cons (car cell)
+                                                (tl-apply-bindings
+                                                 (cdr cell) bindings)))
+                                        binds))
+                       (env2 (tl-tenv-extend (cons nil env) binds-z))
+                       (rb (tl-infer (tl-zonk-env env2 bindings) body)))
+                  (setq bindings (tl-compose-bindings bindings (cdr rb)))
+                  (let ((ctype (tl-apply-bindings (car rb) bindings)))
+                    (dolist (pt (reverse (mapcar (lambda (p)
+                                                   (tl-apply-bindings
+                                                    p bindings))
+                                                 ptypes)))
+                      (setq ctype (tl-tarrow pt ctype)))
+                    (let ((u (tl-unify-types placeholder ctype bindings)))
+                      (unless (car u)
+                        (if (or tl-type-lenient tl-type-lenient-clauses)
+                            (throw 'tl-clause-inconsistent t)
+                          (signal 'termlisp-type-error
+                                  (list (format
+                                         "Clause of %S has inconsistent type"
+                                         name)))))
+                      (setq bindings (cdr u)))))))
+            nil)
+          (puthash name (tl-tscheme nil (tl-fresh-tvar)) tyenv)
+        (let* ((final (tl-apply-bindings placeholder bindings))
+               (env-tvars (tl-env-free-tvars env))
+               (gen-vars (tl-generalized-vars final env-tvars)))
+          (if sig
+              (let* ((u (tl-unify-types final (tl-skolemize-scheme sig) nil))
+                     (fb (tl-compose-bindings bindings (cdr u))))
                 (unless (car u)
                   (signal 'termlisp-type-error
-                          (list (format "Clause of %S has inconsistent type" name))))
-                (setq bindings (cdr u)))))))
-      (let* ((final (tl-apply-bindings placeholder bindings))
-             (env-tvars (tl-env-free-tvars env))
-             (gen-vars (tl-generalized-vars final env-tvars)))
-        (if sig
-            (let* ((u (tl-unify-types final (tl-skolemize-scheme sig) nil))
-                   (fb (tl-compose-bindings bindings (cdr u))))
-              (unless (car u)
-                (signal 'termlisp-type-error
-                        (list (format "Definition of %S does not match its signature" name))))
-              (setq tl-elab-bindings fb)
-              (tl-close-constraints env nil tl-infer-constraints fb)
-              (puthash name sig tyenv))
-          (setq tl-elab-bindings bindings)
-          (let ((kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
-            (puthash name (tl-generalize final env-tvars kept) tyenv)))))))
+                          (list (format "Definition of %S does not match its signature" name))))
+                (setq tl-elab-bindings fb)
+                (tl-close-constraints env nil tl-infer-constraints fb)
+                (puthash name sig tyenv))
+            (setq tl-elab-bindings bindings)
+            (let ((kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
+              (puthash name (tl-generalize final env-tvars kept) tyenv))))))))
 
 (defun tl-syntactic-value-p (expr)
   "Return non-nil if EXPR is a syntactic value (value restriction)."

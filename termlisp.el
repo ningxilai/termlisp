@@ -21,6 +21,7 @@
 (require 'termlisp-pattern)
 (require 'termlisp-builtins)
 (require 'termlisp-types)
+(require 'termlisp-ir-types)
 (require 'termlisp-elaborate)
 (require 'termlisp-eval)
 (require 'termlisp-load)
