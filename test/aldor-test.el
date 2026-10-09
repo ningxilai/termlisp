@@ -1110,6 +1110,35 @@ a ground method call resolves a concrete instance dictionary."
     (should (equal (termlisp-eval "(num-sub 9 4)" env) 5))
     (should (equal (termlisp-eval "(num-add 1.5 2.5)" env) 4.0))))
 
+;;; Exact arithmetic (Calc-backed Fraction/Complex)
+
+(ert-deftest tl-numeric-exact ()
+  "Native arithmetic is untouched; exact values go through Calc."
+  ;; Native fast path.
+  (should (equal (tl-num-add 2 3) 5))
+  (should (equal (tl-num-mul 3 4) 12))
+  (should (equal (tl-num-quo 7 2) 3))
+  ;; Fractions are normalised and exact.
+  (should (equal (tl-fraction 2 4) '(frac 1 2)))
+  (should (equal (tl-fraction-p (tl-fraction 1 3)) t))
+  (should (equal (tl-num-add (tl-fraction 1 3) (tl-fraction 1 6)) '(frac 1 2)))
+  (should (equal (tl-num-mul (tl-fraction 2 3) (tl-fraction 3 4)) '(frac 1 2)))
+  (should (equal (tl-num-div 1 3) '(frac 1 3)))
+  (should (equal (tl-num-div (tl-fraction 1 3) (tl-fraction 2 3)) '(frac 1 2)))
+  ;; Complex numbers.
+  (should (equal (tl-num-add (tl-complex 1 2) (tl-complex 3 -1)) '(cplx 4 1)))
+  (should (equal (tl-num-mul (tl-complex 1 2) (tl-complex 3 -1)) '(cplx 5 5)))
+  (should (equal (tl-num-zero-p (tl-complex 0 0)) t)))
+
+(ert-deftest tl-aldor-exact-op-target ()
+  "Only the exact domains select the Calc-backed operators."
+  (should (eq (tl-aldor--exact-op-target '+ 'Fraction) 'tl-num-add))
+  (should (eq (tl-aldor--exact-op-target '* 'Complex) 'tl-num-mul))
+  (should (eq (tl-aldor--exact-op-target 'quo 'Fraction) 'tl-num-quo))
+  (should-not (tl-aldor--exact-op-target '+ 'DoubleFloat))
+  (should-not (tl-aldor--exact-op-target '+ 'Integer))
+  (should-not (tl-aldor--exact-op-target 'gcd 'Fraction)))
+
 (ert-deftest tl-nested-instance-dict ()
   "An instance with a context builds its dictionary from sub-dictionaries."
   (let ((env (termlisp-make-env)))

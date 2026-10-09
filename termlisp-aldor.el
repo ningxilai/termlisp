@@ -34,20 +34,28 @@
 (require 'termlisp-types)
 (require 'termlisp-resolve)
 
-(define-error 'termlisp-aldor-error "Aldor lowering error")
+(define-error 'termlisp-aldor-error "Aldor lowering error" 'termlisp-error)
 
-(defvar tl-aldor-program nil
-  "Aldor compiler executable, or nil to search `exec-path'.")
+(defcustom tl-aldor-program nil
+  "Aldor compiler executable, or nil to search `exec-path'."
+  :type '(choice (const :tag "Search exec-path" nil) file)
+  :group 'termlisp)
 
-(defvar tl-aldor-fricas-dir
+(defcustom tl-aldor-fricas-dir
   (expand-file-name "~/.local/lib/fricas/target/x86_64-linux-gnu")
-  "FriCAS target directory whose algebra/ holds the Aldor library.")
+  "FriCAS target directory whose algebra/ holds the Aldor library."
+  :type 'directory
+  :group 'termlisp)
 
-(defvar tl-aldor-include "fricas"
-  "Name of the Aldor header a program must include for Integer etc.")
+(defcustom tl-aldor-include "fricas"
+  "Name of the Aldor header a program must include for Integer etc."
+  :type 'string
+  :group 'termlisp)
 
-(defvar tl-aldor-verbose nil
-  "When non-nil, echo Aldor compiler output.")
+(defcustom tl-aldor-verbose nil
+  "When non-nil, echo Aldor compiler output."
+  :type 'boolean
+  :group 'termlisp)
 
 (defconst tl-aldor--ops
   '(("+" . +) ("-" . -) ("*" . *) ("/" . /)
@@ -83,6 +91,21 @@ Such names shadow the builtin operator mapping of `tl-aldor--ops'.")
   "Prelude names a program may redefine for a domain.
 Their method definitions are renamed per definition site so the
 prelude operator stays available at other call sites.")
+
+(defconst tl-aldor--exact-domains '(Fraction Complex)
+  "Aldor domains whose arithmetic uses the Calc exact layer.
+`Integer', `DoubleFloat' and the machine integers stay native.")
+
+(defconst tl-aldor--exact-op-map
+  '((+ . tl-num-add) (- . tl-num-sub) (* . tl-num-mul)
+    (/ . tl-num-div) (quo . tl-num-quo))
+  "Exact-layer target for each overloaded operator in an exact domain.")
+
+(defun tl-aldor--exact-op-target (name owner-name)
+  "Return the Calc-backed target for operator NAME in domain OWNER-NAME.
+Nil when OWNER-NAME is not an exact domain or NAME is not overloaded."
+  (and (memq owner-name tl-aldor--exact-domains)
+       (cdr (assq name tl-aldor--exact-op-map))))
 
 (defvar tl-aldor--define-mangle nil
   "Alist mapping a definition's source position to a mangled name.")
@@ -1098,6 +1121,12 @@ a literal nil."
                       (tl-abn-node-p q 'Id)
                       (eq (tl-abn-id-name q) 'String))))
           `(tl-read-line ,(tl-aldor--lower-expr abn (car args) env)))
+         ;; Arithmetic on an exact domain (Fraction/Complex): use the
+         ;; Calc-backed layer instead of the native operators.
+         ((and head-id-p
+               (tl-aldor--exact-op-target head-name owner-name))
+          (cons (tl-aldor--exact-op-target head-name owner-name)
+                (mapcar (lambda (a) (tl-aldor--lower-expr abn a env)) args)))
          ;; An overloaded reserved operator the program redefines:
          ;; choose the method vs the prelude operator by unifying the
          ;; operand type with each signature (type-driven, not by name).
