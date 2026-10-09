@@ -1012,23 +1012,36 @@ builtin operator mapping."
     (should-error (tl-kind-check env (tl-tcon 'Pair (list (tl-tint)))))))
 
 (ert-deftest tl-kind-vars ()
-  "Type variables get a kind arity from their use; inconsistent use errors."
+  "Type variables get kinds from their use; inconsistent use errors."
   (let ((env (termlisp-make-env))
         (f (tl-fresh-tvar))
         (a (tl-fresh-tvar))
         (b (tl-fresh-tvar)))
-    ;; `f a -> f a': f is a unary constructor, consistently.
+    ;; `f a -> f a': f : k -> * (its result is a proper type).
     (should (tl-kind-check env (tl-tarrow (tl-tcon f (list a))
                                           (tl-tcon f (list b)))))
-    (should (= 1 (tl-node-kind f)))
-    ;; `f a b': f used at arity 2 now conflicts with arity 1.
+    (should (tl-karr-p (tl-node-kind f)))
+    (should (tl-kind-star-p
+             (nth 1 (tl-tcon-args (tl-kind-deref (tl-node-kind f))))))
+    ;; `f a b' conflicts with f's inferred `* -> *'.
     (should-error (tl-kind-check env (tl-tcon f (list a b)))))
   ;; A kind clash between two known head variables is caught during unify.
   (let ((f (tl-fresh-tvar)) (g (tl-fresh-tvar)) (a (tl-fresh-tvar)))
-    (setf (tl-node-kind f) 1)
-    (setf (tl-node-kind g) 2)
+    (setf (tl-node-kind f) (tl-karity 1))
+    (setf (tl-node-kind g) (tl-karity 2))
     (should-error (tl-unify-types (tl-tcon f (list a)) (tl-tcon g (list a)) nil)
                   :type 'termlisp-type-error)))
+
+(ert-deftest tl-kind-datatype ()
+  "A datatype's kind is inferred from its parameters."
+  (let ((env (termlisp-make-env)))
+    (tl-register-datatype-types env 'Box '((Box a)))
+    ;; Box : * -> *
+    (should (tl-karr-p (tl-kind-of env 'Box)))
+    (should (tl-kind-star-p
+             (nth 0 (tl-tcon-args (tl-kind-deref (tl-kind-of env 'Box))))))
+    (should (tl-kind-check env (tl-tcon 'Box (list (tl-tint)))))
+    (should-error (tl-kind-check env (tl-tcon 'Box (list (tl-tint) (tl-tint)))))))
 
 ;;; Constraint improvement
 

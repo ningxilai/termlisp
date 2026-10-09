@@ -1,27 +1,32 @@
-;;; termlisp-kinds.el --- Kind (arity) checking -*- lexical-binding: t; -*-
+;;; termlisp-kinds.el --- Kind inference -*- lexical-binding: t; -*-
 ;; This file is part of termlisp.
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
-;; A lightweight kind system: a type constructor has a *kind arity*, the
-;; number of type arguments it takes (0 for a proper type such as `Int',
-;; 1 for `List', 2 for `->' and `Pair').  A kind error is an application
-;; of a known constructor at the wrong arity, or a type variable used at
-;; two different arities (e.g. both `f a' and `f a b').
+;; A small kind system over the same term graph used for types.  A kind is
+;; a node: `*` (the kind of proper types) is the leaf `tl-kind-star', a
+;; function kind `karr k1 k2' is a compound, and a kind variable is an
+;; ordinary unification variable node.  Hence kind unification reuses the
+;; graph unifier (`tl-gnode-unify' with the occurs check on).
 ;;
-;; Type *variables* are given kinds too: a variable appearing in head
-;; position with N arguments is inferred to have kind arity N, recorded in
-;; the node's KIND slot, and shared head variables must agree.  This makes
-;; higher-kinded variables (`f : * -> *') first class.
+;; A type constructor has a kind: `Int : *', `List : * -> *',
+;; `-> : * -> * -> *', and a datatype's kind is inferred from its
+;; constructor field types.  Kind inference also gives *type variables*
+;; kinds: a variable used as a proper type has kind `*', and one applied to
+;; N arguments acquires `k1 -> ... -> kN -> r'.  The kind is stored in the
+;; type node's KIND slot, so it is available to unification and copied on
+;; instantiation.
 ;;
-;; Unknown heads are accepted, so the checker is safe to run over the
-;; Aldor oracle's types (which mention domain names we do not register).
-;; Variadic constructors (`Record', `Union') are exempt.
+;; Kind inference is lenient about unknown heads (they get a fresh kind
+;; variable), so it is safe to run over the Aldor oracle's types.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'termlisp-types)
+
+(defconst tl-kind-star (tl-make-node '* nil nil)
+  "The kind of proper types.")
 
 (defconst tl-builtin-kinds
   '((Int . 0) (DoubleFloat . 0) (MachineInteger . 0) (SingleInteger . 0)
@@ -29,93 +34,92 @@
     (String . 0) (Unit . 0)
     (-> . 2) (List . 1) (Array . 1) (PrimitiveArray . 1) (Vector . 1)
     (Generator . 1) (Ref . 1) (Store . 1))
-  "Arity of the prelude/known type constructors.")
+  "Arity of the prelude/known type constructors, from which kinds derive.")
 
-(defconst tl-variadic-kinds '(Record Union Comma)
-  "Constructors whose arity is not fixed.")
+(defun tl-kstar () tl-kind-star)
+(defun tl-karr (a b) (tl-make-node 'karr (list a b) t))
+(defun tl-karr-p (k)
+  (let ((k (tl-kind-deref k)))
+    (and (tl-node-p k) (eq (tl-node-head k) 'karr))))
+
+(defun tl-karity (n)
+  "Return the kind of a constructor taking N type arguments."
+  (if (<= n 0) tl-kind-star (tl-karr tl-kind-star (tl-karity (1- n)))))
+
+(defun tl-kind-var () (tl-make-var-node 'kind))
+(defun tl-kind-deref (k) (if (tl-node-p k) (tl-gnode-deref k) k))
+
+(defun tl-kind-star-p (k)
+  (eq (tl-kind-deref k) tl-kind-star))
+
+(defun tl-kind-unify (a b)
+  "Unify kinds A and B (occurs-checked).  Return non-nil on success."
+  (and (tl-node-p a) (tl-node-p b) (tl-gnode-unify a b t)))
 
 (defun tl-register-kind (env name arity)
   "Record that constructor NAME has kind arity ARITY in ENV."
-  (puthash name arity (tl-env-kind-env env)))
+  (puthash name (tl-karity arity) (tl-env-kind-env env)))
 
 (defun tl-kind-of (env name)
-  "Return the arity of type constructor NAME in ENV, or nil if unknown."
+  "Return the kind of type constructor NAME in ENV, or nil if unknown."
   (or (gethash name (tl-env-kind-env env))
-      (cdr (assq name tl-builtin-kinds))))
+      (let ((a (cdr (assq name tl-builtin-kinds))))
+        (and a (tl-karity a)))))
 
-(defun tl-kind-check-bare-var (var kinds)
-  "VAR is used as a proper type; error when its kind arity is non-zero."
-  (let ((k (or (gethash var kinds) (tl-node-kind var))))
-    (when (and k (/= k 0))
-      (signal 'termlisp-type-error
-              (list (format "Kind error: %S has kind arity %d but is used as a type"
-                            var k))))
-    0))
+(defun tl-register-datatype-kind (env name params)
+  "Register NAME's kind from its parameter variables' inferred kinds.
+PARAMS is the list of parameter type-variable nodes; a parameter whose kind
+is unknown contributes a fresh kind variable."
+  (let ((k tl-kind-star))
+    (dolist (p (reverse params))
+      (let ((pk (let ((raw (and (tl-node-p p) (tl-node-kind p))))
+                  (if raw (tl-kind-deref raw) (tl-kind-var)))))
+        (setq k (tl-karr pk k))))
+    (puthash name k (tl-env-kind-env env))))
 
-(defun tl-kind-head-arity (env head n kinds)
-  "Kind arity of HEAD applied to N arguments, or nil if HEAD is unknown.
-For a variable HEAD, infer or check its arity against N."
-  (if (tl-node-var-p head)
-      (let ((prev (or (gethash head kinds) (tl-node-kind head))))
-        (cond ((null prev)
-               (puthash head n kinds)
-               (setf (tl-node-kind head) n)
-               n)
-              ((/= prev n)
-               (signal 'termlisp-type-error
-                       (list (format "Kind error: %S used at arities %d and %d"
-                                     head prev n))))
-              (t prev)))
-    (tl-kind-of env head)))
-
-(defun tl-kind-walk-application (env head args n kinds)
-  "Check application of HEAD to ARGS (N of them), each a proper type."
-  (let ((hkind (tl-kind-head-arity env head n kinds)))
-    (dolist (a args)
-      (let ((ak (tl-kind-walk env a kinds)))
-        (when (and ak (/= ak 0))
-          (signal 'termlisp-type-error
-                  (list (format "Kind error: %S is applied to non-type %S"
-                                (if (symbolp head) head "type variable") a))))))
-    (cond ((null hkind) nil)
-          ((memq head tl-variadic-kinds) 0)
-          ((>= hkind n) (- hkind n))
-          (t (signal 'termlisp-type-error
-                     (list (format "Kind error: %S applied to %d argument(s), expects %d"
-                                   (if (symbolp head) head "type variable")
-                                   n hkind)))))))
-
-(defun tl-kind-walk (env ty kinds)
-  "Check well-kindedness of TY; return its own kind arity (or nil).
-KINDS is a hash of variable node -> inferred arity, threaded through the
-walk and also written to each variable's KIND slot.  Signal
-`termlisp-type-error' on a kind error."
+(defun tl-kind-infer (env ty)
+  "Infer the kind of type TY in ENV, unifying as it goes.
+Return a kind node.  Storing the kind in each variable's KIND slot makes
+repeated inference consistent; unknown heads get a fresh kind variable."
   (let ((ty (tl-type-deref ty)))
     (cond
-     ((tl-tvar-p ty) (tl-kind-check-bare-var ty kinds))
+     ((tl-tvar-p ty)
+      (or (tl-node-kind ty)
+          (let ((k (tl-kind-var))) (setf (tl-node-kind ty) k) k)))
      ((tl-tcon-p ty)
-      (let* ((head (tl-type-deref (tl-tcon-name ty)))
-             (args (tl-tcon-args ty))
-             (n (length args)))
+      (let ((head (tl-type-deref (tl-tcon-name ty)))
+            (args (tl-tcon-args ty)))
         (if (null args)
             (if (tl-node-var-p head)
-                (tl-kind-check-bare-var head kinds)
-              (tl-kind-of env head))
-          (tl-kind-walk-application env head args n kinds))))
-     (t 0))))
+                (or (tl-node-kind head)
+                    (let ((k (tl-kind-var))) (setf (tl-node-kind head) k) k))
+              (or (tl-kind-of env head)
+                  (let ((k (tl-kind-var))) k)))
+          (let* ((arg-ks (mapcar (lambda (a) (tl-kind-infer env a)) args))
+                 (res (tl-kind-var))
+                 (want (let ((k res))
+                         (dolist (ak (reverse arg-ks)) (setq k (tl-karr ak k)))
+                         k))
+                 (hk (cond ((tl-node-var-p head)
+                            (or (tl-node-kind head)
+                                (let ((k (tl-kind-var)))
+                                  (setf (tl-node-kind head) k) k)))
+                           ((tl-kind-of env head))
+                           (t (tl-kind-var)))))
+            (unless (tl-kind-unify hk want)
+              (signal 'termlisp-type-error
+                      (list (format "Kind error: %S applied to %d argument(s)"
+                                    (if (symbolp head) head "type variable")
+                                    (length args)))))
+            res))))
+     (t tl-kind-star))))
 
 (defun tl-kind-check (env ty)
-  "Check well-kindedness of the type node TY in ENV.
-Signal `termlisp-type-error' when a known constructor is applied at the
-wrong arity, a type variable is used inconsistently, or TY is not a
-proper type (has residual kind arity).  Unknown constructors are
-accepted.  Return TY."
-  (let ((k (tl-kind-walk env ty (make-hash-table :test #'eq))))
-    (when (and k (not (zerop k))
-               (not (memq (tl-tcon-name (tl-type-deref ty)) tl-variadic-kinds)))
+  "Check that TY is a well-kinded proper type in ENV.  Return TY."
+  (let ((k (tl-kind-infer env ty)))
+    (unless (tl-kind-unify k tl-kind-star)
       (signal 'termlisp-type-error
-              (list (format "Kind error: %S is not a proper type (residual arity %d)"
-                            ty k)))))
+              (list (format "Kind error: %S is not a proper type" ty)))))
   ty)
 
 (defun tl-kind-check-scheme (env scheme)

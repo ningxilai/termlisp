@@ -60,6 +60,19 @@
                  (dolist (c (tl-node-children n)) (push c stack)))))))
     found))
 
+(defvar tl-gnode--fail-reason nil
+  "Why the most recent `tl-gnode-unify' failed: nil, `infinite-type', or
+`kind-mismatch'.  Bound and inspected by callers to report the right error.")
+
+(defun tl-gnode--kinds-compatible (kx ky)
+  "Return non-nil when kind nodes KX and KY can be unified.
+Uses the kind unifier when available; otherwise structural equality."
+  (if (fboundp 'tl-kind-unify)
+      (let ((saved tl-gnode--fail-reason))
+        (prog1 (tl-kind-unify kx ky)
+          (setq tl-gnode--fail-reason saved)))
+    (equal kx ky)))
+
 (defun tl-gnode--union (x y trail)
   "Union variable roots X and Y, recording the change on TRAIL.
 Return the new representative, or nil on a kind clash (recorded in
@@ -70,7 +83,7 @@ Return the new representative, or nil on a kind clash (recorded in
          (ky (tl-node-kind ry)))
     (cond
      ((eq rx ry) rx)
-     ((and kx ky (/= kx ky))
+     ((and kx ky (not (tl-gnode--kinds-compatible kx ky)))
       (setq tl-gnode--fail-reason 'kind-mismatch)
       nil)
      (t
@@ -108,11 +121,6 @@ Return the new representative, or nil on a kind clash (recorded in
           (rank (nth 2 entry)))
       (setf (tl-node-bind node) bind)
       (setf (tl-node-rank node) rank))))
-
-(defvar tl-gnode--fail-reason nil
-  "Why the most recent `tl-gnode-unify' failed: nil, or `infinite-type'.
-Bound and inspected by `tl-unify-types' to report an infinite type rather
-than a mere mismatch.")
 
 (defun tl-gnode-unify (a b &optional occurs-check)
   "Unify nodes A and B, mutating BIND slots.  Return t, or nil (rolled back).

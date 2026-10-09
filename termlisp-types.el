@@ -650,8 +650,14 @@ Return `(TYPE . CONSTRAINTS)', freshening the type and any constraints
 with the same substitution.  A non-scheme is returned as
 `(SCHEME . nil)'."
   (if (tl-tscheme-p scheme)
-      (let ((sub (mapcar (lambda (v) (cons v (tl-fresh-tvar)))
-                         (tl-tscheme-vars scheme))))
+      (let ((sub (mapcar
+                  (lambda (v)
+                    (let ((nv (tl-fresh-tvar)))
+                      ;; carry the variable's kind to the fresh copy.
+                      (when (tl-node-kind v)
+                        (setf (tl-node-kind nv) (tl-node-kind v)))
+                      (cons v nv)))
+                  (tl-tscheme-vars scheme))))
         (cons (tl-type-subst (tl-tscheme-type scheme) sub)
               (mapcar (lambda (c)
                         (tl-constraint (tl-constraint-class c)
@@ -720,8 +726,18 @@ error."
                                 (car cell) name))))))
     (let ((params (mapcar (lambda (s) (cdr (assq s tl-type-parse-vars))) syms))
           (result (tl-tcon name (mapcar (lambda (s) (cdr (assq s tl-type-parse-vars))) syms))))
-      ;; A datatype's kind is its number of type parameters.
-      (puthash name (length syms) (tl-env-kind-env env))
+      ;; Infer each parameter's kind from the constructor field types; a
+      ;; well-formed field is a proper type.  Lenient: oracle datatypes may
+      ;; mention unknown heads, which get fresh kind variables.
+      (when (fboundp 'tl-kind-check)
+        (dolist (ca ctor-args)
+          (dolist (argty (cdr ca))
+            (condition-case nil (tl-kind-check env argty) (error nil)))))
+      ;; The datatype's kind is `kind(param1) -> ... -> *', or its arity
+      ;; when kind inference is unavailable.
+      (cond ((fboundp 'tl-register-datatype-kind)
+             (tl-register-datatype-kind env name params))
+            (t (puthash name (length syms) (tl-env-kind-env env))))
       (dolist (ca ctor-args)
         (let ((ty result))
           (dolist (argty (reverse (cdr ca)))
