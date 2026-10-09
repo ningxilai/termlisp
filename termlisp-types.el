@@ -37,7 +37,8 @@
 (cl-defstruct (tl-tscheme (:constructor tl-tscheme (vars type &optional constraints)))
   vars type (constraints nil))
 (cl-defstruct (tl-constraint (:constructor tl-constraint (class type))) class type)
-(cl-defstruct (tl-cclass (:constructor tl-cclass (name params supers methods))) name params supers methods)
+(cl-defstruct (tl-cclass (:constructor tl-cclass (name params supers methods &optional fundeps)))
+  name params supers methods fundeps)
 (cl-defstruct (tl-instance (:constructor tl-instance (class head context methods &optional dict)))
   class head context methods dict)
 
@@ -378,6 +379,50 @@ the node it matched, or nil on failure.  The graph is never mutated."
   "Match instance HEAD against type TY, one-way.  Return `(t . SUB)' or nil."
   (tl-gnode-match head ty))
 
+(defun tl-constraint-args (c)
+  "Return the parameter type list of predicate C.
+A single-parameter predicate stores its argument directly; a multi-parameter
+one stores `(Class t1 ... tk)'."
+  (let ((ty (tl-type-deref (tl-constraint-type c))))
+    (if (and (tl-tcon-p ty)
+             (eq (tl-tcon-name ty) (tl-constraint-class c))
+             (cdr (tl-tcon-args ty)))
+        (tl-tcon-args ty)
+      (list ty))))
+
+(defun tl-improve-constraints (env preds)
+  "Unify predicate parameters according to class functional dependencies.
+Mutate the type graph in place and return non-nil when any equality was
+learned.  Iterated to a fixpoint; speculative unifications roll back on
+failure."
+  (let ((changed nil) (again t))
+    (while again
+      (setq again nil)
+      (dolist (c preds)
+        (let* ((cls (gethash (tl-constraint-class c) (tl-env-class-env env)))
+               (fds (and cls (tl-cclass-fundeps cls)))
+               (args (tl-constraint-args c)))
+          (dolist (fd fds)
+            (let ((from (car fd)) (to (cdr fd)))
+              (dolist (c2 preds)
+                (when (and (not (eq c c2))
+                           (eq (tl-constraint-class c) (tl-constraint-class c2)))
+                  (let ((args2 (tl-constraint-args c2)))
+                    (when (cl-every
+                           (lambda (i)
+                             (let ((a (nth i args)) (b (nth i args2)))
+                               (and a b
+                                    (or (eq (tl-gnode-deref a) (tl-gnode-deref b))
+                                        (tl-gnode-unify a b)))))
+                           from)
+                      (dolist (j to)
+                        (let ((a (nth j args)) (b (nth j args2)))
+                          (when (and a b
+                                     (not (eq (tl-gnode-deref a) (tl-gnode-deref b)))
+                                     (tl-gnode-unify a b))
+                            (setq changed t again t)))))))))))))
+    changed))
+
 (defun tl-entail-by-inst (env pred)
   "Non-nil when PRED is satisfied by an instance whose context is entailed."
   (let ((insts (gethash (tl-constraint-class pred) (tl-env-instance-env env))))
@@ -444,20 +489,35 @@ solved or defaulted at the use site."
         (push c deferred)))
     (list (nreverse retained) (nreverse deferred))))
 
-(defun tl-ambiguities (_env env-vars preds)
-  "Return the predicates of PREDS whose variables are not determined.
-A variable is determined when it is in ENV-VARS or is the variable of a
-predicate whose own variables are already determined (so fundep-style
-determination is captured; plain HM has none and this reduces to
-\"unchanged variables\")."
+(defun tl-ambiguities (env env-vars preds)
+  "Return the predicates of PREDS that are ambiguous.
+A variable is determined when it is in ENV-VARS, or is a `to' parameter of
+a predicate whose `from' parameters (per a class functional dependency)
+are all determined.  A predicate is ambiguous when any of its variables is
+undetermined."
   (let ((det (copy-sequence env-vars)) (changed t))
     (while changed
       (setq changed nil)
       (dolist (c preds)
-        (let ((vs (tl-free-tvars (tl-constraint-type c))))
-          (when (cl-every (lambda (v) (memq v det)) vs)
-            (dolist (v vs)
-              (unless (memq v det) (push v det) (setq changed t)))))))
+        (let* ((cls (and env (gethash (tl-constraint-class c)
+                                      (tl-env-class-env env))))
+               (fds (and cls (tl-cclass-fundeps cls)))
+               (args (tl-constraint-args c)))
+          ;; Fundep determination: determined `from' forces `to'.
+          (dolist (fd fds)
+            (when (cl-every
+                   (lambda (i)
+                     (cl-every (lambda (v) (memq v det))
+                               (tl-free-tvars (nth i args))))
+                   (car fd))
+              (dolist (j (cdr fd))
+                (dolist (v (tl-free-tvars (nth j args)))
+                  (unless (memq v det) (push v det) (setq changed t))))))
+          ;; Plain closure: a predicate's own variables, once determined.
+          (let ((vs (tl-free-tvars (tl-constraint-type c))))
+            (when (cl-every (lambda (v) (memq v det)) vs)
+              (dolist (v vs)
+                (unless (memq v det) (push v det) (setq changed t))))))))
     (cl-remove-if
      (lambda (c)
        (cl-every (lambda (v) (memq v det))
@@ -489,6 +549,13 @@ rejected with `termlisp-type-error'."
                     (tl-constraint (tl-constraint-class c)
                                    (tl-apply-bindings (tl-constraint-type c) bindings)))
                   constraints))
+         ;; Functional dependencies may learn type equalities; re-zonk.
+         (_ (tl-improve-constraints env zonked))
+         (zonked (mapcar
+                  (lambda (c)
+                    (tl-constraint (tl-constraint-class c)
+                                   (tl-apply-bindings (tl-constraint-type c) nil)))
+                  zonked))
          (split (tl-split-context env gen-vars zonked))
          (retained (car split))
          (deferred (cadr split))
@@ -1041,30 +1108,50 @@ and instance implementations are checked against that signature."
         (tl-infer-define-clauses env name clauses)))
      (t (tl-infer-constant env target (caddr form))))))
 
+(defun tl-class-parse-fundep (fd pindex)
+  "Parse one fundep FD = `(A... -> B...)' of parameter names.
+Return `(FROM-POSITIONS . TO-POSITIONS)' as indices into the parameters."
+  (let ((from nil) (to nil) (arrow nil))
+    (dolist (x fd)
+      (if (eq x '->)
+          (setq arrow t)
+        (if arrow (push x to) (push x from))))
+    (cons (mapcar (lambda (p) (cdr (assq p pindex))) (nreverse from))
+          (mapcar (lambda (p) (cdr (assq p pindex))) (nreverse to)))))
+
 (defun tl-register-class (env form)
-  "Register `(class NAME (PARAM) SUPERS METHOD-DECL...)' in ENV."
+  "Register `(class NAME (PARAM...) SUPERS METHOD-DECL... [FUNDEPS])' in ENV.
+FUNDEPS, when present, is `(fundeps (A... -> B...)...)' of parameter names."
   (let* ((name (nth 1 form))
-         (param (car (nth 2 form)))
+         (params (nth 2 form))
          (super-forms (nth 3 form))
-         (method-decls (nthcdr 4 form))
-         (param-var (tl-fresh-tvar))
+         (rest (nthcdr 4 form))
+         (fundep-form (and (consp (car (last rest)))
+                           (eq (caar (last rest)) 'fundeps)
+                           (car (last rest))))
+         (method-decls (if fundep-form (butlast rest) rest))
+         (pindex (cl-loop for p in params for i from 0 collect (cons p i)))
+         (parse-vars (cl-loop for p in params collect (cons p (tl-fresh-tvar))))
+         (first-var (cdr (car parse-vars)))
+         (fundeps (mapcar (lambda (fd) (tl-class-parse-fundep fd pindex))
+                          (cdr fundep-form)))
          (methods nil)
          (supers nil))
     (dolist (sf super-forms)
-      (let ((tl-type-parse-vars (list (cons param param-var))))
+      (let ((tl-type-parse-vars parse-vars))
         (push (tl-constraint (car sf) (tl-type-parse* (cadr sf))) supers)))
     (setq supers (nreverse supers))
     (dolist (md method-decls)
       (let* ((mname (car md))
-             (tl-type-parse-vars (list (cons param param-var)))
+             (tl-type-parse-vars parse-vars)
              (ty (tl-type-parse* (cadr md))))
         (push (cons mname
                     (tl-tscheme (tl-free-tvars ty)
                                 ty
-                                (list (tl-constraint name param-var))))
+                                (list (tl-constraint name first-var))))
               methods)))
     (setq methods (nreverse methods))
-    (puthash name (tl-cclass name (list param) supers methods)
+    (puthash name (tl-cclass name params supers methods fundeps)
              (tl-env-class-env env))
     (dolist (m methods)
       (puthash (car m) (cdr m) (tl-env-method-env env)))

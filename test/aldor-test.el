@@ -1030,6 +1030,26 @@ builtin operator mapping."
     (should-error (tl-unify-types (tl-tcon f (list a)) (tl-tcon g (list a)) nil)
                   :type 'termlisp-type-error)))
 
+;;; Constraint improvement
+
+(ert-deftest tl-fundep-improvement ()
+  "A functional dependency unifies determined predicate parameters."
+  (let ((env (termlisp-make-env))
+        (b1 (tl-fresh-tvar)) (b2 (tl-fresh-tvar)))
+    (tl-register-class env '(class Conv (a b) nil (fundeps (a -> b))))
+    (let* ((i (tl-tint))
+           (c1 (tl-constraint 'Conv (tl-tcon 'Conv (list i b1))))
+           (c2 (tl-constraint 'Conv (tl-tcon 'Conv (list i b2)))))
+      (should (tl-improve-constraints env (list c1 c2)))
+      (should (eq (tl-gnode-deref b1) (tl-gnode-deref b2)))
+      ;; `a' is fixed, so the fundep determines `b': not ambiguous.
+      (should (null (tl-ambiguities env nil (list c1))))
+      ;; With an undetermined `a', the whole predicate is ambiguous.
+      (should (= 1 (length (tl-ambiguities
+                            env nil
+                            (list (tl-constraint 'Conv (tl-tcon 'Conv
+                                                                (list (tl-fresh-tvar) b1)))))))))))
+
 ;;; Dictionary-passing elaboration
 
 (ert-deftest tl-dictionary-passing ()
