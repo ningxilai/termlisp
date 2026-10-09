@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'termlisp-base)
 
 (cl-defstruct (tl-abn (:constructor tl-abn--make)
                       (:copier nil))
@@ -33,13 +34,13 @@
            (form (condition-case err
                      (read (current-buffer))
                   (end-of-file
-                   (signal 'tl-abn-error
+                   (signal 'termlisp-abn-error
                            (list (format "%s: truncated ABN data" file))))
                   (error
-                   (signal 'tl-abn-error
+                   (signal 'termlisp-abn-error
                            (list (format "%s: %s" file (error-message-string err))))))))
       (unless (and (consp form) (null (cdddr form)))
-        (signal 'tl-abn-error
+        (signal 'termlisp-abn-error
                 (list (format "%s: not an ABN (TREE SYMES SEFOS) triple" file))))
       (tl-abn-resolve form))))
 
@@ -93,7 +94,7 @@ Pipe-escaped symbols (Aldor writes |foo|) are normalized to their
 unescaped names first, because the Emacs Lisp reader does not treat
 vertical bars as symbol escapes."
   (unless (and (consp form) (consp (cdr form)) (consp (cddr form)))
-    (signal 'tl-abn-error (list (format "Not an ABN triple: %S" form))))
+    (signal 'termlisp-abn-error (list (format "Not an ABN triple: %S" form))))
   (let* ((tree (tl-abn--strip-pipes (car form)))
          (symes (vconcat (tl-abn--strip-pipes (cadr form))))
          (sefos (vconcat (tl-abn--strip-pipes (caddr form)))))
@@ -188,11 +189,11 @@ The type annotation is spliced from the sefo table of ABN."
            (integerp (cddr ann)))
       (let ((idx (cddr ann)))
         (unless (< idx (length symes))
-          (signal 'tl-abn-error (list (format "syme ref %d out of range" idx))))
+          (signal 'termlisp-abn-error (list (format "syme ref %d out of range" idx))))
         (cons 'syme (aref symes idx)))
     ann))
 
-(define-error 'tl-abn-error "Aldor ABN read error")
+(define-error 'termlisp-abn-error "Aldor ABN read error" 'termlisp-error)
 
 (provide 'termlisp-abn)
 ;;; termlisp-abn.el ends here

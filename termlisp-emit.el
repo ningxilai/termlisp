@@ -33,8 +33,9 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'termlisp-base)
 
-(define-error 'termlisp-emit-error "termlisp emit error")
+(define-error 'termlisp-emit-error "Emit error" 'termlisp-error)
 
 (defconst tl-emit--default-ctors
   '((Nil . 0) (Cons . 2))

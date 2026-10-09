@@ -187,8 +187,14 @@ Aldor's String is 0-based, so indices map directly onto Emacs strings."
 
 ;;; Files.
 
-(defvar fileRead 'fileRead)
-(defvar fileWrite 'fileWrite)
+;; Generated Aldor code refers to the file-mode constants by their Aldor
+;; names, which are fixed by the library, so the prefix convention cannot
+;; be met; suppress the check for these two.
+(with-no-warnings
+  (defvar fileRead 'fileRead
+    "Value of the Aldor `fileRead' mode constant.")
+  (defvar fileWrite 'fileWrite
+    "Value of the Aldor `fileWrite' mode constant."))
 
 (defun tl-open (path mode)
   "Open PATH for reading (MODE `fileRead') or writing.

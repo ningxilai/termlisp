@@ -3,11 +3,34 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
-;; Shared definitions used by every other termlisp module.
+;; Shared definitions used by every other termlisp module: the error
+;; hierarchy, the evaluation environment, and the pipeline option plist.
+;;
+;; Error model.  Every error the package signals derives from
+;; `termlisp-error', so a caller may catch the whole family with a single
+;; `(condition-case err BODY (termlisp-error ...))' or a specific phase:
+;;
+;;   termlisp-error            base
+;;    +- termlisp-parse-error  `termlisp-reader'
+;;    +- termlisp-type-error   `termlisp-types', `termlisp-kinds', ...
+;;    +- termlisp-eval-error   `termlisp-eval', `termlisp-numeric', ...
+;;    +- termlisp-abn-error    `termlisp-abn'
+;;    +- termlisp-aldor-error  `termlisp-aldor'
+;;    +- termlisp-emit-error   `termlisp-emit'
+;;
+;; Errors are signalled with a one-element list holding the message,
+;; `(signal 'termlisp-type-error (list "...")))', so the `error-message'
+;; of a caught condition is its `cadr'.  Errors that carry structured data
+;; put it in the remaining list elements.
 
 ;;; Code:
 
 (require 'cl-lib)
+
+(defgroup termlisp nil
+  "Lazy term-rewriting language and Aldor-to-Lisp compiler."
+  :group 'languages
+  :prefix "tl-")
 
 (define-error 'termlisp-error "Term-lisp error")
 (define-error 'termlisp-parse-error "Term-lisp parse error" 'termlisp-error)
