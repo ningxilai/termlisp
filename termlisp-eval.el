@@ -41,13 +41,19 @@ byte-compiles without a free-variable warning.")
     (signal 'termlisp-eval-error '("<<loop>> detected while forcing a thunk")))
    (t
     (setf (tl-thunk-busy-p value) t)
-    (unwind-protect
-        (let* ((termlisp--current-env (or (tl-thunk-ctx value) termlisp--current-env))
-               (v (tl-run (tl-thunk-expr value) (tl-thunk-env value))))
-          (setf (tl-thunk-value value) v)
-          (setf (tl-thunk-forced-p value) t)
-          v)
-      (setf (tl-thunk-busy-p value) nil)))))
+    (let ((saved termlisp--current-env))
+      (unwind-protect
+          (let* ((termlisp--current-env
+                  (or (tl-thunk-ctx value)
+                      (and (tl-thunk-env value)
+                           (tl-env-resolve-current (tl-thunk-env value)))
+                      termlisp--current-env))
+                 (v (tl-run (tl-thunk-expr value) (tl-thunk-env value))))
+            (setf (tl-thunk-value value) v)
+            (setf (tl-thunk-forced-p value) t)
+            v)
+        (setq termlisp--current-env saved)
+        (setf (tl-thunk-busy-p value) nil))))))
 
 (defun tl-make-arg-thunks (exprs env)
   "Turn argument expressions EXPRS into thunks capturing ENV."
@@ -127,6 +133,47 @@ byte-compiles without a free-variable warning.")
     (not (or (and (consp second) (eq (cadr second) '<-))
              (and (consp second) (eq (car second) 'return))))))
 
+(defun tl-seq-begin (forms)
+  "Fold FORMS into a single expression using the strict `seq' builtin.
+The last form's value is returned; earlier forms are forced for their side
+effects.  A single form is returned unchanged."
+  (if (null (cdr forms))
+      (car forms)
+    (let ((acc (car (last forms))))
+      (dolist (f (reverse (butlast forms)))
+        (setq acc (list 'seq f acc)))
+      acc)))
+
+(defun tl-desugar-let (form)
+  "Desugar FORM `(let ((NAME EXPR)...) BODY...)' into an inline-lambda application.
+Bindings are sequential, so each EXPR is evaluated in the enclosing scope and
+the names are bound together, matching Scheme's `let'.  The body is an
+implicit `begin', returning its last expression."
+  (let ((bindings (cadr form)) (body (cddr form)) (names nil) (exprs nil))
+    (when (and bindings (not (listp bindings)))
+      (signal 'termlisp-eval-error '("let requires a binding list")))
+    (dolist (b bindings)
+      (unless (and (consp b) (consp (cdr b)) (null (cddr b)))
+        (signal 'termlisp-eval-error
+                (list (format "Invalid let binding: %S" b))))
+      (push (car b) names)
+      (push (cadr b) exprs))
+    (unless body
+      (signal 'termlisp-eval-error '("let requires a body")))
+    (cons (list 'lambda (nreverse names) (tl-seq-begin body))
+          (nreverse exprs))))
+
+(defun tl-desugar-list (form)
+  "Desugar FORM `(list EXPR...)' into nested `Cons' applications.
+`(list)' becomes `Nil'.  Coalton's `make'/`make-list' expand the same way:
+a variadic form has no fixed arity to give a Hindley-Milner scheme, so it is
+rewritten into constructor applications *before* inference, where `Cons'
+already has one.  The result type is a homogeneous `List' of the elements'
+type."
+  (let ((acc 'Nil))
+    (dolist (x (reverse (cdr form)) acc)
+      (setq acc (list 'Cons x acc)))))
+
 (defun tl-desugar-do-method (form)
   "Desugar `(do STMT...)' to `bind'/`return' class-method calls.
 The monad type is left to inference; the elaborator inserts the resolved
@@ -192,19 +239,23 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
       (if (eq mode 'eval)
           (cond
            ((symbolp control)
-            (let ((cell (tl-lookup control cenv)))
+            (let* ((cell (tl-lookup control cenv))
+                   (v (cond (cell (cdr cell))
+                            ((not (tl-function-p control))
+                             (let ((bf (tl-resolve-value control)))
+                               (if bf bf control)))
+                            (t control))))
               (cond
-               ((null cell) (setq value control mode 'ret))
-               ((and (tl-thunk-p (cdr cell)) (not (tl-thunk-forced-p (cdr cell))))
-                (let ((tk (cdr cell)))
+               ((and (tl-thunk-p v) (not (tl-thunk-forced-p v)))
+                (let ((tk v))
                   (when (tl-thunk-busy-p tk)
                     (signal 'termlisp-eval-error '("<<loop>> detected")))
                   (setf (tl-thunk-busy-p tk) t)
                   (push (list 'memoize tk) kont)
                   (setq cenv (tl-thunk-env tk) control (tl-thunk-expr tk))))
-               ((tl-thunk-p (cdr cell))
-                (setq value (tl-thunk-value (cdr cell)) mode 'ret))
-               (t (setq value (cdr cell) mode 'ret)))))
+               ((tl-thunk-p v)
+                (setq value (tl-thunk-value v) mode 'ret))
+               (t (setq value v mode 'ret)))))
            ((atom control) (setq value control mode 'ret))
            ((consp control)
             (let ((head (car control)) (args (cdr control)))
@@ -217,6 +268,10 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
                       mode 'ret))
                ((eq head 'do)
                 (setq control (tl-desugar-do control)))
+               ((eq head 'let)
+                (setq control (tl-desugar-let control)))
+               ((eq head 'list)
+                (setq control (tl-desugar-list control)))
                ((symbolp head)
                 (let ((cell (assq head cenv))
                       (global (assq head (tl-env-globals termlisp--current-env)))
@@ -224,9 +279,20 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
                   (cond
                    ((or cell global)
                     (let* ((v (cdr (or cell global)))
-                           (fv (tl-resolve-callable (if (tl-thunk-p v) (tl-force v) v)))
-                           (step (tl-apply-step fv args cenv)))
-                      (setq control (car step) cenv (cdr step))))
+                           (fv (tl-resolve-callable (if (tl-thunk-p v) (tl-force v) v))))
+                      (if (tl-builtin-fn-p fv)
+                          ;; First-class builtin bound as a value (e.g. `foldl + 0 xs').
+                          ;; Force each arg via the `builtin' continuation frame, then call.
+                          (let ((fn (gethash (tl-builtin-fn-name fv) tl-builtins))
+                                (arg-thunks (tl-make-arg-thunks args cenv)))
+                            (if (null arg-thunks)
+                                (setq value (funcall fn nil) mode 'ret)
+                              (push (list 'builtin fn nil (cdr arg-thunks)) kont)
+                              (let ((tk (car arg-thunks)))
+                                (setq cenv (tl-thunk-env tk)
+                                      control (tl-thunk-expr tk)))))
+                        (let ((step (tl-apply-step fv args cenv)))
+                          (setq control (car step) cenv (cdr step))))))
                    (fns
                     (let ((sel (tl-select-clause fns (tl-make-arg-thunks args cenv))))
                       (if sel
@@ -249,9 +315,20 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
                                   head)
                           mode 'ret)))))
                (t
-                (let* ((fv (tl-run head cenv))
-                       (step (tl-apply-step fv args cenv)))
-                  (setq control (car step) cenv (cdr step))))))))
+                (let ((fv (tl-run head cenv)))
+                  (if (tl-builtin-fn-p fv)
+                      ;; First-class builtin (e.g. `foldl + 0 xs'): force each
+                      ;; argument via the `builtin' continuation frame, then call.
+                      (let ((fn (gethash (tl-builtin-fn-name fv) tl-builtins))
+                            (arg-thunks (tl-make-arg-thunks args cenv)))
+                        (if (null arg-thunks)
+                            (setq value (funcall fn nil) mode 'ret)
+                          (push (list 'builtin fn nil (cdr arg-thunks)) kont)
+                          (let ((tk (car arg-thunks)))
+                            (setq cenv (tl-thunk-env tk)
+                                  control (tl-thunk-expr tk)))))
+                    (let ((step (tl-apply-step fv args cenv)))
+                      (setq control (car step) cenv (cdr step))))))))))
         ;; return mode
         (if (null kont)
             (setq done t)

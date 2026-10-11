@@ -91,7 +91,15 @@ API:
 - `termlisp-parse` — parse a string into a list of S-expressions.
 - `termlisp-typecheck` / `termlisp-typecheck-file` — typecheck a string / file.
 - `termlisp-load-prelude` — load `termlisp-prelude.tls` into an environment.
+  The prelude defines the booleans, pairs, lists, monads and type classes,
+  together with the hlisp operators `=`, `xor`, `null?`, `foldl`, `reverse`
+  and `sort`.  I/O is a State action over the world: `io-world`,
+  `io-print`, `io-read-line` and `run-io`.
 - `termlisp-value->string` — render a value.
+- Builtins — the primitive functions term-lisp code can call: `eq`, `+`, `-`,
+  `*`, `/`, `<`, `<=`, `>`, `>=`, `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`,
+  `list`, `seq`, `first`, `rest`, `empty?`, `stdin`, `read-line`, `print`,
+  `format`, `string-join`, `string->list`, `list->string`.
 
 Example:
 

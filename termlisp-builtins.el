@@ -22,9 +22,19 @@
 (defvar tl-builtins (make-hash-table :test #'eq)
   "Registry mapping builtin names to functions of a list of values.")
 
+(cl-defstruct (tl-builtin-fn (:constructor tl-make-builtin-fn (name)))
+  "First-class callable wrapping the builtin NAME.
+Lets a bare builtin (e.g. `+' in `(foldl + 0 xs)') be passed as a value."
+  name)
+
 (defun tl-builtin-p (name)
   "Return non-nil if NAME is a builtin."
   (gethash name tl-builtins))
+
+(defun tl-resolve-value (name)
+  "If NAME is a builtin, return its `tl-builtin-fn' wrapper, else nil."
+  (when (tl-builtin-p name)
+    (tl-make-builtin-fn name)))
 
 (defun tl-register-builtin (name fn)
   "Register builtin NAME implemented by FN."
@@ -41,6 +51,24 @@
     (unless (numberp a)
       (signal 'termlisp-type-error
               (list (format "%s expects numbers, got %S" name a))))))
+
+(defun tl-check-one-number (args name)
+  "Signal a `termlisp-type-error' mentioning NAME unless ARGS is one number."
+  (tl-check-one-arg args name)
+  (unless (numberp (car args))
+    (signal 'termlisp-type-error
+            (list (format "%s expects a number, got %S" name (car args))))))
+
+;; Strict sequencing: builtin arguments are already forced to WHNF by the
+;; driver (see `tl-run'), so evaluating `seq' forces A for its side effects
+;; and returns B.  State's bind uses it to run a suspended effect held in a
+;; lazy constructor field before handing control to the continuation.
+(tl-register-builtin 'seq
+  (lambda (args)
+    (unless (= (length args) 2)
+      (signal 'termlisp-type-error
+              (list (format "seq expects 2 arguments, got %d" (length args)))))
+    (cadr args)))
 
 (tl-register-builtin 'eq
   (lambda (args)
@@ -70,6 +98,43 @@
   (lambda (args) (tl-check-numbers args '>) (tl-bool (> (nth 0 args) (nth 1 args)))))
 (tl-register-builtin '>=
   (lambda (args) (tl-check-numbers args '>=) (tl-bool (>= (nth 0 args) (nth 1 args)))))
+
+(tl-register-builtin '/
+  (lambda (args)
+    (tl-check-numbers args '/)
+    (let ((a (nth 0 args))
+          (b (nth 1 args)))
+      (when (zerop b)
+        (signal 'termlisp-eval-error (list "Division by zero")))
+      (if (and (integerp a) (integerp b) (zerop (mod a b)))
+          (/ a b)
+        (/ (float a) (float b))))))
+
+(dolist (spec '((sin . sin) (cos . cos) (tan . tan) (exp . exp)))
+  (let ((name (car spec))
+        (impl (cdr spec)))
+    (tl-register-builtin name
+      (lambda (args)
+        (tl-check-one-number args name)
+        (float (funcall impl (float (car args))))))))
+
+(tl-register-builtin 'log
+  (lambda (args)
+    (tl-check-one-number args 'log)
+    (let ((x (float (car args))))
+      (when (<= x 0.0)
+        (signal 'termlisp-eval-error
+                (list "Logarithm requires positive number")))
+      (float (log x)))))
+
+(tl-register-builtin 'sqrt
+  (lambda (args)
+    (tl-check-one-number args 'sqrt)
+    (let ((x (float (car args))))
+      (when (< x 0.0)
+        (signal 'termlisp-eval-error
+                (list "Square root requires non-negative number")))
+      (float (sqrt x)))))
 
 (defun tl-list-cons-p (v)
   "Return non-nil if V is a termlisp Cons cell."
@@ -136,6 +201,16 @@ List are walkable by the same code."
     (tl-check-one-arg args 'empty?)
     (tl-bool (eq (nth 0 args) 'Nil))))
 
+(defun tl-values-to-list (values)
+  "Convert the elisp list VALUES into the termlisp Cons chain of its elements."
+  (let ((r 'Nil))
+    (dolist (v (reverse values) r)
+      (setq r (list 'Cons v r)))))
+
+(tl-register-builtin 'list
+  (lambda (args)
+    (tl-values-to-list args)))
+
 ;;; Aldor output runtime ------------------------------------------------
 ;; The Aldor prelude's `stdout'/`newline'/`<<' have no termlisp
 ;; equivalent; emitted programs resolve them to these runtime values.
@@ -152,23 +227,27 @@ List are walkable by the same code."
   "Aldor's `newline' Character code.")
 
 (defun tl-output--list-items (l)
-  "Return the elements of the termlisp Cons chain L."
+  "Return the forced elements of the termlisp Cons chain L.
+Cons arguments are thunks, so both the chain and each head are forced
+while walking."
   (let (items)
+    (setq l (tl-force-or-identity l))
     (while (tl-list-cons-p l)
-      (push (cadr l) items)
-      (setq l (caddr l)))
+      (push (tl-force-or-identity (cadr l)) items)
+      (setq l (tl-force-or-identity (caddr l))))
     (nreverse items)))
 
 (defun tl-output--format (value)
   "Render VALUE the way Aldor's basic OutputType instances print."
+  (setq value (tl-force-or-identity value))
   (cond ((tl-list-cons-p value)
          (concat "[" (mapconcat #'tl-output--format
                                 (tl-output--list-items value) ",") "]"))
         ;; Arrays, records and unions are vectors; print them like
-        ;; Aldor's `[a,b,c]'.
+        ;; Aldor `[a,b,c]'.
         ((vectorp value)
-         (concat "[" (mapconcat #'tl-output--format (append value nil) ",")
-                 "]"))
+         (concat "[" (mapconcat (lambda (v) (tl-output--format (tl-force-or-identity v)))
+                                (append value nil) ",") "]"))
         ((eq value 'Nil) "[]")
         ((eq value t) "true")
         ((eq value nil) "false")
@@ -252,9 +331,7 @@ strings and integers."
                               ((and (numberp a) (numberp b)) (< a b))
                               (t (string< (format "%s" a)
                                           (format "%s" b)))))))
-    (let ((r 'Nil))
-      (dolist (i (reverse items) r)
-        (setq r (list 'Cons i r))))))
+    (tl-values-to-list items)))
 
 ;; `nil? p' tests a Pointer for null; the null pointer is `Nil'.
 (defun tl-pointer-null-p (p) (or (null p) (eq p 'Nil)))
