@@ -60,6 +60,32 @@ Emacs stack.
 ### Static types and type classes
 
 A Hindley–Milner type checker infers types (opt-in via `:type-check`).
+Every builtin carries a type scheme, so ill-typed calls are rejected before
+they reach the evaluator:
+
+```lisp
+(+ 1 True)              ; Cannot apply + to True
+(cos True)               ; Cannot apply cos to True
+(string->list 42)        ; Cannot apply string->list to 42
+(sin (sin 1))            ; ok — the transcendental numerics compose
+```
+
+Numeric literals are inferred `Int` regardless of their runtime
+representation, so `sin`/`cos`/`tan`/`exp`/`log`/`sqrt` are typed
+`Int -> Int` (as `/` already was).  The exact numeric tower
+(`tl-fraction`, `tl-complex`, `tl-num-*`) is polymorphic.
+
+Variadic `list` has no fixed arity to express as a curried arrow, so it is
+expanded to nested `Cons` applications in both the evaluator and the type
+checker — the same trick Coalton uses for `make`/`make-list`.  It therefore
+acquires a type at each call site, and `Cons` enforces that the elements are
+homogeneous:
+
+```lisp
+(list 1 2 3)         ; (List Int)
+(list 1 True)        ; Cannot apply Cons to (Cons True Nil)
+```
+
 Type classes with dictionary passing are supported (opt-in via `:elaborate`):
 
 ```lisp

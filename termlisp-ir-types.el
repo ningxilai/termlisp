@@ -348,6 +348,67 @@ result is left unconstrained rather than aborting the whole program."
 (tl-register-builtin-type 'tl-format
   (tl-tscheme nil (tl-tarrow (tl-fresh-tvar) (tl-tstring))))
 
+;;; HM schemes for the remaining term-level builtins.
+;;
+;; Every numeric literal is inferred as `Int' regardless of its runtime
+;; representation (see the `numberp' case of `tl-infer'), and `/' is already
+;; registered `Int -> Int -> Int' although it may return a float.  The
+;; transcendental functions therefore follow the same convention and are
+;; typed `Int -> Int', which keeps `(sin (sin x))' composable.
+(dolist (n '(sin cos tan exp log sqrt))
+  (tl-register-builtin-type n
+    (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tint)))))
+;; `format' takes the format string (the runtime only accepts "~a") and then
+;; the value to render.
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type 'format
+    (tl-tscheme (list a)
+                (tl-tarrow (tl-tstring) (tl-tarrow a (tl-tstring))))))
+;; `print' renders any value and answers True.
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type 'print
+    (tl-tscheme (list a) (tl-tarrow a (tl-tbool)))))
+;; `read-line' is nullary and answers the next line as a String.
+(tl-register-builtin-type 'read-line (tl-tscheme nil (tl-tstring)))
+;; The world handle is opaque: it is only ever threaded through the State
+;; monad, so its type is kept fully general.
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type 'stdin (tl-tscheme (list a) a)))
+;; String helpers.  `string->list' answers single-character Strings (the
+;; runtime maps each character through `string'), so `list->string' consumes
+;; the same representation.
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type 'string-join
+    (tl-tscheme (list a) (tl-tarrow (tl-tlist a) (tl-tstring)))))
+(tl-register-builtin-type 'string->list
+  (tl-tscheme nil (tl-tarrow (tl-tstring) (tl-tlist (tl-tstring)))))
+(tl-register-builtin-type 'list->string
+  (tl-tscheme nil (tl-tarrow (tl-tlist (tl-tstring)) (tl-tstring))))
+;; `seq' evaluates its first argument for its effect and answers the second.
+(let ((a (tl-fresh-tvar)) (b (tl-fresh-tvar)))
+  (tl-register-builtin-type 'seq
+    (tl-tscheme (list a b) (tl-tarrow a (tl-tarrow b b)))))
+
+;;; HM schemes for the exact-numeric IR helpers.
+;;
+;; These model Aldor's `Integer'/`DoubleFloat' tower, where an exact operand
+;; promotes the operation to Calc's `frac'/`cplx' representation.  The value
+;; universe has no `Fraction' or `Complex' constructor (see
+;; `tl-ir-value-type-names'), so the operators are typed polymorphically over
+;; the tower and the two constructors answer an opaque result.
+(let ((a (tl-fresh-tvar)))
+  (dolist (n '(tl-num-add tl-num-sub tl-num-mul tl-num-div tl-num-quo))
+    (tl-register-builtin-type n
+      (tl-tscheme (list a) (tl-tarrow a (tl-tarrow a a))))))
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type 'tl-num-zero?
+    (tl-tscheme (list a) (tl-tarrow a (tl-tbool)))))
+(let ((r (tl-fresh-tvar)))
+  (dolist (n '(tl-fraction tl-complex))
+    (tl-register-builtin-type n
+      (tl-tscheme (list r)
+                  (tl-tarrow (tl-tint) (tl-tarrow (tl-tint) r))))))
+
 ;;; Handle / reference types.
 
 (defconst tl-ir-value-type-names
