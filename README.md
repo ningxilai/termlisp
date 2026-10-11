@@ -102,6 +102,25 @@ Example:
 ;; => "(Just 5)"
 ```
 
+## The REPL
+
+`M-x termlisp-repl` opens a comint buffer with a `λ>` prompt. Input is
+evaluated in the running Emacs, so definitions made at the prompt stay for the
+rest of the session. The environment starts from `termlisp-repl-options`
+(`:type-check` on by default) and, unless `termlisp-repl-load-prelude` is nil,
+the prelude is loaded into it.
+
+- `RET` sends the input when it reads as a sequence of complete top-level
+  forms; an unfinished form moves to the next line and is indented, so a form
+  can be typed across several lines without an escape character.
+- `C-j` inserts a newline without evaluating.
+- `M-p`, `M-n`, `M-r` browse the input history; `C-c C-o` removes output.
+- `C-c C-k` discards every definition and loads a fresh environment.
+- `C-c C-t` toggles `:type-check` for the current environment.
+- An input of `exit` (or `quit`) closes the REPL.
+
+Errors are reported in the buffer (`error: ...`) and the REPL keeps running.
+
 ## Project layout
 
 ```
@@ -122,6 +141,7 @@ termlisp-builtins.el   ; primitive functions
 termlisp-numeric.el    ; exact Fraction/Complex arithmetic over Calc
 termlisp-eval.el       ; lazy TCO evaluator, `do`, top-level forms
 termlisp-load.el       ; load .tls files as elisp
+termlisp-repl.el      ; interactive REPL, `M-x termlisp-repl'
 termlisp-data-reader.el; cats-based Reader monad
 termlisp-io.el         ; State-monad I/O runtime
 termlisp-abn.el        ; Aldor ABN reader
