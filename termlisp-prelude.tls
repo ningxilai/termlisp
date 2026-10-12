@@ -23,6 +23,13 @@
 (define (car (Pair a b)) a)
 (define (cdr (Pair a b)) b)
 
+;; Propositional types (Curry-Howard): `Void' is false, `Either' is
+;; disjunction, `Pair' above is conjunction, `->' is implication and
+;; `Unit' (below) is truth.  `absurd' is the primitive that eliminates
+;; `Void'; it is unreachable, because `Void' has no constructors.
+(datatype Void)
+(datatype Either (Left a) (Right b))
+
 ;; Peano naturals
 (datatype Nat (Zero) (Succ Nat))
 (define zero Zero)

@@ -388,6 +388,13 @@ result is left unconstrained rather than aborting the whole program."
 (let ((a (tl-fresh-tvar)) (b (tl-fresh-tvar)))
   (tl-register-builtin-type 'seq
     (tl-tscheme (list a b) (tl-tarrow a (tl-tarrow b b)))))
+;; `absurd' eliminates the uninhabited type `Void'.  Propositionally
+;; `Void' is false, so this is bot-elimination: any proposition follows
+;; from a contradiction, which is why the result type is free.  Unreachable
+;; in well-typed code, because `Void' declares no constructors.
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type 'absurd
+    (tl-tscheme (list a) (tl-tarrow (tl-tcon 'Void nil) a))))
 
 ;;; HM schemes for the exact-numeric IR helpers.
 ;;

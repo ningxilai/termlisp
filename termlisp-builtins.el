@@ -201,6 +201,16 @@ List are walkable by the same code."
     (tl-check-one-arg args 'empty?)
     (tl-bool (eq (nth 0 args) 'Nil))))
 
+;; `absurd' is the elimination rule for `Void' (propositionally: ex falso
+;; quodlibet, or bot-elimination).  Since `Void' has no constructors no
+;; well-typed program can reach it; reaching it at all means `:type-check'
+;; was off, so this signals rather than pretending to answer a value.
+(tl-register-builtin 'absurd
+  (lambda (args)
+    (tl-check-one-arg args 'absurd)
+    (signal 'termlisp-eval-error
+            (list "absurd: Void has no values, so this call is unreachable"))))
+
 (defun tl-values-to-list (values)
   "Convert the elisp list VALUES into the termlisp Cons chain of its elements."
   (let ((r 'Nil))
