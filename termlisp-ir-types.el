@@ -87,8 +87,21 @@ bound polymorphically so its dictionary can be abstracted."
   "Generalize a `Let' BINDING of type TY; record its dictionary parameters.
 Return a scheme (or TY unchanged when it does not generalize)."
   (let* ((base (tl-tenv-base env))
-         (env-tvars (if base (tl-env-free-tvars base) nil))
-         (gen-vars (tl-generalized-vars ty env-tvars))
+         ;; Which variables are generalizable here is a question about
+         ;; *time*, not about the environment: one asked of the levels
+         ;; the variables carry.  It used to be asked of the environment
+         ;; instead, and that was unsound -- the environment consulted
+         ;; was the type environment, which does not mention a lambda's
+         ;; own parameters, so `y''s type variable looked like something
+         ;; no one else could be using and `z' was quantified over it:
+         ;;
+         ;;   (define (h y) (Let ((z y)) (let ((u (z 1))) (z "s"))))
+         ;;
+         ;; came out accepted, `z' having become `forall a. a' inside a
+         ;; scope where `y' is still an ordinary parameter.  A variable
+         ;; created before this scope opened cannot be generalized here,
+         ;; whatever the environment does or does not say about it.
+         (gen-vars (tl-generalized-vars ty))
          (kept (condition-case nil
                    (tl-close-constraints base gen-vars tl-infer-constraints nil)
                  (error nil))))
@@ -97,7 +110,7 @@ Return a scheme (or TY unchanged when it does not generalize)."
                             collect (intern (format "$d%s%d"
                                                     (tl-constraint-class c) i)))))
         (push (cons binding (cons kept dicts)) tl-elab-let-dicts)))
-    (tl-generalize ty env-tvars kept)))
+    (tl-generalize ty kept)))
 
 (defun tl-infer-ir-Setq (env expr)
   (let* ((name (nth 1 expr))

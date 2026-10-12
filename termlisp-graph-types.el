@@ -61,20 +61,22 @@
 
 (defun tl-gtype-instantiate (quantified node)
   "Copy NODE, replacing each variable node in QUANTIFIED with a fresh one.
-Non-quantified variables and shared compounds are reused."
-  (let ((map (make-hash-table :test #'eq)))
-    (dolist (v quantified)
-      (puthash v (tl-make-var-node (tl-node-head v)) map))
-    (cl-labels ((copy (n)
-                  (let ((n (tl-gnode-deref n)))
-                    (cond
-                     ((tl-node-var-p n)
-                      (or (gethash n map) n))
-                     ((tl-node-application n)
-                      (tl-make-node (tl-node-head n)
-                                    (mapcar #'copy (tl-node-children n)) t))
-                     (t n)))))
-      (copy node))))
+Non-quantified variables and shared compounds are reused.  This is
+`tl-instantiate-scheme' one level down: the same substitution built from
+the same `tl-fresh-instance-var', so a copy keeps the kind and the scope
+of the variable it stands for.
+The substitution is `tl-type-subst', which rebuilds through `tl-map-type'
+rather than walking the graph by hand.  Two things follow that a private
+walker got wrong.  A variable heading an application -- a higher-kinded
+one, the `f' of `(f a)' -- is substituted too, so instantiating a
+scheme like `forall f a. f a -> f a' copies both variables instead of
+leaving `f' shared between the two instantiations.  And the rebuild is
+memoized, so an equirecursive type, which the occurs check lets
+through, terminates."
+  (tl-type-subst node
+                 (mapcar (lambda (v)
+                           (cons (tl-gnode-deref v) (tl-fresh-instance-var v)))
+                         quantified)))
 
 (provide 'termlisp-graph-types)
 ;;; termlisp-graph-types.el ends here

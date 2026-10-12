@@ -37,9 +37,16 @@ disjoint from STATE/MEMO, which serve term rewriting.
 RIGID distinguishes a *bound* variable from an ordinary one.  A `Pi'
 binder introduces a variable that is already fixed by its binder, so
 traversal and substitution still act on it (VAR is set) but unification
-may only ever match it against itself -- binding it would be unsound."
+may only ever match it against itself -- binding it would be unsound.
+
+LEVEL records the generalization scope a variable was introduced in (see
+`tl-current-level'): nil for a variable that predates them all, and
+otherwise an integer that grows the deeper the scope sits.  It is what
+lets generalization ask \"was this variable already in scope here?\"
+without walking the environment, and what lets unification refuse to
+hand an outer variable an inner one."
   head children (application nil) (state :idle) memo
-  (var nil) (bind nil) (rank 0) (kind nil) (rigid nil))
+  (var nil) (bind nil) (rank 0) (kind nil) (rigid nil) (level nil))
 
 (cl-defstruct (tl-graph (:constructor tl-make-graph (root table)))
   "A term graph: ROOT node plus a sharing TABLE (sexp-key -> node)."

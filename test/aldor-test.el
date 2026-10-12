@@ -999,6 +999,86 @@ builtin operator mapping."
                           nil nil
                           (list (tl-constraint 'Eq (tl-tcon 'List (list a))))))))))
 
+;;; Generalization levels
+
+(defun tl-test--scheme-datum (src name)
+  "Evaluate SRC in a fresh elaborating prelude and render NAME's scheme.
+The variables of the rendered datum are renamed, since the reader would
+take a `?N' in the source for a character literal."
+  (let ((env (termlisp-make-env '(:elaborate t :type-check t))))
+    (termlisp-load-prelude env)
+    (termlisp-eval src env)
+    (tl-test--alpha
+     (tl-type-to-datum (tl-tscheme-type (gethash name (tl-env-type-env env)))))))
+
+(ert-deftest tl-level-records-the-introducing-scope ()
+  "A fresh variable records the scope that introduced it."
+  (should (= 1 (tl-node-level (tl-fresh-tvar))))
+  (let ((tl-current-level 4))
+    (should (= 4 (tl-node-level (tl-fresh-tvar)))))
+  ;; An explicit level is what gets recorded, not the ambient one.
+  (should (= 9 (tl-node-level (tl-fresh-tvar 9))))
+  ;; A variable made by hand has no level at all, and is treated as
+  ;; having come before every scope.
+  (should-not (tl-node-level (tl-make-var-node 'x))))
+
+(ert-deftest tl-level-generalizes-what-is-newer ()
+  "Generalization quantifies what the scope introduced, and nothing older.
+A variable introduced at level L is quantifiable by a generalization
+point at any level below L, and by none at L or above.  Entering a
+function body is what raises the level, so a `let' sitting in a body, at
+the same level as that body's own parameters, cannot quantify them --
+while one further out can."
+  (let* ((outer (tl-fresh-tvar 3))
+         (inner (tl-fresh-tvar 4))
+         (ty (tl-tarrow outer inner)))
+    ;; Below both, both are new here.
+    (let ((all (tl-generalized-vars ty 2)))
+      (should (memq outer all))
+      (should (memq inner all)))
+    ;; Between them, only the deeper one.
+    (should (equal (tl-generalized-vars ty 3) (list inner)))
+    ;; At the deepest level or beyond, neither is new.
+    (should (null (tl-generalized-vars ty 4)))
+    (should (null (tl-generalized-vars ty 5)))
+    ;; A hand-made variable carries no level and is never quantified.
+    (should (null (tl-generalized-vars (tl-make-var-node 'x) 2)))))
+
+(ert-deftest tl-level-prevents-scope-escape ()
+  "A `Let' cannot quantify a variable its enclosing lambda introduced.
+`z' is bound to `y', a parameter of `h', so `z' is monomorphic in `y''s
+type.  It used to be quantified anyway: whether a variable counted as
+ambient was asked of the type environment, which never mentions a
+lambda's own parameters, so nothing appeared to be relying on `y''s
+variable and `z' came out as `forall a. a' inside `h'.  Both `(z 1)'
+and `(z \"s\")' then went through."
+  ;; `z' is `y', so they share one variable: `h' is `a -> a'.
+  (should (equal (tl-test--scheme-datum "(define (h y) (Let ((z y)) z))" 'h)
+                 '(-> %1 %1)))
+  ;; Applying `z' constrains `y' rather than being shrugged off.
+  (should (equal (tl-test--scheme-datum
+                  "(define (h y) (Let ((z y)) (z 1)))" 'h)
+                 '(-> (-> Int %1) %1)))
+  ;; Using `z' at two types is an error, as it has to be.
+  (should (string-match-p
+           "Cannot apply"
+           (cadr (should-error
+                  (tl-test--scheme-datum
+                   "(define (h y) (Let ((z y)) (let ((u (z 1))) (z \"s\"))))"
+                   'h))))))
+
+(ert-deftest tl-level-keeps-let-polymorphism ()
+  "A `Let' still quantifies what its own expression introduced."
+  ;; The lambda in the binding expression sits inside the `Let', so its
+  ;; parameter may be quantified: `id' is used at two types.
+  (should (equal (tl-test--scheme-datum
+                  "(define (k x) (Let ((id (lambda (v) v))) (let ((u (id 1))) (id \"s\"))))"
+                  'k)
+                 '(-> %1 String)))
+  ;; A definition quantifies its own parameters, being a function body.
+  (should (equal (tl-test--scheme-datum "(define (id2 v) v)" 'id2)
+                 '(-> %1 %1))))
+
 ;;; Kind checking
 
 (ert-deftest tl-kind-check ()

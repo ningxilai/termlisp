@@ -82,9 +82,24 @@
   (let ((d (tl-type-deref x)))
     (and (tl-node-p d) (tl-node-var d))))
 
-(defun tl-fresh-tvar (&optional _level)
-  "Return a fresh type variable node."
-  (tl-make-var-node (gensym "t")))
+(defvar tl-current-level 1
+  "The generalization scope currently being inferred.
+Entering a function body raises it, and it is back down again once that
+body is done.  A type variable records the level it was introduced at
+\(see `tl-node-level'), which decides two things about it.  An enclosing
+generalization point quantifies it, because a deeper level means it was
+created inside the body being generalized.  And nothing shall bind it to
+a term naming a variable from a still deeper scope, which would let an
+inner variable escape outwards into a place that outlives it.")
+
+(defun tl-fresh-tvar (&optional level)
+  "Return a fresh type variable node introduced at LEVEL.
+LEVEL defaults to `tl-current-level', the scope being inferred.  That
+default is what makes the variable generalizable by every enclosing
+`let', and by no scope outside the one that introduced it."
+  (let ((node (tl-make-var-node (gensym "t"))))
+    (setf (tl-node-level node) (or level tl-current-level))
+    node))
 
 (defun tl-tarrow (a b) (tl-tcon '-> (list a b)))
 (defun tl-tint () (tl-tcon 'Int nil))
@@ -406,9 +421,19 @@ inserted without further traversal.  Cycle-safe (equirecursive types)."
    (lambda (tv) (let ((cell (assq tv sub))) (if cell (cdr cell) tv)))
    type))
 
-(defun tl-generalized-vars (type env-tvars)
-  "Return the type variables of TYPE that are not in ENV-TVARS."
-  (cl-remove-if (lambda (v) (memq v env-tvars)) (tl-free-tvars type)))
+(defun tl-generalized-vars (type &optional level)
+  "Return the type variables of TYPE that are generalizable at LEVEL.
+LEVEL defaults to `tl-current-level'.  A variable qualifies when it was
+introduced *inside* the scope being generalized -- a deeper level says
+exactly that: it did not exist when the scope opened, so nothing outside
+the scope can be relying on it.  A variable carrying no level, one made
+directly rather than through `tl-fresh-tvar', predates every scope and
+is therefore never quantified."
+  (let ((at (or level tl-current-level)))
+    (cl-remove-if (lambda (v)
+                    (let ((l (tl-node-level v)))
+                      (null (and l (> l at)))))
+                  (tl-free-tvars type))))
 
 (defun tl-constraint-eq (a b)
   "Structural equality of two predicates (after zonking)."
@@ -669,10 +694,12 @@ see the shape of it in five lines and take any single stage on its own:
     (tl-constraints-check env retained deferred reject-ambiguous)
     (tl-constraints-dedup (nreverse retained))))
 
-(defun tl-generalize (type env-tvars &optional constraints)
-  "Generalize TYPE, quantifying tvars not in ENV-TVARS, keeping CONSTRAINTS
-whose type mentions a quantified variable."
-  (let* ((vars (tl-generalized-vars type env-tvars))
+(defun tl-generalize (type &optional constraints level)
+  "Generalize TYPE, quantifying the variables generalizable at LEVEL,
+keeping CONSTRAINTS whose type mentions a quantified variable.  LEVEL
+defaults to `tl-current-level'; `tl-generalized-vars' is what decides
+which variables qualify."
+  (let* ((vars (tl-generalized-vars type level))
          (kept (cl-remove-if-not
                 (lambda (c)
                   (cl-intersection vars (tl-free-tvars (tl-constraint-type c))))
@@ -680,17 +707,6 @@ whose type mentions a quantified variable."
     (tl-tscheme vars (tl-map-type #'identity type)
                 (tl-remove-duplicates-by-key kept
                                              #'tl-constraint-canonical-key #'equal))))
-
-(defun tl-env-free-tvars (env)
-  "Free type variables of the type environment of ENV."
-  (let ((acc nil))
-    (maphash (lambda (_name sc)
-               (let ((vars (tl-tscheme-vars sc)))
-                 (dolist (v (tl-free-tvars (tl-tscheme-type sc)))
-                   (unless (memq v vars)
-                     (cl-pushnew v acc :test #'eq)))))
-             (tl-env-type-env env))
-    acc))
 
 (defvar tl-infer-constraints nil
   "Dynamically bound list of constraints collected during inference.
@@ -728,20 +744,26 @@ recorded method-call constraints.")
   "Record constraint C in the current `tl-infer-constraints'."
   (push c tl-infer-constraints))
 
+(defun tl-fresh-instance-var (v)
+  "Return a fresh variable standing in for the quantified variable V.
+It carries V's kind, so a higher-kinded variable stays higher-kinded.
+Its level sits one deeper than the scope doing the instantiating: what
+an instantiation introduces is known to no one yet, so every enclosing
+`let' is free to quantify it, which is what leaves `let f = g' as
+polymorphic as it is in Haskell."
+  (let ((nv (tl-fresh-tvar (1+ tl-current-level))))
+    (when (tl-node-kind v)
+      (setf (tl-node-kind nv) (tl-node-kind v)))
+    nv))
+
 (defun tl-instantiate-scheme (scheme)
   "Instantiate SCHEME with fresh type variables.
 Return `(TYPE . CONSTRAINTS)', freshening the type and any constraints
 with the same substitution.  A non-scheme is returned as
 `(SCHEME . nil)'."
   (if (tl-tscheme-p scheme)
-      (let ((sub (mapcar
-                  (lambda (v)
-                    (let ((nv (tl-fresh-tvar)))
-                      ;; carry the variable's kind to the fresh copy.
-                      (when (tl-node-kind v)
-                        (setf (tl-node-kind nv) (tl-node-kind v)))
-                      (cons v nv)))
-                  (tl-tscheme-vars scheme))))
+      (let ((sub (mapcar (lambda (v) (cons v (tl-fresh-instance-var v)))
+                         (tl-tscheme-vars scheme))))
         (cons (tl-type-subst (tl-tscheme-type scheme) sub)
               (mapcar (lambda (c)
                         (tl-constraint (tl-constraint-class c)
@@ -931,8 +953,12 @@ statement and data forms the Aldor lowering emits.")
 
 (defun tl-infer-lambda (env params body)
   "Infer `(lambda PARAMS BODY)'."
+  ;; A lambda is a function body, so it opens a generalization scope:
+  ;; the parameters introduced here are generalizable by a `let' in the
+  ;; body, and by nothing further out.
   (let ((ptypes nil)
-        (pbinds nil))
+        (pbinds nil)
+        (tl-current-level (1+ tl-current-level)))
     (dolist (p params)
       (let ((tv (tl-fresh-tvar)))
         (push (cons p tv) pbinds)
@@ -1149,7 +1175,8 @@ a hard failure.")
     (let ((bindings nil))
       (if (catch 'tl-clause-inconsistent
             (dolist (clause clauses)
-              (let* ((params (car clause))
+              (let* ((tl-current-level (1+ tl-current-level))
+                     (params (car clause))
                      (body (cdr clause))
                      (ptypes (mapcar (lambda (_) (tl-fresh-tvar)) params))
                      (binds nil)
@@ -1192,8 +1219,7 @@ a hard failure.")
           ;; it must not count as an ambient variable (which would stop
           ;; generalization of the very variables it mentions).
           (remhash name tyenv)
-          (let* ((env-tvars (tl-env-free-tvars env))
-                 (gen-vars (tl-generalized-vars final env-tvars)))
+          (let* ((gen-vars (tl-generalized-vars final)))
             (if sig
                 (let* ((u (tl-unify-types final (tl-skolemize-scheme sig) nil))
                        (fb (tl-compose-bindings bindings (cdr u))))
@@ -1207,7 +1233,7 @@ a hard failure.")
               (when (fboundp 'tl-kind-check)
                 (tl-kind-check env final))
               (let ((kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
-                (puthash name (tl-generalize final env-tvars kept) tyenv)))))))))
+                (puthash name (tl-generalize final kept) tyenv)))))))))
 
 (defun tl-syntactic-value-p (expr)
   "Return non-nil if EXPR is a syntactic value (value restriction)."
@@ -1219,8 +1245,7 @@ a hard failure.")
   (let* ((tl-infer-constraints nil)
          (r (tl-infer (cons nil env) expr)))
     (let* ((ty (tl-apply-bindings (car r) (cdr r)))
-           (bindings (cdr r))
-           (env-tvars (tl-env-free-tvars env)))
+           (bindings (cdr r)))
       (setq tl-elab-bindings bindings)
       (if (gethash name (tl-env-sig-env env))
           (let* ((sig (gethash name (tl-env-type-env env)))
@@ -1234,9 +1259,9 @@ a hard failure.")
             (puthash name sig (tl-env-type-env env))
             ty)
         (if (tl-syntactic-value-p expr)
-            (let* ((gen-vars (tl-generalized-vars ty env-tvars))
+            (let* ((gen-vars (tl-generalized-vars ty))
                    (kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
-              (puthash name (tl-generalize ty env-tvars kept) (tl-env-type-env env)))
+              (puthash name (tl-generalize ty kept) (tl-env-type-env env)))
           (tl-close-constraints env nil tl-infer-constraints bindings)
           (puthash name (tl-tscheme nil ty) (tl-env-type-env env)))
         ty))))
