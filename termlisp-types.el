@@ -995,6 +995,72 @@ unification wrote the answer straight into the hole itself."
                                   (tl-type-to-datum (tl-gnode-deref h)))))
             lines))))
 
+(defvar tl-infer-forward-names nil
+  "Names the unit being checked declares in a later form, or nil.
+A hash table mapping each such name to t.  A file, or a string holding
+several top-level forms, may mention a definition before the form that
+introduces it; inference cannot know that name's type yet, so it hands
+out a fresh variable, exactly as it once did for every unknown symbol.
+What changed is the scope of the allowance: outside such a unit, or for
+a name that no upcoming form declares, an unresolved symbol is an error
+rather than an unconstrained variable.  That is what made `(nosuch 1)'
+typecheck and then evaluate to a stuck form -- an unbound head
+constrains nothing, so nothing downstream was checked either.")
+
+(defun termlisp--declared-names (form)
+  "Return the names FORM declares at the top level, or nil for none.
+Only the forms that introduce a name a later form could refer to
+matter: `define', both `datatype' spellings, `datatype-extension' and a
+`:' signature.  Class declarations are deliberately absent -- a method's
+scheme is looked up through `tl-env-method-env' before this point, and
+a class never appears in term position for a forward reference to
+rescue."
+  (when (consp form)
+    (cond
+     ((eq (car form) 'define)
+      (let ((target (cadr form)))
+        (cond ((consp target) (and (symbolp (car target)) (list (car target))))
+              ((symbolp target) (list target)))))
+     ((eq (car form) 'datatype)
+      (let* ((rest (cdr form))
+             (rest (if (eq (car rest) 'open) (cdr rest) rest))
+             (head (car rest)))
+        (cons (if (consp head) (car head) head)
+              (delq nil (mapcar (lambda (c) (and (consp c) (car c)))
+                                (cdr rest))))))
+     ((eq (car form) 'datatype-extension)
+      (cons (cadr form)
+            (mapcar (lambda (c) (and (consp c) (car c))) (cddr form))))
+     ((eq (car form) ':)
+      (and (symbolp (cadr form)) (list (cadr form))))
+     (t nil))))
+
+(defun termlisp-collect-forward-names (forms)
+  "Return a hash of every name FORMS declares, merged with any outer set.
+Merging matters because a driver that already knows its whole unit --
+a file being loaded -- may still hand a multi-form string to
+`termlisp-eval'.  Replacing the outer set there would make a legal
+forward reference inside the file fail for reasons the string cannot
+see."
+  (let ((tbl (make-hash-table :test #'eq)))
+    (when tl-infer-forward-names
+      (maphash (lambda (k v) (puthash k v tbl)) tl-infer-forward-names))
+    (dolist (form forms)
+      (dolist (name (termlisp--declared-names form))
+        (when (symbolp name) (puthash name t tbl))))
+    tbl))
+
+(defun termlisp-collect-file-forward-names (file)
+  "Return a hash of the names FILE declares, or nil if FILE cannot be read.
+FILE may be an ordinary Emacs Lisp file whose top-level forms are
+term-lisp declarations wrapped in the `datatype'/`define' macros.  A
+file that uses reader syntax the term-lisp reader rejects yields nil
+rather than a parse error: guessing at forward references is an
+optimization, and refusing to load over it would be the wrong trade."
+  (condition-case nil
+      (termlisp-collect-forward-names (termlisp-parse-file file))
+    (error nil)))
+
 (defun tl-infer-symbol (env sym)
   "Infer the type of a bare symbol SYM."
   (let ((cell (assq sym (tl-tenv-locals env)))
@@ -1020,7 +1086,30 @@ unification wrote the answer straight into the hole itself."
         (cons (car r) nil)))
      ((gethash sym tl-builtin-types)
       (cons (tl-instantiate (gethash sym tl-builtin-types)) nil))
-     (t (cons (tl-fresh-tvar) nil)))))
+     ;; A type name in term position.  The README's `(f Void)' passes
+     ;; the uninhabited type itself as the argument, so a declared
+     ;; datatype is a value here -- and its type is exactly itself, one
+     ;; fresh variable per parameter.  Saying so is what keeps `(car
+     ;; Bool)' an error: the old unconstrained fallback let any type
+     ;; name stand for any argument type at all.
+     ((and base (gethash sym (tl-env-datatypes base)))
+      (let* ((spec (gethash sym (tl-env-datatypes base)))
+             (params (plist-get spec :params)))
+        (cons (tl-tcon sym (and params
+                                (mapcar (lambda (_p) (tl-fresh-tvar)) params)))
+              nil)))
+     ;; A name some later form in this unit declares: type it as an
+     ;; unconstrained variable, because there is no scheme to read yet.
+     ((and tl-infer-forward-names (gethash sym tl-infer-forward-names))
+      (cons (tl-fresh-tvar) nil))
+     ;; Nothing knows this name.  It used to become a fresh variable,
+     ;; which is how `(nosuch 1)' typechecked and then evaluated to a
+     ;; stuck form: an unbound head constrains nothing, so every
+     ;; argument mismatch downstream was silently accepted too.  A name
+     ;; the environment cannot resolve is an error at the point it is
+     ;; mentioned, not a promise that later code will supply it.
+     (t (signal 'termlisp-type-error
+                (list (format "Unknown symbol: %S" sym)))))))
 
 (defun tl-infer-lambda (env params body)
   "Infer `(lambda PARAMS BODY)'."
@@ -1522,8 +1611,10 @@ the elaborator inserts as the first argument of overloaded method calls."
 
 (defun termlisp-typecheck-def (env string)
   "Typecheck all top-level forms in STRING into ENV.  Return ENV."
-  (dolist (form (termlisp-parse string) env)
-    (tl-typecheck-form env form)))
+  (let* ((forms (termlisp-parse string))
+         (tl-infer-forward-names (termlisp-collect-forward-names forms)))
+    (dolist (form forms env)
+      (tl-typecheck-form env form))))
 
 (defun termlisp-typecheck (string &optional env)
   "Typecheck STRING in ENV (fresh if nil).  Return ENV; signal on error."

@@ -170,9 +170,12 @@ to send."
 A form with holes never reaches here: the checker signals `termlisp-hole'
 with its goals before anything is run, and `termlisp-repl--send' shows
 them.  Return nil when INPUT holds no top-level forms."
-  (let ((env termlisp-repl--env)
-        (value nil)
-        (forms (termlisp-parse input)))
+  (let* ((env termlisp-repl--env)
+         (value nil)
+         (forms (termlisp-parse input))
+         ;; One REPL submission is one unit, so a line may declare a
+         ;; name it uses earlier in that same line.
+         (tl-infer-forward-names (termlisp-collect-forward-names forms)))
     (when forms
       (dolist (form forms value)
         (setq value (termlisp-eval-form form env)))

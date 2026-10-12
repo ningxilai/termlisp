@@ -483,5 +483,43 @@ still matches, still binds nothing, and leaves no goal behind."
                  "2"))
   (should-not (tl-ch--goals "(define (f _ x) x) (f 1 2)")))
 
+;;; An unknown name is an error, a forward reference is not
+
+;; Inference used to give every unresolved symbol a fresh variable.  An
+;; unbound head constrains nothing, so `(nosuch 1)' typechecked and then
+;; evaluated to a stuck form -- and so did every argument mismatch
+;; downstream of it.  What keeps `(state-ap)' in the prelude working is
+;; not that leniency but its scope: the allowance now belongs to names
+;; some later form in the same unit really does declare.
+
+(tl-test-reject tl-ch-an-unknown-head-is-rejected "(nosuch 1)"
+                "Unknown symbol: nosuch" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-an-unknown-bare-name-is-rejected "nosuch"
+                "Unknown symbol: nosuch" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-an-unknown-inside-a-lambda-is-rejected
+                "(lambda (x) (nosuch x))"
+                "Unknown symbol: nosuch" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-an-unknown-argument-is-rejected "(+ nosuch 1)"
+                "Unknown symbol: nosuch" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-a-forward-reference-in-one-input-works
+              "(define (f x) (g x)) (define (g x) (+ x 1)) (f 41)"
+              "42" '(:type-check t :elaborate t))
+(tl-test-eval tl-ch-a-forward-referenced-datatype-works
+              "(define (mk x) (Leaf x)) (datatype Tree (Leaf Int)) (mk 1)"
+              "(Leaf 1)" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-one-form-cannot-forward-reference
+                "(define (f x) (g x))"
+                "Unknown symbol: g" '(:type-check t :elaborate t))
+
+;; A datatype name in term position still denotes itself -- that is what
+;; the README's `(f Void)' relies on -- but now with its own type
+;; rather than an unconstrained one, so it is checked where it is used.
+(tl-test-eval tl-ch-a-type-name-as-a-witness-checks
+              "(: f (Void -> Int)) (define (f x) 1) (f Void)"
+              "1" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-a-type-name-cannot-stand-for-any-type "(car Bool)"
+                "Cannot apply" '(:type-check t :elaborate t))
+
 (provide 'curry-howard-test)
 ;;; curry-howard-test.el ends here

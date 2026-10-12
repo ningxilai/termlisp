@@ -522,9 +522,13 @@ the elaborator.  A `do' nested inside a larger expression is instead
 desugared at evaluation time by `tl-run' and is therefore not elaborated:
 nested type-directed `do' (without an explicit monad operand) remains a
 known limitation."
-  (let ((env (or env (termlisp-make-env)))
-        (result nil))
-    (dolist (form (termlisp-parse string) result)
+  (let* ((env (or env (termlisp-make-env)))
+         (forms (termlisp-parse string))
+         ;; One input is one unit: a name declared by a later form in
+         ;; STRING is knowable here even though it is not yet in ENV.
+         (tl-infer-forward-names (termlisp-collect-forward-names forms))
+         (result nil))
+    (dolist (form forms result)
       (setq result (termlisp-eval-form form env)))))
 
 (defun termlisp--ensure-magic-string (file)
@@ -551,7 +555,10 @@ Writes the file back only when the magic string is missing."
   "Load a `.tls' FILE into ENV (or a fresh env), ensuring its magic string.
 Returns ENV."
   (termlisp--ensure-magic-string file)
-  (let ((termlisp--load-env (or env (termlisp-make-env))))
+  (let* ((termlisp--load-env (or env (termlisp-make-env)))
+         ;; The whole file is one unit, so a `define' may mention a name
+         ;; a later `define' declares.
+         (tl-infer-forward-names (termlisp-collect-file-forward-names file)))
     (load (expand-file-name file) nil t)
     termlisp--load-env))
 
@@ -566,7 +573,9 @@ Loading goes through `load', so `termlisp-load' must be required for the
   (let ((termlisp--load-env (or env (termlisp-make-env)))
         (file (expand-file-name "termlisp-prelude.tls" termlisp--directory)))
     (termlisp--ensure-magic-string file)
-    (load file nil t)
+    (let ((tl-infer-forward-names
+           (termlisp-collect-file-forward-names file)))
+      (load file nil t))
     termlisp--load-env))
 
 (provide 'termlisp-eval)
