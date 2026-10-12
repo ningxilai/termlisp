@@ -177,9 +177,21 @@ them.  Return nil when INPUT holds no top-level forms."
          ;; name it uses earlier in that same line.
          (tl-infer-forward-names (termlisp-collect-forward-names forms)))
     (when forms
-      (dolist (form forms value)
-        (setq value (termlisp-eval-form form env)))
-      (termlisp-value->string value))))
+      (unwind-protect
+          (prog1
+              (progn
+                (dolist (form forms value)
+                  (setq value (termlisp-eval-form form env)))
+                (termlisp-value->string value))
+            ;; A submission is this driver's batch, so this is the first
+            ;; moment every clause of a function typed in on this line is
+            ;; present and a coverage check can mean anything.
+            (tl-run-post-batch))
+        ;; A submission that failed partway left a function holding only
+        ;; some of its clauses.  Reporting it now would name a clause the
+        ;; user has not typed yet, so the queue is dropped instead -- the
+        ;; same half-written state `tl-run-post-batch' refuses to report.
+        (setq tl-coverage-announcements nil)))))
 
 (defun termlisp-repl--error-message (err)
   "Return a short display string for condition ERR."

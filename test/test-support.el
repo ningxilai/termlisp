@@ -49,6 +49,44 @@ may be nil to accept the defaults.  The failure must carry the
        (should (string-prefix-p "ERR:" got))
        (should (string-match-p (regexp-quote ,needle) got)))))
 
+(defun tl-test--coverage (src opts)
+  "Evaluate SRC in a fresh prelude environment built from OPTS, then check coverage.
+Return \"ok\" when neither evaluation nor the coverage check reports
+anything, or \"ERR:<message>\" when either does.  Coverage is checked
+after the whole submission, which is how the REPL and the file loader
+behave; `termlisp-eval' leaves the queue to whoever drove it, so this
+flushes the way they do.  The queue is dropped on the way out, so a case
+that fails partway cannot report a half-written function into the next
+one."
+  (let ((env (termlisp-load-prelude (termlisp-make-env opts))))
+    (prog1
+        (condition-case e
+            (progn (termlisp-eval src env)
+                   (tl-run-post-batch)
+                   "ok")
+          (error (format "ERR:%s"
+                         (if (stringp (cadr e)) (cadr e)
+                           (error-message-string e)))))
+      (setq tl-coverage-announcements nil))))
+
+(defmacro tl-test-covers (name src opts)
+  "Define ERT test NAME asserting SRC is accepted under coverage checking.
+SRC is evaluated in a fresh prelude environment built from OPTS, which
+must switch `:coverage' on."
+  `(ert-deftest ,name ()
+     ,(format "Assert %S is accepted under coverage checking." src)
+     (should (equal (tl-test--coverage ,src ,opts) "ok"))))
+
+(defmacro tl-test-coverage-reject (name src needle opts)
+  "Define ERT test NAME asserting SRC's coverage check mentions NEEDLE.
+SRC is evaluated in a fresh prelude environment built from OPTS, which
+must switch `:coverage' on."
+  `(ert-deftest ,name ()
+     ,(format "Assert %S's coverage check mentions %S." src needle)
+     (let ((got (tl-test--coverage ,src ,opts)))
+       (should (string-prefix-p "ERR:" got))
+       (should (string-match-p (regexp-quote ,needle) got)))))
+
 (defun tl-test--alpha (datum)
   "Rename the ?N variables of DATUM to %1 %2 ... in first-appearance order.
 The numbering `tl-type-to-datum' assigns follows traversal order, which

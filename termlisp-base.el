@@ -94,6 +94,32 @@ constructor."
         (plist-get plist key)
       default)))
 
+(defvar tl-coverage-announcements nil
+  "Definitions announced for coverage checking since the last flush.
+Each entry is a list (ENV NAME TYPE), pushed as each `define' finishes
+typechecking.  The check waits rather than running immediately because
+a function's clauses may be spread over several `define' forms -- the
+bundled `if' is, and so is anything written clause by clause -- and
+checking after each one would report a half-written function as
+incomplete.  `termlisp-load-prelude' binds this to nil, so the bundled
+library is never reported: its partial functions are deliberate.")
+
+(defvar tl-post-batch-hook nil
+  "Function called once a batch of definitions has been read.
+Called with the accumulated `tl-coverage-announcements'.  Coverage
+checking lives in a later layer than the typechecker, and this hook is
+how that layer is reached without the typechecker depending on it,
+exactly as `tl-unify-reduce' reaches the normaliser.")
+
+(defun tl-run-post-batch ()
+  "Run `tl-post-batch-hook' over what has been announced, then clear it.
+Clearing happens before the hook runs, so an error raised by the hook
+cannot leave a stale definition queued for the next batch."
+  (let ((announced tl-coverage-announcements))
+    (setq tl-coverage-announcements nil)
+    (when tl-post-batch-hook
+      (funcall tl-post-batch-hook announced))))
+
 (defun tl-env-resolve-current (env)
   "Return the current environment linked from ENV, or ENV itself."
   (or (tl-env-current env) env))

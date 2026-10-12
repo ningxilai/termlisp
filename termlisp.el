@@ -56,6 +56,10 @@
 (require 'termlisp-resolve)
 (require 'termlisp-elaborate)
 
+;;; Coverage
+
+(require 'termlisp-exhaust)
+
 ;;; Evaluation
 
 (require 'termlisp-eval)

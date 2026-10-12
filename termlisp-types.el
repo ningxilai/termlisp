@@ -1520,7 +1520,19 @@ and instance implementations are checked against that signature."
              (clauses (append (gethash name (tl-env-clauses env))
                               (list (cons params body)))))
         (puthash name clauses (tl-env-clauses env))
-        (tl-infer-define-clauses env name clauses)))
+        (prog1 (tl-infer-define-clauses env name clauses)
+          ;; Announce the definition for a coverage check, if one was
+          ;; asked for.  Reading the type back out of the environment
+          ;; rather than passing it along means what gets announced is
+          ;; what every other caller sees: the signature's scheme when
+          ;; there was one, and the inferred one otherwise.  The check
+          ;; itself waits until the batch ends, because a function's
+          ;; clauses may be spread over several forms.
+          (when (tl-env-option env :coverage)
+            (let ((sc (gethash name (tl-env-type-env env))))
+              (when sc
+                (push (list env name (tl-tscheme-type sc))
+                      tl-coverage-announcements)))))))
      (t (tl-infer-constant env target (caddr form))))))
 
 (defun tl-class-parse-fundep (fd pindex)
@@ -1614,7 +1626,12 @@ the elaborator inserts as the first argument of overloaded method calls."
   (let* ((forms (termlisp-parse string))
          (tl-infer-forward-names (termlisp-collect-forward-names forms)))
     (dolist (form forms env)
-      (tl-typecheck-form env form))))
+      (tl-typecheck-form env form))
+    ;; STRING is one batch, so this is the first moment every definition
+    ;; in it has all of its clauses and a coverage check can mean
+    ;; anything.  A form that fails leaves nothing queued: the driver
+    ;; clears the queue before the check runs.
+    (tl-run-post-batch)))
 
 (defun termlisp-typecheck (string &optional env)
   "Typecheck STRING in ENV (fresh if nil).  Return ENV; signal on error."

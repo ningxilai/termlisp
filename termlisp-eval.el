@@ -560,6 +560,10 @@ Returns ENV."
          ;; a later `define' declares.
          (tl-infer-forward-names (termlisp-collect-file-forward-names file)))
     (load (expand-file-name file) nil t)
+    ;; A file is one batch, so this is the first moment every definition
+    ;; in it has all of its clauses and a coverage check can mean
+    ;; anything.
+    (tl-run-post-batch)
     termlisp--load-env))
 
 (defconst termlisp--directory
@@ -571,7 +575,13 @@ Returns ENV."
 Loading goes through `load', so `termlisp-load' must be required for the
 `datatype'/`define'/`class'/`instance' macros to be defined."
   (let ((termlisp--load-env (or env (termlisp-make-env)))
-        (file (expand-file-name "termlisp-prelude.tls" termlisp--directory)))
+        (file (expand-file-name "termlisp-prelude.tls" termlisp--directory))
+        ;; The prelude is a fixed library whose partial functions are
+        ;; deliberate -- `head' and `tail' match only `Cons', and `if' is
+        ;; written clause by clause -- so announcing into a throwaway
+        ;; queue drops them instead of reporting them.  Nothing here
+        ;; flushes, so the queue goes with this binding.
+        (tl-coverage-announcements nil))
     (termlisp--ensure-magic-string file)
     (let ((tl-infer-forward-names
            (termlisp-collect-file-forward-names file)))

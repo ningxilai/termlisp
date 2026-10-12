@@ -521,5 +521,143 @@ still matches, still binds nothing, and leaves no goal behind."
 (tl-test-reject tl-ch-a-type-name-cannot-stand-for-any-type "(car Bool)"
                 "Cannot apply" '(:type-check t :elaborate t))
 
+;;; Exhaustiveness and redundancy (G7)
+
+;; Coverage checking is opt-in: `head', `tail' and `if' in the bundled
+;; prelude are partial on purpose, so the default environment must leave
+;; them -- and anything else written that way -- alone.
+(defconst tl-ch-cov-opts '(:type-check t :elaborate t :coverage t)
+  "Options that switch coverage checking on for a test.")
+
+(tl-test-covers tl-ch-cov-exhaustive-bool
+                "(define (f True) 1) (define (f False) 2) f"
+                tl-ch-cov-opts)
+
+(tl-test-coverage-reject tl-ch-cov-missing-constructor-names-itself
+                         "(define (f True) 1) f"
+                         "no case for False" tl-ch-cov-opts)
+
+(tl-test-covers tl-ch-cov-a-wildcard-always-covers
+                "(define (f x) 1) f" tl-ch-cov-opts)
+
+(tl-test-coverage-reject tl-ch-cov-redundant-clause
+                         "(define (f True) 1) (define (f x) 2) (define (f False) 3) f"
+                         "clause 3 is unreachable" tl-ch-cov-opts)
+
+;; An `or' matches the union of its alternatives, so a row carrying one
+;; stands for one row per alternative rather than for none of them.
+(tl-test-covers tl-ch-cov-or-pattern-covers-the-union
+                "(define (f (or True False)) 1) f" tl-ch-cov-opts)
+(tl-test-coverage-reject tl-ch-cov-or-pattern-still-leaves-a-gap
+                         "(define (f (or True False)) 1) (define (f x) 2) f"
+                         "unreachable" tl-ch-cov-opts)
+
+;; The witness must name what is actually missing, at the depth it is
+;; missing at: a one-element list, not merely "some Cons".
+(tl-test-covers tl-ch-cov-nested-list-is-exhaustive
+                "(define (f Nil) 1) (define (f (Cons x Nil)) 2) (define (f (Cons x (Cons y zs))) 3) f"
+                tl-ch-cov-opts)
+(tl-test-coverage-reject tl-ch-cov-nested-list-witness-names-the-depth
+                         "(define (f Nil) 1) (define (f (Cons x (Cons y zs))) 3) f"
+                         "(Cons _ Nil)" tl-ch-cov-opts)
+
+;; A guard is a runtime predicate the checker cannot evaluate, so it
+;; contributes nothing to coverage -- and the report says so, because the
+;; guarded row might well have closed the gap.
+(tl-test-coverage-reject tl-ch-cov-a-guard-is-never-credited
+                         "(define (f (guard x True)) 1) f"
+                         "coverage undecidable here" tl-ch-cov-opts)
+
+;; Literals are never enumerable as a type, so an all-literal column can
+;; never be shown complete even over the integers it happens to list.
+(tl-test-coverage-reject tl-ch-cov-a-literal-column-is-never-coverable
+                         "(define (f (:literal 1)) 1) f"
+                         "no case for _" tl-ch-cov-opts)
+(tl-test-covers tl-ch-cov-a-literal-with-a-wildcard-covers
+                "(define (f (:literal 1)) 1) (define (f x) 2) f"
+                tl-ch-cov-opts)
+
+;; Several parameters are several columns, and a witness names one per.
+(tl-test-covers tl-ch-cov-two-parameters
+                "(define (f True False) 1) (define (f True x) 2) (define (f x y) 3) f"
+                tl-ch-cov-opts)
+(tl-test-coverage-reject tl-ch-cov-two-parameters-leave-one-open
+                         "(define (f True False) 1) (define (f True x) 2) f"
+                         "no case for False _" tl-ch-cov-opts)
+
+;; Off by default, so a partial function is not an error just because
+;; the checker exists -- it still runs.
+(tl-test-eval tl-ch-cov-off-leaves-a-partial-function-alone
+              "(define (f True) 1) (f True)"
+              "1" '(:type-check t :elaborate t))
+
+;; An indexed family is covered only as far as its index allows: at
+;; `Succ k' only `VCons' can reach the value, so one clause is enough,
+;; while an unknown index admits `VNil' too and the same clause is a gap.
+(tl-test-covers tl-ch-cov-gadt-append-is-exhaustive
+                "(: appd (-> (n m : Nat) (Vec a n) (Vec a m) (Vec a (plus n m))))
+                 (define (appd VNil ys) ys)
+                 (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))
+                 appd"
+                tl-ch-cov-opts)
+(tl-test-coverage-reject tl-ch-cov-gadt-append-missing-nil
+                         "(: appd (-> (n m : Nat) (Vec a n) (Vec a m) (Vec a (plus n m))))
+                          (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))
+                          appd"
+                         "no case for VNil" tl-ch-cov-opts)
+(tl-test-covers tl-ch-cov-gadt-a-concrete-index-narrows-the-set
+                "(: vhd (-> (k : Nat) (Vec Int (Succ k)) Int))
+                 (define (vhd (VCons x xs)) x)
+                 vhd"
+                tl-ch-cov-opts)
+(tl-test-coverage-reject tl-ch-cov-gadt-an-unknown-index-admits-more
+                         "(: vhd (-> (n : Nat) (Vec Int n) Int))
+                          (define (vhd (VCons x xs)) x)
+                          vhd"
+                         "no case for VNil" tl-ch-cov-opts)
+(tl-test-coverage-reject tl-ch-cov-gadt-redundant-clause
+                         "(: vhd (-> (k : Nat) (Vec Int (Succ k)) Int))
+                          (define (vhd (VCons x xs)) x)
+                          (define (vhd (VCons x xs)) x)
+                          vhd"
+                         "clause 2 is unreachable" tl-ch-cov-opts)
+
+;; One REPL submission is one coverage batch, so a report arrives at the
+;; end of the submission that wrote the clauses -- not partway through a
+;; function whose remaining clauses have not been typed yet.
+(ert-deftest tl-ch-cov-repl-reports-per-submission ()
+  "The gap is reported at the end of the submission that wrote the clauses."
+  (let ((termlisp-repl--env
+         (termlisp-load-prelude
+          (termlisp-make-env '(:type-check t :elaborate t :coverage t)))))
+    (should (string-match-p
+             "no case for False"
+             (termlisp-repl--error-message
+              (should-error (termlisp-repl--eval-string "(define (f True) 1) f")
+                            :type 'termlisp-type-error))))
+    ;; The next submission starts from an empty queue.
+    (should (equal (termlisp-repl--eval-string
+                    "(define (g True) 1) (define (g False) 2) (g True)")
+                   "1"))))
+
+(ert-deftest tl-ch-cov-repl-drops-a-failed-submission ()
+  "A submission that fails partway reports nothing, here or later.
+The first form announced a clause and the second failed.  Were the
+announcement to survive, the next submission would report a function the
+user is not working on, and would report it while it is still half
+written."
+  (let ((termlisp-repl--env
+         (termlisp-load-prelude
+          (termlisp-make-env '(:type-check t :elaborate t :coverage t)))))
+    (should (string-match-p
+             "Unknown symbol"
+             (termlisp-repl--error-message
+              (should-error
+               (termlisp-repl--eval-string "(define (h True) 1) (define (h True) nope)")
+               :type 'termlisp-type-error))))
+    (should (equal (termlisp-repl--eval-string
+                    "(define (g True) 1) (define (g False) 2) (g True)")
+                   "1"))))
+
 (provide 'curry-howard-test)
 ;;; curry-howard-test.el ends here
