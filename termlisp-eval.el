@@ -401,20 +401,39 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
         value))))
 
 (defun tl-eval-datatype (env form)
-  "Handle `(datatype [open] NAME (CON ARGTYPE...) ...)' in ENV.
+  "Handle `(datatype [open] HEAD (CON ARGTYPE...) ...)' in ENV.
+HEAD is either the datatype's name or `(NAME PARAM...)', which declares
+the type parameters explicitly instead of inferring them from the
+constructors.  A constructor may end in `: RESULT' to declare its own
+result type, see `tl-split-ctor'; that is what makes an indexed (GADT)
+datatype possible.
 Datatype declarations are type-checked even when `:type-check' is nil:
 constructor argument types are parsed and their schemes registered."
   (let* ((rest (cdr form))
          (open (eq (car rest) 'open))
          (rest (if open (cdr rest) rest))
-         (name (car rest))
+         (head (car rest))
+         ;; `(datatype (Vec a n) ...)' declares its parameter list
+         ;; explicitly, which fixes both their order and their scope;
+         ;; `(datatype Vec ...)' still infers them from the constructors.
+         ;; Only the spelling differs, and declaring them lets an index
+         ;; variable be mentioned before any constructor that uses it.
+         (declared-p (consp head))
+         (name (if declared-p (car head) head))
+         (declared (and declared-p (cdr head)))
          (ctors (cdr rest))
          (old (gethash name (tl-env-datatypes env))))
     (when old
       (dolist (c (plist-get old :constructors))
         (remhash c (tl-env-constructors env))
         (remhash c (tl-env-type-env env))))
-    (let ((syms (tl-register-datatype-types env name ctors)))
+    ;; `cl-defun' distinguishes an omitted optional argument from one
+    ;; supplied as nil, and only the latter means "these are declared
+    ;; parameters", so the argument must genuinely be left off for the
+    ;; inferred spelling.
+    (let ((syms (if declared-p
+                    (tl-register-datatype-types env name ctors declared)
+                  (tl-register-datatype-types env name ctors))))
       (puthash name (list :open open :constructors (mapcar #'car ctors) :params syms)
                (tl-env-datatypes env)))
     (dolist (ctor ctors)

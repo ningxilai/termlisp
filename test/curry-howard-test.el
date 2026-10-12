@@ -3,8 +3,10 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
-;; Stage 0 of the Curry-Howard roadmap: `Void', `Either' and
-;; `absurd', plus the cases that must keep being rejected.
+;; Stages 0 and 1 of the Curry-Howard roadmap.  Stage 0 is `Void',
+;; `Either' and `absurd'; Stage 1 is the indexed families (GADT) built
+;; on them -- `Vec', `Fin' and the type-level `Refl' -- together with the
+;; cases that must keep being rejected.
 
 ;;; Code:
 
@@ -85,6 +87,98 @@
                           when (eq ty 'Void)
                           collect name)))
     (should-not makers)))
+
+;;; Stage 1: indexed families (GADT)
+
+;; A constructor written `: RESULT' declares its own result type, and
+;; the datatype's kind records what each index is allowed to be.  Both
+;; halves are asserted here: the kinds structurally, the index
+;; refinement by the errors it produces.
+
+(defun tl-ch--kind-text (k)
+  "Render kind K as text, following the graph's bindings."
+  (let ((k (tl-kind-deref k)))
+    (cond ((eq k tl-kind-star) "*")
+          ((and (tl-node-p k) (eq (tl-node-head k) 'karr))
+           (let ((cs (tl-node-children k)))
+             (format "(%s -> %s)" (tl-ch--kind-text (car cs))
+                     (tl-ch--kind-text (cadr cs)))))
+          ((tl-node-p k) (format "%S" (tl-node-head k)))
+          (t (format "%S" k)))))
+
+(defun tl-ch--kind-string (env name)
+  "Return the kind of type constructor NAME in ENV, as text."
+  (let ((k (tl-kind-of env name)))
+    (if k (tl-ch--kind-text k) "nil")))
+
+(defun tl-ch--scheme-text (env name)
+  "Return constructor NAME's scheme in ENV, as text."
+  ;; `tl-type-to-datum' hands back a sexp; printing it is what makes the
+  ;; index expressions matchable with a regexp below.
+  (format "%S"
+          (tl-type-to-datum
+           (tl-tscheme-type (gethash name (tl-env-type-env env))))))
+
+(ert-deftest tl-ch-lifted-constructors-have-universe-kinds ()
+  "A datatype promotes its constructors into its own universe."
+  (let ((env (tl-ch--typed-env)))
+    (should (equal (tl-ch--kind-string env 'Nat) "*"))
+    (should (equal (tl-ch--kind-string env 'Zero) "Nat"))
+    (should (equal (tl-ch--kind-string env 'Succ) "(Nat -> Nat)"))
+    (should (equal (tl-ch--kind-string env 'Bool) "*"))
+    (should (equal (tl-ch--kind-string env 'True) "Bool"))))
+
+(ert-deftest tl-ch-indexed-datatype-kinds ()
+  "An indexed family records the kind its index must satisfy."
+  (let ((env (tl-ch--typed-env)))
+    (should (equal (tl-ch--kind-string env 'Vec) "(* -> (Nat -> *))"))
+    (should (equal (tl-ch--kind-string env 'Fin) "(Nat -> *)"))
+    (should (equal (tl-ch--kind-string env 'Eq) "(* -> *)"))))
+
+(ert-deftest tl-ch-constructor-schemes-carry-indices ()
+  "A constructor returns at its own index, not at the datatype's parameters."
+  (let ((env (tl-ch--typed-env)))
+    ;; VNil is pinned at Zero and VCons at one past its tail's index --
+    ;; neither can come back out as `Vec' applied to bare parameters.
+    (should (string-match-p "(Vec .*Zero)" (tl-ch--scheme-text env 'VNil)))
+    (should (string-match-p "(Vec .* (Succ .*))" (tl-ch--scheme-text env 'VCons)))
+    (should (string-match-p "(Fin (Succ .*))" (tl-ch--scheme-text env 'FZ)))
+    ;; An ordinary constructor still defaults to the datatype's
+    ;; parameters: `Maybe' applied to a variable, with no index smuggled
+    ;; into the result.
+    (should (string-match-p "(Maybe .*)" (tl-ch--scheme-text env 'Just)))
+    (should-not (string-match-p "Zero\\|Succ" (tl-ch--scheme-text env 'Just)))))
+
+(ert-deftest tl-ch-split-ctor-checks-its-marker ()
+  "A stray `:' is an error rather than a silently truncated constructor."
+  (should (equal (tl-split-ctor '(C a b)) '((a b))))
+  (should (equal (tl-split-ctor '(C a : R)) '((a) . R)))
+  (should-error (tl-split-ctor '(C :)) :type 'termlisp-type-error)
+  (should-error (tl-split-ctor '(C a : R S)) :type 'termlisp-type-error))
+
+(tl-test-eval tl-ch-vec-empty-annotated
+  "(: v (Vec Int Zero)) (define v VNil) v" "VNil" '(:type-check t :elaborate t))
+(tl-test-eval tl-ch-vec-one-annotated
+  "(: v (Vec Int (Succ Zero))) (define v (VCons 1 VNil)) v"
+  "(VCons 1 VNil)" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-vec-index-of-the-wrong-sort
+  "(: v (Vec Int String))" "Kind error" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-vec-cons-at-the-empty-index
+  "(: v (Vec Int Zero)) (define v (VCons 1 VNil)) v"
+  "does not match its signature" '(:type-check t :elaborate t))
+(tl-test-eval tl-ch-vec-pattern-refines-the-index
+  "(define (vhd (VCons x xs)) x) (vhd (VCons 7 VNil))"
+  "7" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-vec-pattern-on-the-empty-vector
+  "(define (vhd (VCons x xs)) x) (vhd VNil)"
+  "Cannot apply vhd to VNil" '(:type-check t :elaborate t))
+(tl-test-eval tl-ch-fin-at-a-successor
+  "(: f (Fin (Succ Zero))) (define f FZ) f" "FZ" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-fin-at-zero
+  "(: f (Fin Zero)) (define f FZ) f"
+  "does not match its signature" '(:type-check t :elaborate t))
+(tl-test-eval tl-ch-refl-at-a-type
+  "(: r (Eq Int)) (define r (Refl)) r" "Refl" '(:type-check t :elaborate t))
 
 (provide 'curry-howard-test)
 ;;; curry-howard-test.el ends here

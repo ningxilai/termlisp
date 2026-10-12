@@ -41,6 +41,31 @@
   '(:occurs-check nil :fuel 100000 :type-check nil :elaborate nil :phase B)
   "Default evaluation options.")
 
+(defun tl-split-ctor (ctor)
+  "Split constructor declaration CTOR into (FIELDS . RESULT).
+CTOR has the shape (NAME ITEM...), where a top-level `:' introduces the
+constructor's result type:
+
+    (VCons a (Vec a n) : (Vec a (Succ n)))
+
+Everything before the `:' is a field type and the single item after it
+is the result type, so that a datatype can declare per-constructor
+indices instead of forcing every constructor to return the datatype
+applied to its parameters.  RESULT is nil when the declaration omits the
+`:', which is how ordinary non-indexed datatypes are written; the caller
+then defaults the result itself.  Anything other than exactly one item
+after the `:' is an error, so a stray `:' cannot silently truncate a
+constructor."
+  (let ((items (cdr ctor)))
+    (if (not (memq ': items))
+        (cons items nil)
+      (let ((at (cl-position ': items)))
+        (unless (= at (- (length items) 2))
+          (signal 'termlisp-type-error
+                  (list (format "Constructor %S: `:' must be followed by exactly one result type"
+                                (car ctor)))))
+        (cons (cl-subseq items 0 at) (nth (1+ at) items))))))
+
 (cl-defstruct (tl-env (:constructor tl-env--make))
   "Term-lisp evaluation context."
   (functions (make-hash-table :test #'eq))

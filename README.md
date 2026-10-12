@@ -119,6 +119,54 @@ intuitionistic propositional logic:
 `Void` has no constructors; reaching it at all means `:type-check` was off,
 and it signals rather than answering a value.
 
+### Indexed families
+
+A constructor may declare its own result type after `:`, so the index
+becomes part of the type rather than something the caller keeps straight.
+The prelude ships the two families every dependent type language starts
+with:
+
+```lisp
+(datatype (Vec a n)
+  (VNil : (Vec a Zero))
+  (VCons a (Vec a n) : (Vec a (Succ n))))
+
+(datatype (Fin n)
+  (FZ : (Fin (Succ n)))
+  (FS (Fin n) : (Fin (Succ n))))
+```
+
+`Vec : * -> Nat -> *` and `Fin : Nat -> *`.  The indices are kinded
+against `Nat` because each datatype lifts its own constructors into a
+universe: `Zero : Nat`, `Succ : Nat -> Nat`, `True : Bool`.  So `Nat`
+does the double duty it does in Haskell's `DataKinds` — as a type it has
+kind `*`, as a universe it is the kind of its own constructors.
+
+That is what makes `Vec Int String` a kind error at the declaration
+instead of a case somebody forgot to rule out:
+
+```lisp
+(: v (Vec Int String))            ; rejected: Kind error
+(: v (Vec Int (Succ Zero)))
+(define v (VCons 1 VNil))         ; => (VCons 1 VNil)
+
+(define (vhd (VCons x xs)) x)     ; the index unifies with the scrutinee
+(vhd (VCons 7 VNil))              ; => 7
+(vhd VNil)                        ; rejected: its index is Zero
+```
+
+Constructor names avoid `Nil` and `Cons`, which `List` already owns —
+constructors share one namespace.
+
+`(datatype (Eq a) (Refl : (Eq a)))` carries the same idea into the
+propositional layer, and is where this stage stops.  `Refl`'s index is a
+*type* rather than a value, so it witnesses equality between types only;
+equality between values needs dependent elimination, which is not built.
+
+Ordinary datatypes are untouched by any of this.  `(datatype Maybe
+(Nothing) (Just a))` still infers its parameters and leaves
+`Just : ∀a. a -> Maybe a` exactly as before.
+
 ### Monads and `do`
 
 ```lisp

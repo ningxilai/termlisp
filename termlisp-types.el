@@ -683,15 +683,30 @@ with the same substitution.  A non-scheme is returned as
                                           &optional (param-syms nil param-syms-p))
   "Register constructor type schemes for datatype NAME with CTORS.
 PARAM-SYMS, if non-nil, are the datatype's declared type parameters
-\(reused for extensions).  Returns the datatype's parameter symbols.
+\(reused for extensions and for an explicitly declared parameter list).
+Returns the datatype's parameter symbols.
 When PARAM-SYMS is explicitly supplied (even nil), CTORS are an
 extension and any type parameter not declared by the datatype is an
-error."
+error.
+
+A constructor may declare its own result type after a top-level `:',
+see `tl-split-ctor'.  That is what makes an indexed (GADT) declaration
+possible: `Cons' returns `(Vec a (Succ n))' rather than `Vec' applied to
+the parameters, so pattern matching can unify that index against the
+scrutinee.  A constructor that omits the `:' returns NAME applied to the
+parameters, exactly as every ordinary datatype always has."
   (let* ((tl-type-parse-vars
           (mapcar (lambda (s) (cons s (tl-fresh-tvar))) param-syms))
-         (ctor-args (mapcar (lambda (ctor)
-                              (cons (car ctor) (mapcar #'tl-type-parse* (cdr ctor))))
-                            ctors))
+         (split (mapcar #'tl-split-ctor ctors))
+         (ctor-args (cl-mapcar (lambda (ctor cells)
+                                 (cons (car ctor) (mapcar #'tl-type-parse* (car cells))))
+                               ctors split))
+         ;; Results parse in the same dynamic scope as the fields, so an
+         ;; index that appears only in a result still becomes a parameter
+         ;; and shares one type variable with every other use of it.
+         (ctor-results (mapcar (lambda (cells)
+                                 (and (cdr cells) (tl-type-parse* (cdr cells))))
+                               split))
          (syms (or param-syms (mapcar #'car (reverse tl-type-parse-vars)))))
     (when param-syms-p
       (dolist (cell tl-type-parse-vars)
@@ -699,8 +714,9 @@ error."
           (signal 'termlisp-type-error
                   (list (format "Undeclared type parameter %S in extension of %S"
                                 (car cell) name))))))
-    (let ((params (mapcar (lambda (s) (cdr (assq s tl-type-parse-vars))) syms))
-          (result (tl-tcon name (mapcar (lambda (s) (cdr (assq s tl-type-parse-vars))) syms))))
+    (let* ((params (mapcar (lambda (s) (cdr (assq s tl-type-parse-vars))) syms))
+           (results (mapcar (lambda (r) (or r (tl-tcon name params)))
+                            ctor-results)))
       ;; Infer each parameter's kind from the constructor field types; a
       ;; well-formed field is a proper type.  Lenient: oracle datatypes may
       ;; mention unknown heads, which get fresh kind variables.
@@ -708,13 +724,23 @@ error."
         (dolist (ca ctor-args)
           (dolist (argty (cdr ca))
             (condition-case nil (tl-kind-check env argty) (error nil)))))
+      ;; Lift the constructors to the type level *before* the results are
+      ;; kinded: a result is the only place an index variable meets the
+      ;; universe it belongs to, so `kind(n) = Nat' is settled right here.
+      ;; The datatype's own kind is only read back out afterwards.
+      (when (fboundp 'tl-register-lifted-constructors)
+        (tl-register-lifted-constructors env name ctor-args))
+      (when (fboundp 'tl-kind-check)
+        (dolist (r results)
+          (condition-case nil (tl-kind-check env r) (error nil))))
       ;; The datatype's kind is `kind(param1) -> ... -> *', or its arity
       ;; when kind inference is unavailable.
       (cond ((fboundp 'tl-register-datatype-kind)
              (tl-register-datatype-kind env name params))
             (t (puthash name (length syms) (tl-env-kind-env env))))
-      (dolist (ca ctor-args)
-        (let ((ty result))
+      ;; Each constructor arrows its field types onto its own result.
+      (dolist (pair (cl-mapcar #'cons ctor-args results))
+        (let ((ca (car pair)) (ty (cdr pair)))
           (dolist (argty (reverse (cdr ca)))
             (setq ty (tl-tarrow argty ty)))
           (puthash (car ca) (tl-tscheme params ty)

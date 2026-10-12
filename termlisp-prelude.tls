@@ -29,6 +29,11 @@
 ;; `Void'; it is unreachable, because `Void' has no constructors.
 (datatype Void)
 (datatype Either (Left a) (Right b))
+;; Type-level equality, the fragment of Stage 1 that reads as a
+;; proposition.  Its index is a *type* rather than a value, which is all
+;; a non-dependent type language can express; equality between values
+;; needs Stage 3's dependent elimination.
+(datatype (Eq a) (Refl : (Eq a)))
 
 ;; Peano naturals
 (datatype Nat (Zero) (Succ Nat))
@@ -37,6 +42,20 @@
 (define two (Succ (Succ Zero)))
 (define (plus Zero b) b)
 (define (plus (Succ a) b) (Succ (plus a b)))
+
+;; Indexed families (Stage 1).  A constructor written `: RESULT'
+;; declares its own result type, so the index is part of the type
+;; instead of something the caller has to keep straight.  Both families
+;; are kinded against `Nat', which is what makes `Vec a String' a kind
+;; error at the declaration rather than a case nobody remembered to
+;; rule out.  Constructor names avoid `Nil'/`Cons', which `List' above
+;; already owns: constructors share one namespace.
+(datatype (Vec a n)
+  (VNil : (Vec a Zero))
+  (VCons a (Vec a n) : (Vec a (Succ n))))
+(datatype (Fin n)
+  (FZ : (Fin (Succ n)))
+  (FS (Fin n) : (Fin (Succ n))))
 
 ;; Operators from the hlisp reference implementation.  Equality, exclusive
 ;; or and the null test are ordinary definitions; division (`/') and the

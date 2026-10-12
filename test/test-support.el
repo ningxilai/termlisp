@@ -18,11 +18,16 @@
 
 (defun tl-test--render (form opts)
   "Evaluate FORM in a fresh prelude environment built from OPTS.
-Return the rendered value, or \"ERR:...\" when FORM signals."
+Return the rendered value, or \"ERR:...\" when FORM signals.  Termlisp's
+own errors carry their message as the sole string element; anything else
+falls back to `error-message-string' rather than printing the offending
+argument, which is what a bare `(cadr err)' would do for a
+`wrong-type-argument'."
   (let ((env (termlisp-load-prelude (termlisp-make-env opts))))
     (condition-case e
         (termlisp-value->string (termlisp-eval form env))
-      (error (format "ERR:%s" (car (cdr e)))))))
+      (error (format "ERR:%s"
+                     (if (stringp (cadr e)) (cadr e) (error-message-string e)))))))
 
 (defmacro tl-test-eval (name form want &optional opts)
   "Define ERT test NAME asserting that FORM renders as WANT.

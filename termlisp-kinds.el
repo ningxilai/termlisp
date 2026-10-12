@@ -67,14 +67,61 @@
 
 (defun tl-register-datatype-kind (env name params)
   "Register NAME's kind from its parameter variables' inferred kinds.
-PARAMS is the list of parameter type-variable nodes; a parameter whose kind
-is unknown contributes a fresh kind variable."
+PARAMS is the list of parameter type-variable nodes.  A parameter whose
+kind no use ever pinned down is a proper type: `*' is what a type
+parameter ranges over unless something says otherwise -- typically an
+index met by a lifted constructor such as `Succ n'.  Leaving it free
+instead would let whichever application happens to come first decide its
+kind, so the declaration would kind differently depending on the order
+the rest of the program was written in."
   (let ((k tl-kind-star))
     (dolist (p (reverse params))
-      (let ((pk (let ((raw (and (tl-node-p p) (tl-node-kind p))))
-                  (if raw (tl-kind-deref raw) (tl-kind-var)))))
+      (let* ((raw (and (tl-node-p p) (tl-node-kind p)))
+             (deref (and raw (tl-kind-deref raw)))
+             (pk (if (or (null deref) (tl-node-var-p deref))
+                     tl-kind-star
+                   deref)))
         (setq k (tl-karr pk k))))
     (puthash name k (tl-env-kind-env env))))
+
+(defun tl-kind-universe (name)
+  "Return the kind that lifts datatype NAME to the type level.
+This is a leaf kind named NAME, and it is deliberately distinct from
+`tl-kind-star': `Nat' written as a type has kind `*', while `Nat'
+written as a universe is the kind of `Zero'.  One name, two levels --
+exactly the double duty Haskell's DataKinds gives it."
+  (tl-make-node name nil nil))
+
+(defun tl--lifted-field-kind (env datatype field)
+  "Kind FIELD contributes when a constructor of DATATYPE is lifted in ENV.
+A field written as DATATYPE itself contributes the universe rather than
+`*', which is what gives Peano-style constructors `Succ : Nat -> Nat'.
+Any other field keeps the kind it already has as a proper type."
+  (let ((f (tl-type-deref field)))
+    (if (and (tl-tcon-p f)
+             (null (tl-tcon-args f))
+             (eq (tl-tcon-name f) datatype))
+        (tl-kind-universe datatype)
+      (condition-case nil (tl-kind-infer env field) (error (tl-kind-var))))))
+
+(defun tl-register-lifted-constructors (env name ctors)
+  "Register in ENV the type-level kinds of NAME's constructors CTORS.
+CTORS is an alist of (CONSTRUCTOR . FIELD-TYPES) over already-parsed field
+types.  Each constructor is lifted to
+
+    field1 -> ... -> fieldN -> Universe
+
+so that declaring `(datatype Nat (Zero) (Succ Nat))' puts `Zero : Nat'
+and `Succ : Nat -> Nat' in the kind environment.  That is what makes an
+index expression such as `(Vec a (Succ n))' well-kinded, and -- because
+kinds unify -- what makes `(Vec a String)' a kind error rather than a
+silent success."
+  (let ((universe (tl-kind-universe name)))
+    (dolist (ca ctors)
+      (let ((k universe))
+        (dolist (f (reverse (cdr ca)))
+          (setq k (tl-karr (tl--lifted-field-kind env name f) k)))
+        (puthash (car ca) k (tl-env-kind-env env))))))
 
 (defun tl-kind-infer (env ty)
   "Infer the kind of type TY in ENV, unifying as it goes.
