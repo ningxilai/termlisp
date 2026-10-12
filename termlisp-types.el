@@ -237,13 +237,23 @@ application."
     (tl-type-parse* (car segment))))
 
 (defun tl-type-parse--binder (part)
-  "Return (NAME DOMAIN) when PART is a single binder token `(NAME : TYPE)'.
-Anything else comes back nil, so an ordinary segment is left alone."
+  "Return (NAMES DOMAIN) when PART is a single binder token `(N... : TYPE)'.
+NAMES is a list of the names, so `(n m : Nat)' binds two names over one
+domain while `(n : Nat)' still binds one -- a comma between the names is
+just whitespace to the reader, so the two spellings differ only in how
+many names precede the `:'.  Exactly one element may follow the `:',
+which is why a domain containing a bare `->' has to be parenthesised,
+the rule the arrow splitter already follows.  Anything else comes back
+nil, so an ordinary segment is left alone."
   (let ((tok (car part)))
-    (when (and (null (cdr part)) (consp tok)
-               (= (length tok) 3) (eq (nth 1 tok) ':)
-               (symbolp (car tok)))
-      (list (car tok) (nth 2 tok)))))
+    (when (and (null (cdr part)) (consp tok))
+      (let* ((n (length tok))
+             (colon (- n 2)))
+        (when (and (> colon 0)
+                   (eq (nth colon tok) ':)
+                   (cl-loop for x on tok until (eq x (nthcdr colon tok))
+                            always (symbolp (car x))))
+          (list (cl-subseq tok 0 colon) (nth (1- n) tok)))))))
 
 (defun tl-type-parse-pi (name domain parse-body)
   "Build a dependent function type with binder NAME over DOMAIN.
@@ -264,14 +274,19 @@ while `A -> B' keeps the ordinary non-dependent `->'.  A non-dependent
 arrow is what every existing datatype in the prelude is written with,
 and is deliberately not desugared into a Pi here: keeping them distinct
 means the kind checker can still tell a function of terms from a
-function of types without normalising anything."
+function of types without normalising anything.  Several names may share
+one domain, `(n m : Nat) -> ...', and then become nested Pis in the
+order written."
   (if (null (cdr parts))
       (tl-type-parse-segment (car parts))
     (let ((binder (tl-type-parse--binder (car parts))))
       (if binder
-          (tl-type-parse-pi
-           (car binder) (cadr binder)
-           (lambda () (tl-type-parse-arrow (cdr parts))))
+          (cl-labels ((bind (names)
+                        (if (null names)
+                            (tl-type-parse-arrow (cdr parts))
+                          (tl-type-parse-pi (car names) (cadr binder)
+                                            (lambda () (bind (cdr names)))))))
+            (bind (car binder)))
         (tl-tarrow (tl-type-parse-segment (car parts))
                    (tl-type-parse-arrow (cdr parts)))))))
 
@@ -1171,7 +1186,12 @@ a hard failure.")
          (tyenv (tl-env-type-env env))
          (sig (and (gethash name (tl-env-sig-env env))
                    (gethash name tyenv))))
-    (puthash name (tl-tscheme nil placeholder) tyenv)
+    ;; With a signature, the function's own name means that signature
+    ;; while its clauses are being read, so a recursive call is free to
+    ;; instantiate it afresh.  A bare placeholder would have been pinned
+    ;; by whichever clause ran first, handing every later clause -- and
+    ;; every recursive call inside one -- the index that clause fixed.
+    (puthash name (or sig (tl-tscheme nil placeholder)) tyenv)
     (let ((bindings nil))
       (if (catch 'tl-clause-inconsistent
             (dolist (clause clauses)
@@ -1203,13 +1223,27 @@ a hard failure.")
                                                     p bindings))
                                                  ptypes)))
                       (setq ctype (tl-tarrow pt ctype)))
-                    (let ((u (tl-unify-types placeholder ctype bindings)))
+                    ;; Each clause is checked against its own instance of
+                    ;; the signature, not against one type shared by all
+                    ;; of them: a pattern match on an indexed family
+                    ;; refines the index, so the clauses of `append' have
+                    ;; types that share no unifier at all -- `VNil' pins
+                    ;; the index to `Zero' and `(VCons x xs)' to one past
+                    ;; its tail's.  This is the direction that makes the
+                    ;; elaboration bidirectional: with a signature the
+                    ;; clause is *checked* against it, and only in the
+                    ;; signature's absence is its type inferred.
+                    (let* ((target (if sig (car (tl-instantiate-scheme sig))
+                                     placeholder))
+                           (u (tl-unify-types target ctype bindings)))
                       (unless (car u)
                         (if (or tl-type-lenient tl-type-lenient-clauses)
                             (throw 'tl-clause-inconsistent t)
                           (signal 'termlisp-type-error
                                   (list (format
-                                         "Clause of %S has inconsistent type"
+                                         (if sig
+                                             "Clause of %S does not match its signature"
+                                           "Clause of %S has inconsistent type")
                                          name)))))
                       (setq bindings (cdr u)))))))
             nil)
@@ -1221,13 +1255,16 @@ a hard failure.")
           (remhash name tyenv)
           (let* ((gen-vars (tl-generalized-vars final)))
             (if sig
-                (let* ((u (tl-unify-types final (tl-skolemize-scheme sig) nil))
-                       (fb (tl-compose-bindings bindings (cdr u))))
-                  (unless (car u)
-                    (signal 'termlisp-type-error
-                            (list (format "Definition of %S does not match its signature" name))))
-                  (setq tl-elab-bindings fb)
-                  (tl-close-constraints env nil tl-infer-constraints fb)
+                ;; Every clause has already been checked against its own
+                ;; instance of the signature, which is the check that
+                ;; counts, so nothing is left to unify here: what remains
+                ;; is to close the constraints and put the signature back
+                ;; where callers look for it.  The clauses cannot be
+                ;; cross-checked against one shared type either -- that is
+                ;; exactly what an indexed family forbids.
+                (progn
+                  (setq tl-elab-bindings bindings)
+                  (tl-close-constraints env nil tl-infer-constraints bindings)
                   (puthash name sig tyenv))
               (setq tl-elab-bindings bindings)
               (when (fboundp 'tl-kind-check)
@@ -1266,10 +1303,55 @@ a hard failure.")
           (puthash name (tl-tscheme nil ty) (tl-env-type-env env)))
         ty))))
 
+(defun tl-signature-binders (type)
+  "Settle TYPE's leading dependent binders into either quantifier or argument.
+A binder `(n : Nat) ->' whose `n' the codomain goes on to mention is a
+name the type already fixes: `Vec a n' says as much as any argument
+would, so the caller need not supply it.  Dropping that Pi and leaving
+`n' to be quantified alongside the rest of the type is what makes it an
+implicit parameter -- the call site passes nothing and unification finds
+the value.  This is what makes `(n m : Nat) -> Vec a n -> Vec a m ->
+Vec a (plus n m)' a two-argument function, `append xs ys', rather than a
+four-argument one.
+A binder whose name nothing mentions is decided by nothing the type can
+see, so the caller has to pass it: the Pi is then spelled as the plain
+arrow it always was, and the definition's lambda supplies the argument.
+The name carried no information -- that is precisely why it was never
+mentioned -- so nothing is lost in dropping it.
+A definition's clauses infer plain arrows, never Pis, so leaving these
+as Pis would make a signature no clause could ever match."
+  (let ((cur type) (changed nil) (domains nil))
+    (catch 'tl-signature-binders-stop
+      (while (and (tl-node-p cur) (tl-node-application cur)
+                  (eq (tl-node-head cur) 'Pi))
+        (let* ((args (tl-node-children cur))
+               (binder (car args))
+               (dom (cadr args))
+               (cod (caddr args)))
+          (if (memq binder (tl-free-tvars cod))
+              ;; Re-spelled rather than deleted outright: the occurrences
+              ;; are shared nodes, and an ordinary variable is what
+              ;; unification is willing to solve -- leaving it rigid
+              ;; would keep the very rigidity that made it useless.
+              (setq cur (tl-type-subst cod (list (cons binder (tl-fresh-tvar))))
+                    changed t)
+            (push dom domains)
+            (setq cur cod changed t)))))
+    ;; Fold the recorded domains back over whatever the walk stopped on,
+    ;; outermost first -- `push' has them innermost first.
+    (dolist (d domains)
+      (setq cur (tl-tarrow d cur)))
+    (if changed cur type)))
+
 (defun tl-register-signature (env form)
-  "Register a `(: NAME TYPE)' signature in ENV."
-  (let ((name (cadr form))
-        (sc (tl-type-parse-scheme (caddr form))))
+  "Register a `(: NAME TYPE)' signature in ENV.
+Leading binders whose name the type goes on to mention become implicit
+parameters (see `tl-signature-binders'), which is what lets
+`(n m : Nat) -> Vec a n -> Vec a m -> Vec a (plus n m)' be written
+without the caller ever passing `n' or `m'."
+  (let* ((name (cadr form))
+         (ty (tl-signature-binders (tl-type-parse (caddr form))))
+         (sc (tl-tscheme (tl-free-tvars ty) ty)))
     (when (fboundp 'tl-kind-check-scheme)
       (tl-kind-check-scheme env sc))
     (puthash name sc (tl-env-type-env env))

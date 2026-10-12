@@ -173,6 +173,21 @@ symbol, is returned unchanged."
           (if (tl-node-p hh) (tl-gnode--head hh) hh))
       r)))
 
+(defvar tl-unify-reduce nil
+  "Function of one node returning its weak head normal form, or nil.
+Set by the layer that owns an evaluation environment (see
+`tl-nbe-reduce'); the unifier itself knows nothing of what a
+type-level function *is*, only that two types may be equal after being
+reduced.  With it nil, unification compares structurally and nothing is
+ever reduced, which keeps ordinary Hindley-Milner checking clear of any
+evaluator.")
+
+(defvar tl-unify-reduce-fuel 64
+  "How many reduction steps one unification pair may take.
+Reducing is only ever a second look at a pair nothing else matched, so
+the fuel is there to bound the case where it does not help: a type the
+unifier is about to reject anyway, whose reduction runs on forever.")
+
 (defun tl-gnode-unify (a b &optional occurs-check)
   "Unify nodes A and B, mutating BIND slots.  Return t, or nil (rolled back).
 With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
@@ -183,6 +198,7 @@ rejected a cyclic binding."
   (let ((trail nil)
         (pending (list (cons a b)))
         (seen (make-hash-table :test #'eq))
+        (fuel tl-unify-reduce-fuel)
         (ok t))
     (catch 'tl-gnode-fail
       (while pending
@@ -256,11 +272,43 @@ rejected a cyclic binding."
                 (push (cons (if (tl-node-p hx) hx (tl-make-node hx))
                             (if (tl-node-p hy) hy (tl-make-node hy)))
                       pending))
-              (let ((cx (tl-node-children x)) (cy (tl-node-children y)))
+              (let ((cx (reverse (tl-node-children x)))
+                    (cy (reverse (tl-node-children y))))
+                ;; Left to right: `push' reverses, so the children are
+                ;; walked backwards to come off `pending' in the order
+                ;; they were written.  That order is not a matter of
+                ;; taste here -- a later argument may mention an earlier
+                ;; one, and a type-level function cannot reduce until the
+                ;; argument it matches on is known, so comparing `Vec a
+                ;; (plus n m)' before `Vec a n' has fixed `n' asks the
+                ;; unifier to prove something it has not yet been told.
                 (while cx
                   (push (cons (car cx) (car cy)) pending)
                   (setq cx (cdr cx) cy (cdr cy))))))
            ((equal x y))
+           ;; Two types can be equal without looking alike: `plus Zero n'
+           ;; and `n' are one and the same type, yet one is an
+           ;; application and the other is a variable, and nothing above
+           ;; was willing to match them.  Reduce both to weak head
+           ;; normal form and take another look.
+           ;;
+           ;; Neither having moved means they are simply different: the
+           ;; pair must fail here rather than be dropped, or the `seen'
+           ;; guard further up would take the repeat for a recursive type
+           ;; equating itself and pass -- which is how a two-domain
+           ;; definition once satisfied a four-domain signature.  Fuel
+           ;; bounds the other side, a reduction that keeps handing back
+           ;; a fresh node for types about to be rejected anyway.
+           ((and tl-unify-reduce (> fuel 0)
+                 (or (tl-node-application x) (tl-node-application y)))
+            (let ((rx (if (tl-node-application x)
+                          (funcall tl-unify-reduce x) x))
+                  (ry (if (tl-node-application y)
+                          (funcall tl-unify-reduce y) y)))
+              (if (and (eq rx x) (eq ry y))
+                  (progn (setq ok nil) (throw 'tl-gnode-fail nil))
+                (setq fuel (1- fuel))
+                (push (cons rx ry) pending))))
            (t (setq ok nil) (throw 'tl-gnode-fail nil)))))
       t)
     (if ok

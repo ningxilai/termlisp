@@ -249,5 +249,31 @@ and insisting on it would make a type depend on how it was written."
   (equal (tl-canonical-key (tl-nbe-nf a nbe))
          (tl-canonical-key (tl-nbe-nf b nbe))))
 
+(defvar tl-nbe-reduce-env nil
+  "The environment unification reduces types in, or nil.
+Bound around type checking so that `tl-nbe-reduce' knows which
+definitions a type-level function may unfold to.  Nil means nothing is
+reduced and unification compares structurally, which is what keeps
+ordinary Hindley-Milner checking clear of any evaluator.")
+
+(defun tl-nbe-reduce (node)
+  "Return NODE's weak head normal form in `tl-nbe-reduce-env', or NODE.
+This is what `tl-unify-reduce' calls when two types match nothing
+structurally: a `Vec a (plus Zero n)' and a `Vec a n' look nothing alike
+until the index is reduced.  With no environment bound there is nothing
+to unfold a function against, so NODE comes back untouched and the
+comparison proceeds as it always did."
+  (if (null tl-nbe-reduce-env)
+      node
+    (tl-nbe-whnf node (tl-nbe tl-nbe-reduce-env nil))))
+
+;; Installing here rather than in `termlisp-graph-unify' keeps the hook's
+;; declaration and its implementation apart: the unifier says only that
+;; two types *may* be equal after being reduced, and this module is what
+;; supplies the reduction.  Loading `termlisp-nbe' is therefore what turns
+;; definitional equality on -- a session that never loads it keeps
+;; structural unification and no evaluator at all.
+(setq tl-unify-reduce #'tl-nbe-reduce)
+
 (provide 'termlisp-nbe)
 ;;; termlisp-nbe.el ends here

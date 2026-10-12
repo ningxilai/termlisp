@@ -286,5 +286,138 @@ demand, and only a use can say what that is."
   (should (tl-kind-check (tl-ch--typed-env)
                          (tl-type-parse '((n : (Nat -> Nat)) -> a)))))
 
+;;; Stage 2 (c) + (e): reduction in the checker, bidirectional elaboration
+
+;; Definitional equality compared types structurally, so `plus Zero n'
+;; and `n' were two different types however they were spelled -- and an
+;; indexed family's clauses could not be checked at all, since they share
+;; no unifier.  These cases pin the reduction hook in the unifier, the
+;; implicit binders that make `append' a two-argument function, and the
+;; per-clause check that lets such a definition be written down.
+
+(ert-deftest tl-ch-definitional-equality-reduces-an-index ()
+  "`Vec Int Zero' and `Vec Int (plus Zero Zero)' are one type.
+The second is the first with a type-level function written into its
+index, and nothing but reduction can see that they are the same."
+  (let* ((env (tl-ch--typed-env))
+         (tl-nbe-reduce-env env)
+         (a (tl-type-parse '(Vec Int Zero)))
+         (b (tl-type-parse '(Vec Int (plus Zero Zero)))))
+    (should (car (tl-unify-types a b nil)))))
+
+(ert-deftest tl-ch-no-reduction-without-an-environment ()
+  "With nothing to unfold a function against the two stay distinct.
+This is what keeps ordinary Hindley-Milner checking clear of any
+evaluator: unification stays structural unless something supplies the
+definitions to reduce against."
+  (let ((a (tl-type-parse '(Vec Int Zero)))
+        (b (tl-type-parse '(Vec Int (plus Zero Zero)))))
+    (should-not (car (tl-unify-types a b nil)))))
+
+(ert-deftest tl-ch-reduction-that-does-nothing-is-not-a-proof ()
+  "A pair that has not moved after being reduced is simply not equal.
+Dropping it instead of failing would let the `seen' guard take the repeat
+for a recursive type equating itself -- which is how a two-domain
+definition once satisfied a four-domain signature, and every definition
+with it."
+  (let* ((env (tl-ch--typed-env))
+         (tl-nbe-reduce-env env)
+         (a (tl-type-parse 'Int))
+         (b (tl-type-parse '(plus Zero Zero))))
+    (should-not (car (tl-unify-types a b nil)))))
+
+(ert-deftest tl-ch-unification-reads-arguments-left-to-right ()
+  "`Vec a (plus n m)' may only be compared after `Vec a n' fixed `n'.
+Children came off the worklist in reverse, so a function's result type
+was compared before its argument types and the type-level function had
+nothing to match on."
+  (let* ((env (tl-ch--typed-env))
+         (tl-nbe-reduce-env env)
+         (a (tl-type-parse '(-> (Vec t (Succ k)) (-> (Vec t m)
+                                                     (Vec t (Succ (plus k m)))))))
+         (b (tl-type-parse '(-> (Vec t n) (-> (Vec t m2)
+                                              (Vec t (plus n m2)))))))
+    (should (car (tl-unify-types a b nil)))))
+
+;;; Signature binders: implicit parameters and explicit arguments
+
+(tl-test-type tl-ch-an-ordinary-segment-is-never-a-binder
+              '(-> a b) '(-> %1 %2))
+(tl-test-type tl-ch-several-names-over-one-domain
+              '(-> (n m : Nat) (Vec a n))
+              '((n : Nat) -> ((m : Nat) -> (Vec %1 n))))
+
+(defun tl-ch--arrow-count (ty)
+  "Return how many arrow and Pi nodes TY renders with.
+Both spell one arrow operand per `(', so counting them in the rendered
+datum is one test that does not care which struct either happens to be."
+  (let* ((d (tl-test--alpha (tl-type-to-datum ty)))
+         (s (format "%S" d))
+         (n 0) (start 0))
+    (while (string-match "(->" s start)
+      (setq n (1+ n) start (match-end 0)))
+    n))
+
+(ert-deftest tl-ch-a-mentioned-binder-becomes-implicit ()
+  "`Vec a n -> Vec a m -> Vec a (plus n m)' takes two arguments, not four.
+`n' and `m' are fixed by the vectors themselves, so a signature that
+binds them must not ask the caller to pass them: they are quantified
+alongside every other variable of the type."
+  (let ((env (tl-ch--typed-env)))
+    (termlisp-eval
+     "(: appd (-> (n m : Nat) (Vec a n) (Vec a m) (Vec a (plus n m))))" env)
+    (should (= 2 (tl-ch--arrow-count
+                  (tl-tscheme-type (gethash 'appd (tl-env-type-env env))))))))
+
+(ert-deftest tl-ch-an-unmentioned-binder-stays-an-argument ()
+  "`(n : Nat) -> Nat' names nothing the type uses, so the argument stays.
+Dropping it would silently change the arity of every definition written
+against the signature, and the name carried no information to begin with
+-- that is precisely why nothing mentioned it."
+  (let ((env (tl-ch--typed-env)))
+    (termlisp-eval "(: keep (-> (n : Nat) Nat)) (define (keep n) Zero) keep"
+                   env)
+    (should (equal (tl-test--alpha (tl-type-to-datum
+                                    (tl-tscheme-type
+                                     (gethash 'keep (tl-env-type-env env)))))
+                   '(-> Nat Nat)))))
+
+;;; `append': the stage-2 deliverable
+
+(tl-test-eval tl-ch-append-typechecks
+  "(: appd (-> (n m : Nat) (Vec a n) (Vec a m) (Vec a (plus n m))))
+   (define (appd VNil ys) ys)
+   (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))
+   appd" "appd" '(:type-check t :elaborate t))
+(tl-test-eval tl-ch-append-runs
+  "(: appd (-> (n m : Nat) (Vec Int n) (Vec Int m) (Vec Int (plus n m))))
+   (define (appd VNil ys) ys)
+   (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))
+   (appd (VCons 1 VNil) (VCons 2 VNil))"
+  "(VCons 1 (VCons 2 VNil))" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-append-rejects-a-different-element-type
+  "(: appd (-> (n m : Nat) (Vec Int n) (Vec Int m) (Vec Int (plus n m))))
+   (define (appd VNil ys) ys)
+   (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))
+   (appd (VCons 1 VNil) (VCons \"two\" VNil))"
+  "Cannot apply appd" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-append-rejects-the-wrong-result-index
+  "(: appd (-> (n m : Nat) (Vec Int n) (Vec Int m) (Vec Int Zero)))
+   (define (appd VNil ys) ys)
+   (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))"
+  "does not match its signature" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-append-rejects-the-wrong-arity
+  "(: appd (-> (n m : Nat) (Vec Int n) (Vec Int m) (Vec Int (plus n m))))
+   (define (appd VNil) VNil)"
+  "does not match its signature" '(:type-check t :elaborate t))
+;; Checking each clause against its own instance of the signature must
+;; not weaken ordinary definitions.
+(tl-test-reject tl-ch-clauses-still-agree-without-a-signature
+  "(define (f VNil) 1) (define (f (VCons x xs)) \"s\") f"
+  "inconsistent type" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-an-ordinary-signature-is-still-enforced
+  "(: g (-> Int String)) (define (g) 1) g"
+  "does not match its signature" '(:type-check t :elaborate t))
+
 (provide 'curry-howard-test)
 ;;; curry-howard-test.el ends here

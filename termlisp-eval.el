@@ -17,6 +17,12 @@
 (require 'termlisp-builtins)
 (require 'termlisp-types)
 (require 'termlisp-elaborate)
+;; The unifier reduces types through this module's `tl-nbe-reduce'
+;; whenever two types match nothing structurally.  Requiring it here (and
+;; not from `termlisp-graph-unify', which it depends on) is what keeps the
+;; dependency pointing the right way: the unifier declares a hook, the
+;; layer that owns an evaluator fills it in.
+(require 'termlisp-nbe)
 
 (defvar termlisp--current-env nil
   "Dynamically bound evaluation context during `tl-run'.")
@@ -475,6 +481,12 @@ Handles top-level `do' desugaring like `termlisp-eval', and honors the
 `:type-check' and `:elaborate' options of ENV."
   (let* ((env (or env (termlisp-make-env)))
          (termlisp--current-env env)
+         ;; Type-level reduction runs against this env, so that a
+         ;; signature's `plus n m' can unfold while its type is being
+         ;; compared with another.  Left unbound, unification is purely
+         ;; structural -- which is exactly what ordinary Hindley-Milner
+         ;; checking, with nothing to unfold, wants.
+         (tl-nbe-reduce-env env)
          (form (if (and (consp form) (eq (car form) 'do))
                    (tl-desugar-do form)
                  form)))
