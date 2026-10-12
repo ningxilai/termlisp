@@ -521,6 +521,34 @@ still matches, still binds nothing, and leaves no goal behind."
 (tl-test-reject tl-ch-a-type-name-cannot-stand-for-any-type "(car Bool)"
                 "Cannot apply" '(:type-check t :elaborate t))
 
+;; The batch driver and the evaluator must agree about what a signature
+;; means.  This one used to reject every definition whose result index
+;; was a computed one, because it never told the unifier what to reduce
+;; a type-level function against -- `termlisp-eval-form' has always done
+;; so, and `append' is written in exactly that style.
+(ert-deftest tl-ch-batch-driver-reduces-a-computed-index ()
+  "`termlisp-typecheck-def' checks `append' the way `termlisp-eval' does."
+  (let ((env (termlisp-load-prelude
+              (termlisp-make-env '(:type-check t :elaborate t)))))
+    (termlisp-typecheck-def
+     env
+     "(: appd (-> (n m : Nat) (Vec a n) (Vec a m) (Vec a (plus n m))))
+      (define (appd VNil ys) ys)
+      (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))")
+    (should (gethash 'appd (tl-env-type-env env)))))
+
+(ert-deftest tl-ch-batch-driver-still-rejects-a-wrong-index ()
+  "Enabling reduction has not made the batch driver merely permissive."
+  (let ((env (termlisp-load-prelude
+              (termlisp-make-env '(:type-check t :elaborate t)))))
+    (should-error
+     (termlisp-typecheck-def
+      env
+      "(: appd (-> (n m : Nat) (Vec a n) (Vec a m) (Vec Int Zero)))
+       (define (appd VNil ys) ys)
+       (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))")
+     :type 'termlisp-type-error)))
+
 ;;; Exhaustiveness and redundancy (G7)
 
 ;; Coverage checking is opt-in: `head', `tail' and `if' in the bundled

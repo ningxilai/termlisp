@@ -1624,7 +1624,15 @@ the elaborator inserts as the first argument of overloaded method calls."
 (defun termlisp-typecheck-def (env string)
   "Typecheck all top-level forms in STRING into ENV.  Return ENV."
   (let* ((forms (termlisp-parse string))
-         (tl-infer-forward-names (termlisp-collect-forward-names forms)))
+         (tl-infer-forward-names (termlisp-collect-forward-names forms))
+         ;; Type-level reduction runs against this env, so that a
+         ;; signature's `plus n m' can unfold while its type is being
+         ;; compared with another.  `termlisp-eval-form' has always
+         ;; bound this; without it here this driver rejected every
+         ;; definition whose result index was a computed one -- `append'
+         ;; is written in exactly that style -- while the evaluator
+         ;; accepted it.
+         (tl-nbe-reduce-env env))
     (dolist (form forms env)
       (tl-typecheck-form env form))
     ;; STRING is one batch, so this is the first moment every definition
