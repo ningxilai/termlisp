@@ -592,46 +592,82 @@ contributes nothing."
               (push (cons v (tl-tcon def nil)) subs))))))
     subs))
 
+(defun tl-constraints-zonk (constraints bindings)
+  "Return CONSTRAINTS with every one of its types pushed through BINDINGS.
+This is one pass only: it reports where the constraints currently stand,
+it does not decide anything about them."
+  (mapcar (lambda (c)
+            (tl-constraint (tl-constraint-class c)
+                           (tl-apply-bindings (tl-constraint-type c) bindings)))
+          constraints))
+
+(defun tl-constraints-improve (env constraints)
+  "Return CONSTRAINTS after the fundeps ENV's classes declare are applied.
+`tl-improve-constraints' writes the equalities it learns straight into
+the type graph, so CONSTRAINTS is zonked once more before being handed
+on: those equalities are only visible through the bindings just written."
+  (tl-improve-constraints env constraints)
+  (tl-constraints-zonk constraints nil))
+
+(defun tl-constraints-default (env deferred)
+  "Return DEFERRED with each defaultable variable replaced by its default.
+Which classes carry a default is `tl-default-subs'' business, asked of
+ENV; a constraint no default applies to comes back unchanged, still free."
+  (let ((subs (tl-default-subs env deferred)))
+    (mapcar (lambda (c)
+              (tl-constraint (tl-constraint-class c)
+                             (tl-type-subst (tl-constraint-type c) subs)))
+            deferred)))
+
+(defun tl-constraints-check (env retained deferred &optional reject-ambiguous)
+  "Signal `termlisp-type-error' for a DEFERRED constraint RETAINED cannot entail.
+Instances are looked for in ENV.  A ground constraint with no matching
+instance is always an error.  One
+still mentioning free type variables is an error only with
+REJECT-AMBIGUOUS; without it the ambiguity is left standing to be
+solved, defaulted, or generalized away somewhere outwards."
+  (dolist (c deferred)
+    (unless (tl-entail env retained c)
+      (let ((free (tl-free-tvars (tl-constraint-type c))))
+        (when (or reject-ambiguous (null free))
+          (signal 'termlisp-type-error
+                  (list (if free
+                            (format "Ambiguous constraint: no instance for %S %S"
+                                    (tl-constraint-class c) (tl-constraint-type c))
+                          (format "No instance for %S %S"
+                                  (tl-constraint-class c) (tl-constraint-type c))))))))))
+
+(defun tl-constraints-dedup (retained)
+  "Return RETAINED with duplicate constraints dropped.
+Duplicates are those agreeing on `tl-constraint-canonical-key' and
+`tl-constraint-eq', so two spellings of the same predicate reach the
+scheme's context once."
+  (tl-remove-duplicates-by-key retained
+                               #'tl-constraint-canonical-key #'tl-constraint-eq))
+
 (defun tl-close-constraints (env gen-vars constraints bindings &optional reject-ambiguous)
   "Zonk CONSTRAINTS, retain the generalizable ones, solve or default the rest.
 GEN-VARS are the type variables being generalized; a constraint whose
 type mentions one is retained.  The deferred constraints are defaulted
 \(see `tl-default-subs') and solved; an unsolved ground constraint -- or,
 with REJECT-AMBIGUOUS, one still mentioning free type variables -- is
-rejected with `termlisp-type-error'."
-  (let* ((zonked (mapcar
-                  (lambda (c)
-                    (tl-constraint (tl-constraint-class c)
-                                   (tl-apply-bindings (tl-constraint-type c) bindings)))
-                  constraints))
-         ;; Functional dependencies may learn type equalities; re-zonk.
-         (_ (tl-improve-constraints env zonked))
-         (zonked (mapcar
-                  (lambda (c)
-                    (tl-constraint (tl-constraint-class c)
-                                   (tl-apply-bindings (tl-constraint-type c) nil)))
-                  zonked))
-         (split (tl-split-context env gen-vars zonked))
+rejected with `termlisp-type-error'.
+
+The work is staged, one function per stage, so a caller or a reader can
+see the shape of it in five lines and take any single stage on its own:
+
+  `tl-constraints-zonk'     where the constraints stand now
+  `tl-constraints-improve'  what class fundeps learned from them
+  `tl-split-context'        which are kept with the scheme
+  `tl-constraints-default'  what numeric defaulting settles
+  `tl-constraints-check'    what nothing could account for"
+  (let* ((zonked (tl-constraints-zonk constraints bindings))
+         (improved (tl-constraints-improve env zonked))
+         (split (tl-split-context env gen-vars improved))
          (retained (car split))
-         (deferred (cadr split))
-         (defaults (tl-default-subs env deferred))
-         (deferred (mapcar (lambda (c)
-                             (tl-constraint (tl-constraint-class c)
-                                            (tl-type-subst (tl-constraint-type c)
-                                                           defaults)))
-                           deferred)))
-    (dolist (c deferred)
-      (unless (tl-entail env retained c)
-        (let ((free (tl-free-tvars (tl-constraint-type c))))
-          (when (or reject-ambiguous (null free))
-            (signal 'termlisp-type-error
-                    (list (if free
-                              (format "Ambiguous constraint: no instance for %S %S"
-                                      (tl-constraint-class c) (tl-constraint-type c))
-                            (format "No instance for %S %S"
-                                    (tl-constraint-class c) (tl-constraint-type c)))))))))
-    (tl-remove-duplicates-by-key (nreverse retained)
-                                 #'tl-constraint-canonical-key #'tl-constraint-eq)))
+         (deferred (tl-constraints-default env (cadr split))))
+    (tl-constraints-check env retained deferred reject-ambiguous)
+    (tl-constraints-dedup (nreverse retained))))
 
 (defun tl-generalize (type env-tvars &optional constraints)
   "Generalize TYPE, quantifying tvars not in ENV-TVARS, keeping CONSTRAINTS
