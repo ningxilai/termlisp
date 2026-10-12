@@ -1,0 +1,100 @@
+;;; nbe-test.el --- type-layer reduction over the term graph -*- lexical-binding: t; -*-
+;; This file is part of termlisp.
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Commentary:
+;; Stage 2(c): the type-layer reducer.  Types may now contain terms --
+;; `Vec a (plus n m)' -- so two of them are equal only if what they index
+;; by reduces to the same thing.  These cases pin the three properties the
+;; reducer has to have: it reduces beta and user clauses, it stops rather
+;; than failing when a term is not yet known, and it compares normal forms
+;; without caring what the unknowns are called.
+
+;;; Code:
+
+(require 'test-support)
+(require 'termlisp-nbe)
+
+(defun tl-nbe-test--env ()
+  "Return a fresh prelude reduction environment."
+  (tl-nbe (termlisp-load-prelude
+           (termlisp-make-env '(:type-check t :elaborate t)))
+          nil))
+
+(defun tl-nbe-test--whnf (sexp)
+  "Parse type SEXP and reduce it to weak head normal form, rendered."
+  (tl-test--alpha (tl-type-to-datum
+                   (tl-nbe-whnf (tl-type-parse sexp) (tl-nbe-test--env)))))
+
+(defun tl-nbe-test--nf (sexp)
+  "Parse type SEXP and reduce it to normal form, rendered."
+  (tl-test--alpha (tl-type-to-datum
+                   (tl-nbe-nf (tl-type-parse sexp) (tl-nbe-test--env)))))
+
+;;; Beta
+
+(ert-deftest tl-nbe-beta-substitutes-the-argument ()
+  "Applying a type-level lambda must put the argument in the body."
+  (let* ((nbe (tl-nbe-test--env))
+         (lam (tl-type-parse '(lambda (n) (Vec a n))))
+         (app (tl-type-parse '(f Zero))))
+    (should (equal (tl-test--alpha
+                    (tl-type-to-datum
+                     (tl-nbe-whnf app (tl-nbe-extend nbe 'f lam))))
+                   '(Vec %1 Zero)))))
+
+;;; Unfolding user clauses
+
+(ert-deftest tl-nbe-unfolds-a-matching-clause ()
+  "`plus' is defined by clauses in the prelude; its first clause matches here."
+  (should (equal (tl-nbe-test--whnf '(plus Zero n)) '%1)))
+
+(ert-deftest tl-nbe-whnf-stops-at-the-outer-constructor ()
+  "Weak head normal form is *weak*: it does not reduce underneath."
+  (should (equal (tl-nbe-test--whnf '(plus (Succ Zero) (Succ Zero)))
+                 '(Succ (plus Zero (Succ Zero))))))
+
+(ert-deftest tl-nbe-nf-reduces-underneath-constructors ()
+  "Normal form reduces everywhere, which is what makes indices comparable."
+  (should (equal (tl-nbe-test--nf '(plus (Succ Zero) (Succ Zero)))
+                 '(Succ (Succ Zero)))))
+
+(ert-deftest tl-nbe-unfolding-is-recursive ()
+  "The second clause of `plus' calls `plus' again; that must keep going."
+  (should (equal (tl-nbe-test--nf '(plus (Succ Zero) (Succ (Succ Zero))))
+                 '(Succ (Succ (Succ Zero))))))
+
+;;; Stuck is normal
+
+(ert-deftest tl-nbe-an-unknown-argument-leaves-the-term-stuck ()
+  "`plus n m' with `n' unknown cannot take a step, and must not fail.
+This is exactly what `append''s index looks like before it is called."
+  (should (equal (tl-nbe-test--whnf '(plus n m))
+                 (tl-test--alpha (tl-type-to-datum
+                                  (tl-type-parse '(plus n m)))))))
+
+;;; Reduction inside types
+
+(ert-deftest tl-nbe-reduces-an-index-inside-a-type ()
+  "A reducible index makes `Vec a (plus Zero n)' and `Vec a n' one type."
+  (should (equal (tl-nbe-test--nf '(Vec a (plus Zero n)))
+                 (tl-nbe-test--nf '(Vec a n)))))
+
+(ert-deftest tl-nbe-leaves-a-pi-structure-intact ()
+  "Normalising a `Pi' must not disturb its binder or its domain."
+  (should (equal (tl-nbe-test--nf '((n : Nat) -> (Vec a n)))
+                 '((n : Nat) -> (Vec %1 n)))))
+
+;;; Definitional equality
+
+(ert-deftest tl-nbe-equal-agrees-with-reduction ()
+  (let ((nbe (tl-nbe-test--env)))
+    (should (tl-nbe-equal (tl-type-parse '(plus Zero n))
+                          (tl-type-parse 'n) nbe))
+    (should (tl-nbe-equal (tl-type-parse '(Vec a (plus Zero n)))
+                          (tl-type-parse '(Vec a n)) nbe))
+    (should-not (tl-nbe-equal (tl-type-parse '(Vec a Zero))
+                              (tl-type-parse '(Vec a (Succ Zero))) nbe))))
+
+(provide 'nbe-test)
+;;; nbe-test.el ends here
