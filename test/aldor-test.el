@@ -9,6 +9,13 @@
 ;; Test-only support: the graph <-> surface bridges (not shipped on main).
 (require 'termlisp-graph-types)
 
+;; The Makefile's `test' target loads only this one file, so every other
+;; suite registers itself from here instead of being named on the command
+;; line.  `LOAD_PATH' already carries `-L test'.
+(require 'test-support)
+(require 'prelude-test)
+(require 'curry-howard-test)
+
 ;; Generated programs redefine elisp builtins (`cons', `apply', `sort'
 ;; ...).  Letting `defalias' install byte-compiler trampolines then
 ;; re-enters code that already calls the shadowed name.  Skip
