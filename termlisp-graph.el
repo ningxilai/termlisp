@@ -32,9 +32,14 @@ VAR marks a unification variable node, BIND is its union-find parent
 (nil for a representative), and RANK orders unions.  KIND is the node's
 kind arity when known (see `termlisp-kinds'): 0 for a proper type, n>0 for
 a type constructor expecting n arguments, nil when unknown.  They are
-disjoint from STATE/MEMO, which serve term rewriting."
+disjoint from STATE/MEMO, which serve term rewriting.
+
+RIGID distinguishes a *bound* variable from an ordinary one.  A `Pi'
+binder introduces a variable that is already fixed by its binder, so
+traversal and substitution still act on it (VAR is set) but unification
+may only ever match it against itself -- binding it would be unsound."
   head children (application nil) (state :idle) memo
-  (var nil) (bind nil) (rank 0) (kind nil))
+  (var nil) (bind nil) (rank 0) (kind nil) (rigid nil))
 
 (cl-defstruct (tl-graph (:constructor tl-make-graph (root table)))
   "A term graph: ROOT node plus a sharing TABLE (sexp-key -> node)."

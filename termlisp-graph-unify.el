@@ -29,6 +29,45 @@
     (setf (tl-node-var node) t)
     node))
 
+(defun tl-make-rigid-var (name)
+  "Return a *bound* variable node named NAME.
+A `Pi' binder fixes its variable before anything is unified, so this
+node is a unification variable for traversal and substitution (`var' is
+set) but may not be bound: unification meets it only when it is already
+the same node, never when it must be equated with something new.  Without
+the distinction, unifying two `Pi's would let a caller rewrite the
+binder's own type -- `((n : Nat) -> Vec a n)' would happily unify with
+`((n : Nat) -> Vec Int Zero)'."
+  (let ((node (tl-make-var-node name)))
+    (setf (tl-node-rigid node) t)
+    node))
+
+(defun tl-gnode-subst (node from to)
+  "Return NODE with the rigid variable FROM replaced by TO.
+Subtrees are shared, so a variable reached through the result is still
+the node it was in NODE: unification through the copy binds the
+original, which is what lets two `Pi's be compared without losing the
+bindings either side discovers.  A nested `Pi' that rebinds FROM's own
+name shadows it, and substitution stops there."
+  (let ((memo (make-hash-table :test #'eq)))
+    (cl-labels ((go (n)
+                  (cond
+                   ((eq n from) to)
+                   ((not (tl-node-application n)) n)
+                   ((and (eq (tl-node-head n) 'Pi)
+                         (= (length (tl-node-children n)) 3)
+                         (let ((b (car (tl-node-children n))))
+                           (and (tl-node-var-p b)
+                                (eq (tl-node-head b) (tl-node-head from)))))
+                    n)
+                   (t (or (gethash n memo)
+                          (let ((new (tl-make-node (tl-node-head n)
+                                                   (mapcar #'go (tl-node-children n))
+                                                   t)))
+                            (puthash n new memo)
+                            new))))))
+      (go node))))
+
 (defun tl-gnode-deref (node)
   "Follow NODE's BIND links to its representative, compressing the path."
   (let ((root node))
@@ -158,6 +197,29 @@ rejected a cyclic binding."
                               (puthash x (make-hash-table :test #'eq) seen))))
                    (prog1 (gethash y h) (puthash y t h)))))
            ((eq x y))
+           ;; A rigid (Pi-bound) variable is fixed by its binder, so it
+           ;; may only ever be equated with itself -- which the `eq'
+           ;; case above already discharged.  Reaching here means
+           ;; something is trying to unify the binder's variable with a
+           ;; *new* term, which would let a caller rewrite the very type
+           ;; the binder was declared over.
+           ((or (and (tl-node-var-p x) (tl-node-rigid x))
+                (and (tl-node-var-p y) (tl-node-rigid y)))
+            (setq ok nil) (throw 'tl-gnode-fail nil))
+           ;; Two dependent function types are equal up to what their
+           ;; binders are *called*.  Binders are rigid and so cannot be
+           ;; unified away; re-spell the second type's binder as the
+           ;; first's and the comparison proceeds structurally.
+           ((and (tl-node-application x) (tl-node-application y)
+                 (eq (tl-node-head x) 'Pi) (eq (tl-node-head y) 'Pi)
+                 (= (length (tl-node-children x)) 3)
+                 (= (length (tl-node-children y)) 3))
+            (let ((xa (tl-node-children x))
+                  (ya (tl-node-children y)))
+              (push (cons (nth 1 xa) (nth 1 ya)) pending)
+              (push (cons (tl-gnode-subst (nth 2 ya) (nth 0 ya) (nth 0 xa))
+                          (nth 2 xa))
+                    pending)))
            ((tl-node-var-p x)
             (when (and occurs-check (tl-gnode-occurs x y))
               (setq ok nil tl-gnode--fail-reason 'infinite-type)

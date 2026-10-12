@@ -110,10 +110,26 @@ with an `!N' back-reference, so the result is always finite."
     (cl-labels ((go (node)
                   (let ((node (tl-type-deref node)))
                     (cond
+                     ;; A `Pi' binder renders under its own name, not as
+                     ;; `?N': the whole point of a dependent function
+                     ;; type is that the reader can see what it binds.
+                     ((and (tl-node-var-p node) (tl-node-rigid node))
+                      (or (gethash node names)
+                          (let ((s (tl-node-head node)))
+                            (puthash node s names) s)))
                      ((tl-tvar-p node)
                       (or (gethash node names)
                           (let ((s (intern (format "?%d" (cl-incf n)))))
                             (puthash node s names) s)))
+                     ((and (tl-tcon-p node) (eq (tl-node-head node) 'Pi)
+                           (= (length (tl-tcon-args node)) 3))
+                      (let ((a (tl-tcon-args node)))
+                        (list (list (go (nth 0 a)) ': (go (nth 1 a)))
+                              '-> (go (nth 2 a)))))
+                     ((and (tl-tcon-p node) (eq (tl-node-head node) 'lambda)
+                           (= (length (tl-tcon-args node)) 2))
+                      (let ((a (tl-tcon-args node)))
+                        (list 'lambda (list (go (nth 0 a))) (go (nth 1 a)))))
                      ((tl-tcon-p node)
                       (let ((head (tl-type-deref (tl-tcon-name node))))
                         (if (gethash node names)
@@ -204,12 +220,44 @@ application."
                (mapcar #'tl-type-parse* (cdr segment)))
     (tl-type-parse* (car segment))))
 
+(defun tl-type-parse--binder (part)
+  "Return (NAME DOMAIN) when PART is a single binder token `(NAME : TYPE)'.
+Anything else comes back nil, so an ordinary segment is left alone."
+  (let ((tok (car part)))
+    (when (and (null (cdr part)) (consp tok)
+               (= (length tok) 3) (eq (nth 1 tok) ':)
+               (symbolp (car tok)))
+      (list (car tok) (nth 2 tok)))))
+
+(defun tl-type-parse-pi (name domain parse-body)
+  "Build a dependent function type with binder NAME over DOMAIN.
+PARSE-BODY is called under the binder's scope to produce the codomain,
+which is what lets `(n : Nat) -> Vec a n' mention the term it binds.
+DOMAIN is parsed first, outside that scope, so a binder never sees
+itself -- `((n : Nat) -> ...)' cannot smuggle `n' into its own type."
+  (let* ((dom (tl-type-parse* domain))
+         (v (tl-make-rigid-var name))
+         (tl-type-parse-vars (cons (cons name v) tl-type-parse-vars)))
+    (tl-tcon 'Pi (list v dom (funcall parse-body)))))
+
 (defun tl-type-parse-arrow (parts)
-  "Parse PARTS as a right-associative arrow chain."
+  "Parse PARTS as a right-associative arrow chain, honouring binders.
+A part whose single token is a binder `(NAME : TYPE)' turns the arrow
+into a dependent function type, so `(n : Nat) -> Vec a n -> a' is a Pi
+while `A -> B' keeps the ordinary non-dependent `->'.  A non-dependent
+arrow is what every existing datatype in the prelude is written with,
+and is deliberately not desugared into a Pi here: keeping them distinct
+means the kind checker can still tell a function of terms from a
+function of types without normalising anything."
   (if (null (cdr parts))
       (tl-type-parse-segment (car parts))
-    (tl-tarrow (tl-type-parse-segment (car parts))
-               (tl-type-parse-arrow (cdr parts)))))
+    (let ((binder (tl-type-parse--binder (car parts))))
+      (if binder
+          (tl-type-parse-pi
+           (car binder) (cadr binder)
+           (lambda () (tl-type-parse-arrow (cdr parts))))
+        (tl-tarrow (tl-type-parse-segment (car parts))
+                   (tl-type-parse-arrow (cdr parts)))))))
 
 (defun tl-type-parse* (sexp)
   "Parse SEXP, sharing type variables via `tl-type-parse-vars'."
@@ -228,6 +276,24 @@ application."
               (list (format "Malformed arrow type: %S" sexp)))))
    ((and (consp sexp) (memq '-> sexp))
     (tl-type-parse-arrow (tl-split-arrow sexp)))
+   ;; A literal in type position: `Vec a 3' indexes by a number, and the
+   ;; node's HEAD slot is documented to carry a literal for leaves.
+   ((or (numberp sexp) (stringp sexp)) (tl-make-node sexp nil nil))
+   ;; Type-level lambda.  Its parameter is bound, not free, so it must
+   ;; not be registered as an ordinary (unifiable) type variable.
+   ((and (consp sexp) (eq (car sexp) 'lambda) (= (length sexp) 3)
+         (symbolp (if (consp (cadr sexp)) (car (cadr sexp)) (cadr sexp))))
+    (let* ((p (if (consp (cadr sexp)) (car (cadr sexp)) (cadr sexp)))
+           (v (tl-make-rigid-var p))
+           (tl-type-parse-vars (cons (cons p v) tl-type-parse-vars)))
+      (tl-tcon 'lambda (list v (tl-type-parse* (caddr sexp))))))
+   ;; Explicit `Pi', spelled out for programmatic construction; the
+   ;; arrow-chain form above is the one meant to be read.
+   ((and (consp sexp) (eq (car sexp) 'Pi) (= (length sexp) 3)
+         (tl-type-parse--binder (list (cadr sexp))))
+    (let ((b (tl-type-parse--binder (list (cadr sexp)))))
+      (tl-type-parse-pi (car b) (cadr b)
+                        (lambda () (tl-type-parse* (caddr sexp))))))
    ((consp sexp)
     (tl-tcon (tl-type-head (car sexp)) (mapcar #'tl-type-parse* (cdr sexp))))
    (t (signal 'termlisp-type-error (list (format "Bad type: %S" sexp))))))

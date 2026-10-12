@@ -12,6 +12,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'termlisp)
 (require 'termlisp-io)
@@ -47,6 +48,35 @@ may be nil to accept the defaults.  The failure must carry the
      (let ((got (tl-test--render ,form ,opts)))
        (should (string-prefix-p "ERR:" got))
        (should (string-match-p (regexp-quote ,needle) got)))))
+
+(defun tl-test--alpha (datum)
+  "Rename the ?N variables of DATUM to %1 %2 ... in first-appearance order.
+The numbering `tl-type-to-datum' assigns follows traversal order, which
+is an implementation detail; assertions are written against the stable
+spelling instead.  `?N' cannot be written in the test source at all,
+because the reader would take it for a character literal."
+  (let ((tbl (make-hash-table :test #'equal))
+        (n 0))
+    (cl-labels ((go (x)
+                  (cond
+                   ((and (symbolp x) (string-match-p "\\?[0-9]+" (symbol-name x)))
+                    (or (gethash x tbl)
+                        (puthash x (intern (format "%%%d" (cl-incf n))) tbl)))
+                   ((consp x) (cons (go (car x)) (go (cdr x))))
+                   (t x))))
+      (go datum))))
+
+(defun tl-test--type-datum (sexp)
+  "Parse type SEXP and render it back as a datum with renamed variables."
+  (tl-test--alpha (tl-type-to-datum (tl-type-parse sexp))))
+
+(defmacro tl-test-type (name sexp want)
+  "Define ERT test NAME asserting that type SEXP renders as WANT.
+Parsing needs no environment, so this exercises the reader and the
+renderer directly rather than going through `termlisp-eval'."
+  `(ert-deftest ,name ()
+     ,(format "Assert type %S renders as %S." sexp want)
+     (should (equal (tl-test--type-datum ,sexp) ,want))))
 
 (provide 'test-support)
 ;;; test-support.el ends here

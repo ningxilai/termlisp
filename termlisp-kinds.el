@@ -132,6 +132,25 @@ repeated inference consistent; unknown heads get a fresh kind variable."
      ((tl-tvar-p ty)
       (or (tl-node-kind ty)
           (let ((k (tl-kind-var))) (setf (tl-node-kind ty) k) k)))
+     ;; `Pi' is a dependent function type, not an ordinary constructor
+     ;; application: its three children are a binder and two types, so
+     ;; the arity rule below would hand it a three-argument kind.  Both
+     ;; domain and codomain are proper types.  The binder's own kind is
+     ;; whatever its uses demand -- `Vec a n' is what pins `n' to `Nat'
+     ;; -- so infer and store it, but do not check it.
+     ((and (tl-tcon-p ty) (eq (tl-node-head ty) 'Pi)
+           (= (length (tl-tcon-args ty)) 3))
+      (let ((a (tl-tcon-args ty)))
+        (tl-kind-infer env (nth 0 a))
+        (tl-kind-check env (nth 1 a))
+        (tl-kind-check env (nth 2 a))
+        tl-kind-star))
+     ;; A type-level lambda has the kind of the function it denotes.
+     ((and (tl-tcon-p ty) (eq (tl-node-head ty) 'lambda)
+           (= (length (tl-tcon-args ty)) 2))
+      (let ((a (tl-tcon-args ty)))
+        (tl-kind-check env (nth 1 a))
+        (tl-karr (tl-kind-infer env (nth 0 a)) tl-kind-star)))
      ((tl-tcon-p ty)
       (let ((head (tl-type-deref (tl-tcon-name ty)))
             (args (tl-tcon-args ty)))

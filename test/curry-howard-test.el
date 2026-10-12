@@ -3,10 +3,12 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
-;; Stages 0 and 1 of the Curry-Howard roadmap.  Stage 0 is `Void',
+;; Stages 0, 1 and 2(a) of the Curry-Howard roadmap.  Stage 0 is `Void',
 ;; `Either' and `absurd'; Stage 1 is the indexed families (GADT) built
 ;; on them -- `Vec', `Fin' and the type-level `Refl' -- together with the
-;; cases that must keep being rejected.
+;; cases that must keep being rejected.  Stage 2(a) opens the type
+;; language to terms: `Pi' binders, type-level lambda, literals and term
+;; applications, all on the same term graph the unifier already used.
 
 ;;; Code:
 
@@ -179,6 +181,110 @@
   "does not match its signature" '(:type-check t :elaborate t))
 (tl-test-eval tl-ch-refl-at-a-type
   "(: r (Eq Int)) (define r (Refl)) r" "Refl" '(:type-check t :elaborate t))
+
+;;; Stage 2 (a): terms in types -- the unified term graph
+
+;; Until now a type could be built only from type constructors: the parser
+;; structurally excluded anything that was a term.  These cases open that
+;; up -- `Pi' binders, type-level lambda, literals and term applications
+;; inside a type -- and pin the two properties that make the representation
+;; sound: a binder's variable is *rigid* (unification may match it only
+;; against itself), and it is still a variable (substitution reaches it).
+
+(tl-test-type tl-ch-pi-binder-in-an-arrow-chain
+              '((n : Nat) -> (Vec a n) -> a)
+              '((n : Nat) -> (-> (Vec %1 n) %1)))
+(tl-test-type tl-ch-plain-arrow-stays-an-arrow '(Int -> Int) '(-> Int Int))
+(tl-test-type tl-ch-arrow-inside-a-constructor
+              '(List (Int -> Int)) '(List (-> Int Int)))
+(tl-test-type tl-ch-numeric-literal-in-a-type '(Vec a 3) '(Vec %1 3))
+(tl-test-type tl-ch-string-literal-in-a-type '(Vec a "s") '(Vec %1 "s"))
+;; A lower-case head is a *term* application, not a type constructor --
+;; this is the `n + m' that `append' will be indexed by.
+(tl-test-type tl-ch-term-application-in-a-type
+              '(Vec a (plus n m)) '(Vec %1 (plus %2 %3)))
+(tl-test-type tl-ch-type-level-lambda
+              '(lambda (n) (Vec a n)) '(lambda (n) (Vec %1 n)))
+
+(ert-deftest tl-ch-pi-round-trips-through-the-reader ()
+  "A rendered `Pi' must parse back to the same type.
+Without this the REPL would show a type the reader could not re-read."
+  (let* ((src '((n : Nat) -> (Vec a n) -> a))
+         (d1 (tl-type-to-datum (tl-type-parse src))))
+    (should (equal (tl-type-to-datum (tl-type-parse d1)) d1))))
+
+(ert-deftest tl-ch-pi-binder-scopes-over-its-codomain ()
+  "Both occurrences of `n' must be the very same node.
+Sharing is what lets a later unification see them as one thing; two
+distinct nodes that merely render alike would silently fail to unify."
+  (let* ((pi (tl-type-parse '((n : Nat) -> (Vec a n))))
+         (args (tl-tcon-args pi)))
+    (should (eq (nth 1 (tl-tcon-args (nth 2 args))) (nth 0 args)))))
+
+(ert-deftest tl-ch-pi-binder-is-rigid-but-still-a-variable ()
+  "A binder must be unsubstitutable-by-unification, substitutable-by-elaboration.
+The two are deliberately separate: without rigidity, unifying
+`((n : Nat) -> Vec a n)' with `((n : Nat) -> Vec Int Zero)' would let a
+caller rewrite the very type `n' was declared over.  Without `var' being
+set, instantiating the binder could not reach it at all."
+  (let* ((pi (tl-type-parse '((n : Nat) -> (Vec a n))))
+         (binder (nth 0 (tl-tcon-args pi))))
+    (should (tl-node-rigid binder))
+    (should (tl-node-var-p binder))
+    ;; A name the binder does not mention stays an ordinary variable.
+    (should-not (tl-node-rigid (nth 0 (tl-tcon-args (nth 2 (tl-tcon-args pi))))))))
+
+(ert-deftest tl-ch-rigid-binder-refuses-to-unify-with-a-term ()
+  "A dependent function type may not be forced onto one that ignores its binder."
+  (let ((a (tl-type-parse '((n : Nat) -> (Vec a n))))
+        (b (tl-type-parse '((n : Nat) -> (Vec Int Zero)))))
+    (should-not (car (tl-unify-types a b nil)))))
+
+(ert-deftest tl-ch-two-pis-unify-up-to-the-binder-name ()
+  "Two dependent function types are equal up to what their binders are called."
+  (let ((a (tl-type-parse '((n : Nat) -> (Vec a n))))
+        (b (tl-type-parse '((m : Nat) -> (Vec a m)))))
+    (should (car (tl-unify-types a b nil)))))
+
+(ert-deftest tl-ch-pi-unification-binds-the-shared-variable ()
+  "A variable discovered inside the codomain must bind in the original type.
+The comparison works on a re-spelled copy; if that copy shared nothing,
+unifying `(n : Nat) -> Vec a n' with `(m : Nat) -> Vec Int m' would leave
+`a' unbound and the caller none the wiser."
+  (let ((a (tl-type-parse '((n : Nat) -> (Vec a n))))
+        (b (tl-type-parse '((m : Nat) -> (Vec Int m)))))
+    (should (car (tl-unify-types a b nil)))
+    (should (equal (tl-test--alpha (tl-type-to-datum a))
+                   '((n : Nat) -> (Vec Int n))))))
+
+(ert-deftest tl-ch-ordinary-variables-still-bind ()
+  "Opening the parser up to terms must not disturb ordinary unification."
+  (let ((a (tl-type-parse '(List a)))
+        (b (tl-type-parse '(List Int))))
+    (should (car (tl-unify-types a b nil)))))
+
+(ert-deftest tl-ch-pi-is-a-proper-type ()
+  "A `Pi' must kind as `*', and its domain and codomain must be types."
+  (should (tl-kind-check (tl-ch--typed-env)
+                         (tl-type-parse '((n : Nat) -> (Vec a n) -> a)))))
+
+(ert-deftest tl-ch-pi-binder-kind-is-pinned-by-its-use ()
+  "Using `n' as `Vec's index is what fixes its kind to `Nat'.
+The binder's kind is left open on purpose: it is whatever its uses
+demand, and only a use can say what that is."
+  (let* ((ty (tl-type-parse '((n : Nat) -> (Vec a n) -> a)))
+         (binder (nth 0 (tl-tcon-args ty))))
+    ;; Kind-checking is what runs the uses, so it comes first: until a
+    ;; use has been seen the binder's kind is not merely unknown, it has
+    ;; not been looked for.
+    (tl-kind-check (tl-ch--typed-env) ty)
+    (should (tl-node-kind binder))
+    (should (tl-kind-unify (tl-node-kind binder) (tl-kind-universe 'Nat)))))
+
+(ert-deftest tl-ch-pi-over-a-function-typed-domain-is-well-kinded ()
+  "A binder may range over a function: `(f : Nat -> Nat) -> ...' is legitimate."
+  (should (tl-kind-check (tl-ch--typed-env)
+                         (tl-type-parse '((n : (Nat -> Nat)) -> a)))))
 
 (provide 'curry-howard-test)
 ;;; curry-howard-test.el ends here
