@@ -167,7 +167,9 @@ to send."
 
 (defun termlisp-repl--eval-string (input)
   "Evaluate INPUT in the REPL environment and return its printed value.
-Return nil when INPUT holds no top-level forms."
+A form with holes never reaches here: the checker signals `termlisp-hole'
+with its goals before anything is run, and `termlisp-repl--send' shows
+them.  Return nil when INPUT holds no top-level forms."
   (let ((env termlisp-repl--env)
         (value nil)
         (forms (termlisp-parse input)))
@@ -201,6 +203,12 @@ INPUT and advanced the process mark."
               (when result
                 (termlisp-repl--write (concat result "\n"))))
           (quit (termlisp-repl--write "Quit\n"))
+          ;; Goals are not an error: they are the answer to what the
+          ;; program left open, and saying so plainly is the whole point
+          ;; of writing `_' in the first place.
+          (termlisp-hole
+           (termlisp-repl--write
+            (concat (mapconcat #'identity (cadr err) "\n") "\n")))
           (error (termlisp-repl--write
                   (concat "error: " (termlisp-repl--error-message err) "\n"))))
       (termlisp-repl--write termlisp-repl-prompt))))

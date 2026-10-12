@@ -943,11 +943,67 @@ statement and data forms the Aldor lowering emits.")
    ((consp expr) (tl-infer-application env expr))
    (t (signal 'termlisp-type-error (list (format "Cannot infer: %S" expr))))))
 
+(defvar tl-infer-holes nil
+  "The `_' holes left in the form being inferred, most recent first.
+Each entry is a fresh type variable standing for one hole.  Recording
+them is what lets a driver show a goal for every position the program
+said nothing about, instead of leaving an unsolved variable that looks
+just like an ordinary unknown.  Callers that want to report holes bind
+this; inference itself neither requires nor clears it.")
+
+(defun tl-infer-hole ()
+  "Return a fresh type variable standing for a `_'.
+The variable is recorded in `tl-infer-holes' so whoever is driving the
+inference can report the goal it leaves behind.  A hole types exactly
+like an ordinary unknown -- that is what makes it usable inside a larger
+term, where the surrounding context decides what it must be -- but it is
+remembered, so it is never mistaken for something the program answered."
+  (let ((v (tl-fresh-tvar)))
+    (push v tl-infer-holes)
+    v))
+
+(defun tl-goal--readable (datum)
+  "Return DATUM with numbered metavariables spelled `t1', `t2', ...
+A `?1' symbol prints as `\\?1' because `?1' is the reader's character
+syntax, so handing the datum straight back would show a goal in spelling
+the reader re-reads as a character rather than as the variable it stood
+for."
+  (cond
+   ((symbolp datum)
+    (let ((name (symbol-name datum)))
+      (if (string-match-p "\\`?[0-9]+\\'" name)
+          (intern (concat "t" (if (eq (aref name 0) ??)
+                                  (substring name 1)
+                                name)))
+        datum)))
+   ((consp datum) (cons (tl-goal--readable (car datum))
+                        (tl-goal--readable (cdr datum))))
+   (t datum)))
+
+(defun tl-goal-lines (holes)
+  "Return one display line per hole in HOLES, most recent last.
+What a hole's type has already become is the whole point: `(+ 1 _)'
+leaves a hole the context has decided is a number, and saying so is
+worth far more than printing an unknown on its own.  The node is
+dereferenced rather than zonked through a substitution, because
+unification wrote the answer straight into the hole itself."
+  (let ((lines nil) (n 0))
+    (dolist (h (reverse holes) (nreverse lines))
+      (setq n (1+ n))
+      (push (format "hole %d : %s" n
+                    (format "%S" (tl-goal--readable
+                                  (tl-type-to-datum (tl-gnode-deref h)))))
+            lines))))
+
 (defun tl-infer-symbol (env sym)
   "Infer the type of a bare symbol SYM."
   (let ((cell (assq sym (tl-tenv-locals env)))
         (base (tl-tenv-base env)))
     (cond
+     ;; Term position only: a `_' in a pattern has always meant "match
+     ;; anything, bind nothing", which is a different question answered
+     ;; by `tl-infer-pattern' and does not come through here.
+     ((eq sym '_) (cons (tl-infer-hole) nil))
      (cell (let ((v (cdr cell)))
              (if (tl-tscheme-p v)
                  (let ((r (tl-instantiate-scheme v)))

@@ -24,6 +24,12 @@
 ;; layer that owns an evaluator fills it in.
 (require 'termlisp-nbe)
 
+(define-error 'termlisp-hole "Unsolved goal")
+;; Inheriting from `error' and not from `termlisp-type-error' is
+;; deliberate: a hole is not a mistake in the program, it is the program
+;; asking a question, and a caller that handles type errors should not
+;; find goals arriving inside that handling.
+
 (defvar termlisp--current-env nil
   "Dynamically bound evaluation context during `tl-run'.")
 
@@ -487,6 +493,7 @@ Handles top-level `do' desugaring like `termlisp-eval', and honors the
          ;; structural -- which is exactly what ordinary Hindley-Milner
          ;; checking, with nothing to unfold, wants.
          (tl-nbe-reduce-env env)
+         (tl-infer-holes nil)
          (form (if (and (consp form) (eq (car form) 'do))
                    (tl-desugar-do form)
                  form)))
@@ -496,6 +503,14 @@ Handles top-level `do' desugaring like `termlisp-eval', and honors the
                  (not (and (consp form)
                            (memq (car form) '(datatype datatype-extension)))))
         (tl-typecheck-form env form)))
+    ;; A form left with holes is not something to run: the program
+    ;; declined to say what belongs in those positions, so there is no
+    ;; value to produce.  Evaluating it anyway would only answer `got _'
+    ;; about a variable that was never meant to have one.  Report the
+    ;; goals instead -- which is what the REPL is for -- and let a
+    ;; batch caller see the same thing as a condition.
+    (when tl-infer-holes
+      (signal 'termlisp-hole (list (tl-goal-lines tl-infer-holes))))
     (tl-eval-top env form)))
 
 (defun termlisp-eval (string &optional env)

@@ -419,5 +419,69 @@ against the signature, and the name carried no information to begin with
   "(: g (-> Int String)) (define (g) 1) g"
   "does not match its signature" '(:type-check t :elaborate t))
 
+;;; Holes: the program asks, the REPL answers
+
+(defun tl-ch--goals (src)
+  "Return the goal lines SRC leaves, or nil when it leaves none.
+A form with holes signals `termlisp-hole' before it is run, so this is
+how a test asks what the checker would have said."
+  (let ((env (tl-ch--typed-env)))
+    (condition-case e
+        (progn (termlisp-eval src env) nil)
+      (termlisp-hole (cadr e)))))
+
+(ert-deftest tl-ch-a-hole-in-a-number-slot-is-a-number ()
+  "The context decides what a hole must be, and the goal says so.
+`(+ 1 _)' is the simplest term in which a hole's type is not its own
+business: it is whatever the surrounding term demanded."
+  (should (equal (tl-ch--goals "(+ 1 _)") '("hole 1 : Int"))))
+
+(ert-deftest tl-ch-two-holes-are-two-goals ()
+  "Each hole is reported separately, in the order they were written."
+  (should (equal (tl-ch--goals "(+ _ _)") '("hole 1 : Int" "hole 2 : Int"))))
+
+(ert-deftest tl-ch-an-unconstrained-hole-stays-open ()
+  "A hole nothing pins is reported as an open variable, not as a type.
+The element of `(VCons _ VNil)' is whatever the caller's vector says,
+and the goal must not pretend otherwise."
+  (should (equal (tl-ch--goals "(VCons _ VNil)") '("hole 1 : t1"))))
+
+(ert-deftest tl-ch-a-hole-inside-a-definition-is-still-a-goal ()
+  "Holes are collected wherever they appear, not only at the top level."
+  (should (equal (tl-ch--goals "(define (f x) (+ x _)) f") '("hole 1 : Int"))))
+
+(ert-deftest tl-ch-a-hole-is-never-run ()
+  "A form with holes must not be evaluated.
+There is no value in the positions the program declined to fill, and
+running it would answer `got _' about a variable that was never meant
+to have one."
+  (should-error (termlisp-eval "(+ 1 _)" (tl-ch--typed-env))
+                :type 'termlisp-hole))
+
+(ert-deftest tl-ch-a-hole-does-not-hide-a-real-error ()
+  "Goals are reported only when inference itself succeeded."
+  (should-error (termlisp-eval "(+ 1 \"s\")" (tl-ch--typed-env))
+                :type 'termlisp-type-error))
+
+(ert-deftest tl-ch-goals-are-not-type-errors ()
+  "A caller handling type errors must not find a goal arriving inside it.
+A hole is a question, not a mistake."
+  (should-error (termlisp-eval "(+ 1 _)" (tl-ch--typed-env))
+                :type 'termlisp-hole)
+  (let ((env (tl-ch--typed-env)))
+    (should-not (condition-case e
+                    (progn (termlisp-eval "(+ 1 _)" env) nil)
+                  (termlisp-type-error t)
+                  (termlisp-hole nil)))))
+
+(ert-deftest tl-ch-a-pattern-wildcard-is-not-a-hole ()
+  "`_' in a pattern has always meant \"match anything, bind nothing\".
+Opening term position up to holes must not disturb it: the wildcard
+still matches, still binds nothing, and leaves no goal behind."
+  (should (equal (tl-test--render "(define (f _ x) x) (f 1 2)"
+                                  '(:type-check t :elaborate t))
+                 "2"))
+  (should-not (tl-ch--goals "(define (f _ x) x) (f 1 2)")))
+
 (provide 'curry-howard-test)
 ;;; curry-howard-test.el ends here
