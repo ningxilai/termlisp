@@ -23,6 +23,13 @@
 (define (car (Pair a b)) a)
 (define (cdr (Pair a b)) b)
 
+;; Propositional types (Curry-Howard): `Void' is false, `Either' is
+;; disjunction, `Pair' above is conjunction, `->' is implication and
+;; `Unit' (below) is truth.  `absurd' is the primitive that eliminates
+;; `Void'; it is unreachable, because `Void' has no constructors.
+(datatype Void)
+(datatype Either (Left a) (Right b))
+
 ;; Peano naturals
 (datatype Nat (Zero) (Succ Nat))
 (define zero Zero)
@@ -30,6 +37,16 @@
 (define two (Succ (Succ Zero)))
 (define (plus Zero b) b)
 (define (plus (Succ a) b) (Succ (plus a b)))
+
+;; Operators from the hlisp reference implementation.  Equality, exclusive
+;; or and the null test are ordinary definitions; division (`/') and the
+;; transcendental functions (`sin', `cos', `tan', `exp', `log', `sqrt')
+;; are primitives.
+(define (= a b) (eq a b))
+(define (xor (True) (False)) (True))
+(define (xor (False) (True)) (True))
+(define (xor a b) (False))
+(define (null? a) (eq a Nil))
 
 ;; Higher-order: apply a passed function to one argument
 (define (map a (:lambda fun)) (fun a))
@@ -65,7 +82,12 @@
 ;; State instance: a computation is a function s -> (Pair a s)
 (datatype Unit (Unit))
 (define (state-return v) (lambda (s) (Pair v s)))
-(define (state-bind-step (Pair a s2) k) ((k a) s2))
+;; A State computation may hold a suspended effect in the lazy value field
+;; of an intermediate `Pair' (e.g. `(print v)' from `io-print').  Bind must
+;; force that value to WHNF before running the continuation, or a discarded
+;; field would drop the effect.  `seq' is strict because builtin arguments
+;; are forced by the driver.
+(define (state-bind-step (Pair a s2) k) (seq a ((k a) s2)))
 (define (state-bind m k) (lambda (s) (state-bind-step (m s) k)))
 (define (state-fmap-step (Pair a s2) f) (Pair (f a) s2))
 (define (state-fmap f m) (lambda (s) (state-fmap-step (m s) f)))
@@ -81,6 +103,15 @@
 (define ReaderDict (MonadDict reader-bind reader-return reader-fmap))
 (define (reader-ask) (lambda (r) r))
 (define run-reader (lambda (m) m))
+
+;; IO: a computation is a State action over the world, the standard
+;; input TextReader.  `print' and `read-line' are primitives backed by
+;; termlisp-io.el; the definitions below lift them into the State
+;; monad, so `do' with `StateDict' sequences them.
+(define io-world (stdin))
+(define (io-read-line) (lambda (w) (Pair (read-line) w)))
+(define (io-print v) (lambda (w) (Pair (print v) w)))
+(define (run-io m) (m io-world))
 
 ;; Type classes (Plan 4: dictionary-passing elaboration)
 ;;
@@ -182,6 +213,16 @@
 (define (filter f (Cons x xs)) (if (f x) (Cons x (filter f xs)) (filter f xs)))
 (define (foldr f z Nil) z)
 (define (foldr f z (Cons x xs)) (f x (foldr f z xs)))
+(define (foldl f z Nil) z)
+(define (foldl f z (Cons x xs)) (foldl f (f z x) xs))
+(define (reverse-acc Nil acc) acc)
+(define (reverse-acc (Cons x xs) acc) (reverse-acc xs (Cons x acc)))
+(define (reverse l) (reverse-acc l Nil))
+(define (sort-insert x Nil) (Cons x Nil))
+(define (sort-insert x (Cons y ys))
+  (if (< x y) (Cons x (Cons y ys)) (Cons y (sort-insert x ys))))
+(define (sort Nil) Nil)
+(define (sort (Cons x xs)) (sort-insert x (sort xs)))
 
 ;; Assertions
 (define (assertEqual a b) (if (eq a b) True False))

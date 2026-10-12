@@ -13,8 +13,12 @@
 ;; Characters are character codes (integers); `eof' is -1.  Strings are
 ;; Emacs strings.  Readers and writers are the same box type so the
 ;; erasing `f::TextReader' / `f::TextWriter' coercions are the identity.
+;; The last section registers the term-level primitives the prelude
+;; lifts into this monad.
 
 ;;; Code:
+
+(require 'termlisp-builtins)
 
 (defvar tl-eof -1
   "The end-of-file Character code.")
@@ -115,7 +119,7 @@
 
 (defun tl-read-line (box)
   "Read and return the rest of the current line from reader BOX."
-  (let ((out "") (c (tl-read! box)))
+  (let* ((out "") (c (tl-read! box)))
     (while (and (/= c tl-eof) (/= c tl-newline))
       (setq out (concat out (string c)))
       (setq c (tl-read! box)))
@@ -125,18 +129,16 @@
 
 (defun tl-write! (c handle)
   "Write Character C to the writer HANDLE; return C."
-  (let ((box (tl-handle handle)))
+  (let* ((box (tl-handle handle)))
     (cond ((eq box 'tl-stdout) (princ (string c)))
           ((consp box) (setcdr box (concat (cdr box) (string c))))
-          (t (princ (string c)))))
-  c)
+          (t (princ (string c))))))
 
 (defun tl-output-char (writer c)
   "Print Character C for the prelude `<<', returning WRITER."
-  (cond ((eq writer 'tl-stdout) (princ (string c)))
-        ((consp writer) (setcdr writer (concat (cdr writer) (string c))))
-        (t (princ (string c))))
-  writer)
+  (cond* ((eq writer 'tl-stdout) (princ (string c)))
+         ((consp writer) (setcdr writer (concat (cdr writer) (string c))))
+         (t (princ (string c)))))
 
 (defun tl-lines (handle)
   "Return a generator closure over the lines of reader HANDLE."
@@ -149,10 +151,9 @@
     (setcar box "")
     (lambda ()
       (if (null lines)
-          'tl-gen-done
-        (let ((line (car lines)))
-          (setq lines (cdr lines))
-          line)))))
+          'tl-gen-done (let* ((line (car lines)))
+                         (setq lines (cdr lines))
+                         line)))))
 
 ;;; Characters and strings.
 
@@ -176,7 +177,7 @@ Aldor's String is 0-based, so indices map directly onto Emacs strings."
 
 (defun tl-right-trim (s c)
   "Remove trailing Character C from string S."
-  (let ((ch (string c)))
+  (let* ((ch (string c)))
     (while (and (> (length s) 0) (string= (substring s -1) ch))
       (setq s (substring s 0 -1)))
     s))
@@ -207,10 +208,85 @@ Return a store handle for the file."
 
 (defun tl-close! (handle)
   "Close the file HANDLE, flushing a writer's buffer to disk."
-  (let ((f (tl-handle handle)))
+  (let* ((f (tl-handle handle)))
     (when (and (consp f) (stringp (car f)) (stringp (cdr f)))
       (with-temp-file (car f) (insert (cdr f)))))
   handle)
+
+;;; Term-level primitives ---------------------------------------------
+
+;; The hlisp operators `print', `read-line' and the string functions,
+;; registered as term-lisp builtins.  The prelude lifts the two I/O
+;; ones into the State monad (`io-print'/`io-read-line'); all are also
+;; callable directly.
+
+(defun tl-io--check-no-args (args name)
+  "Signal a type error mentioning NAME unless ARGS is empty."
+  (unless (null args)
+    (signal 'termlisp-type-error
+            (list (format "%s expects no arguments, got %d"
+                          name (length args))))))
+
+(defun tl-io--cons-elements (v name)
+  "Return the forced elements of the termlisp list V, or signal NAME's type error."
+  (if (or (eq v 'Nil) (tl-list-cons-p v))
+      (tl-output--list-items v)
+    (signal 'termlisp-type-error
+            (list (format "%s expects a list, got %S" name v)))))
+
+(tl-register-builtin 'stdin
+  (lambda (args)
+    (tl-io--check-no-args args 'stdin)
+    tl-stdin))
+
+(tl-register-builtin 'read-line
+  (lambda (args)
+    (tl-io--check-no-args args 'read-line)
+    (tl-read-line tl-stdin)))
+
+(tl-register-builtin 'print
+  (lambda (args)
+    (tl-check-one-arg args 'print)
+    (princ (concat (tl-output--format (car args)) "\n"))
+    'True))
+
+(tl-register-builtin 'string-join
+  (lambda (args)
+    (tl-check-one-arg args 'string-join)
+    (mapconcat (lambda (v) (if (stringp v) v (tl-output--format v)))
+               (tl-io--cons-elements (car args) 'string-join)
+               "")))
+
+(tl-register-builtin 'string->list
+                     (lambda (args)
+                       (tl-check-one-arg args 'string->list)
+                       (let* ((s (car args)))
+                         (unless (stringp s)
+                           (signal 'termlisp-type-error
+                                   (list (format "string->list expects a string, got %S" s))))
+                         (tl-values-to-list (mapcar #'string (string-to-list s))))))
+
+(tl-register-builtin 'list->string
+  (lambda (args)
+    (tl-check-one-arg args 'list->string)
+    (mapconcat (lambda (v)
+                 (unless (and (stringp v) (= (length v) 1))
+                   (signal 'termlisp-type-error
+                           (list (format "list->string expects single-character strings, got %S" v))))
+                 v)
+               (tl-io--cons-elements (car args) 'list->string)
+               "")))
+
+(tl-register-builtin 'format
+                     (lambda (args)
+                       (unless (= (length args) 2)
+                         (signal 'termlisp-type-error
+                                 (list (format "format expects 2 arguments, got %d" (length args)))))
+                       (let* ((fmt (nth 0 args)))
+                         (unless (and (stringp fmt) (string= fmt "~a"))
+                           (signal 'termlisp-type-error
+                                   (list (format "Unsupported format string: %S" fmt))))
+                         (tl-output--format (nth 1 args)))))
 
 (provide 'termlisp-io)
 ;;; termlisp-io.el ends here

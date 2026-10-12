@@ -60,6 +60,32 @@ Emacs stack.
 ### Static types and type classes
 
 A Hindley–Milner type checker infers types (opt-in via `:type-check`).
+Every builtin carries a type scheme, so ill-typed calls are rejected before
+they reach the evaluator:
+
+```lisp
+(+ 1 True)              ; Cannot apply + to True
+(cos True)               ; Cannot apply cos to True
+(string->list 42)        ; Cannot apply string->list to 42
+(sin (sin 1))            ; ok — the transcendental numerics compose
+```
+
+Numeric literals are inferred `Int` regardless of their runtime
+representation, so `sin`/`cos`/`tan`/`exp`/`log`/`sqrt` are typed
+`Int -> Int` (as `/` already was).  The exact numeric tower
+(`tl-fraction`, `tl-complex`, `tl-num-*`) is polymorphic.
+
+Variadic `list` has no fixed arity to express as a curried arrow, so it is
+expanded to nested `Cons` applications in both the evaluator and the type
+checker — the same trick Coalton uses for `make`/`make-list`.  It therefore
+acquires a type at each call site, and `Cons` enforces that the elements are
+homogeneous:
+
+```lisp
+(list 1 2 3)         ; (List Int)
+(list 1 True)        ; Cannot apply Cons to (Cons True Nil)
+```
+
 Type classes with dictionary passing are supported (opt-in via `:elaborate`):
 
 ```lisp
@@ -67,6 +93,31 @@ Type classes with dictionary passing are supported (opt-in via `:elaborate`):
 (instance (Functor Maybe) FunctorMaybeDict)
 ;; (fmap (lambda (x) (+ x 1)) (Just 4)) => (Just 5)
 ```
+
+### Propositional types
+
+Types are propositions and programs are proofs, so the prelude carries the
+constructive connectives.  The Curry–Howard reading holds outright for
+intuitionistic propositional logic:
+
+| Proposition | Type |
+|---|---|
+| truth `⊤` | `Unit` |
+| falsehood `⊥` | `Void` — declares no constructors |
+| conjunction | `(Pair a b)` |
+| disjunction | `(Either a b)` — `Left`, `Right` |
+| implication | `a -> b` |
+| negation `¬a` | `a -> Void` |
+
+```lisp
+(define (and-implies-or (Pair a b)) (Left a))   ; A ∧ B → A ∨ B
+(: not-void (Void -> Void))
+(define (not-void v) v)                          ; ¬⊥
+```
+
+`absurd : ∀a. Void -> a` is `⊥`-elimination.  It can never run, because
+`Void` has no constructors; reaching it at all means `:type-check` was off,
+and it signals rather than answering a value.
 
 ### Monads and `do`
 
@@ -91,7 +142,15 @@ API:
 - `termlisp-parse` — parse a string into a list of S-expressions.
 - `termlisp-typecheck` / `termlisp-typecheck-file` — typecheck a string / file.
 - `termlisp-load-prelude` — load `termlisp-prelude.tls` into an environment.
+  The prelude defines the booleans, pairs, `Either`/`Void`, lists, monads
+  and type classes, together with the hlisp operators `=`, `xor`, `null?`,
+  `foldl`, `reverse` and `sort`.  I/O is a State action over the world:
+  `io-world`, `io-print`, `io-read-line` and `run-io`.
 - `termlisp-value->string` — render a value.
+- Builtins — the primitive functions term-lisp code can call: `eq`, `+`, `-`,
+  `*`, `/`, `<`, `<=`, `>`, `>=`, `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`,
+  `list`, `seq`, `first`, `rest`, `empty?`, `absurd`, `stdin`, `read-line`,
+  `print`, `format`, `string-join`, `string->list`, `list->string`.
 
 Example:
 
@@ -101,6 +160,25 @@ Example:
    (termlisp-eval "(fmap (lambda (x) (+ x 1)) (Just 4))" env)))
 ;; => "(Just 5)"
 ```
+
+## The REPL
+
+`M-x termlisp-repl` opens a comint buffer with a `λ>` prompt. Input is
+evaluated in the running Emacs, so definitions made at the prompt stay for the
+rest of the session. The environment starts from `termlisp-repl-options`
+(`:type-check` on by default) and, unless `termlisp-repl-load-prelude` is nil,
+the prelude is loaded into it.
+
+- `RET` sends the input when it reads as a sequence of complete top-level
+  forms; an unfinished form moves to the next line and is indented, so a form
+  can be typed across several lines without an escape character.
+- `C-j` inserts a newline without evaluating.
+- `M-p`, `M-n`, `M-r` browse the input history; `C-c C-o` removes output.
+- `C-c C-k` discards every definition and loads a fresh environment.
+- `C-c C-t` toggles `:type-check` for the current environment.
+- An input of `exit` (or `quit`) closes the REPL.
+
+Errors are reported in the buffer (`error: ...`) and the REPL keeps running.
 
 ## Project layout
 
@@ -122,6 +200,7 @@ termlisp-builtins.el   ; primitive functions
 termlisp-numeric.el    ; exact Fraction/Complex arithmetic over Calc
 termlisp-eval.el       ; lazy TCO evaluator, `do`, top-level forms
 termlisp-load.el       ; load .tls files as elisp
+termlisp-repl.el      ; interactive REPL, `M-x termlisp-repl'
 termlisp-data-reader.el; cats-based Reader monad
 termlisp-io.el         ; State-monad I/O runtime
 termlisp-abn.el        ; Aldor ABN reader

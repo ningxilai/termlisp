@@ -54,7 +54,8 @@
   (method-env (make-hash-table :test #'eq))
   (clauses (make-hash-table :test #'eq))
   (globals nil)
-  (options termlisp-default-options))
+  (options termlisp-default-options)
+  (current nil))
 
 (defun termlisp-make-env (&optional options)
   "Create a fresh evaluation environment, merging OPTIONS over defaults."
@@ -67,6 +68,10 @@
     (if (plist-member plist key)
         (plist-get plist key)
       default)))
+
+(defun tl-env-resolve-current (env)
+  "Return the current environment linked from ENV, or ENV itself."
+  (or (tl-env-current env) env))
 
 (provide 'termlisp-base)
 ;;; termlisp-base.el ends here

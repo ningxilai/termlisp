@@ -117,6 +117,23 @@ Return the new representative, or nil on a kind clash (recorded in
       (setf (tl-node-bind node) bind)
       (setf (tl-node-rank node) rank))))
 
+(defun tl-gnode--head (h)
+  "Reduce head H to a form that compares `eq' across representations.
+Binding a variable head to a constructor wraps that constructor in a
+plain leaf node (see the higher-kinded case in `tl-gnode-unify'), so a
+head reached through a variable yields the wrapper while the matching
+head written in a type is the bare symbol.  Dereference H and unwrap
+such a leaf back to its symbol, so both spellings of one constructor
+compare equal.  A head that is still a variable, or a constructor
+symbol, is returned unchanged."
+  (let ((r (if (tl-node-p h) (tl-gnode-deref h) h)))
+    (if (and (tl-node-p r)
+             (not (tl-node-var-p r))
+             (not (tl-node-application r)))
+        (let ((hh (tl-node-head r)))
+          (if (tl-node-p hh) (tl-gnode--head hh) hh))
+      r)))
+
 (defun tl-gnode-unify (a b &optional occurs-check)
   "Unify nodes A and B, mutating BIND slots.  Return t, or nil (rolled back).
 With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
@@ -162,13 +179,15 @@ rejected a cyclic binding."
            ((and (tl-node-application x) (tl-node-application y)
                  (= (length (tl-node-children x))
                     (length (tl-node-children y)))
-                 (let ((hx (tl-node-head x)) (hy (tl-node-head y)))
+                 (let ((hx (tl-gnode--head (tl-node-head x)))
+                       (hy (tl-gnode--head (tl-node-head y))))
                    ;; Heads are compared with `eq': two distinct unbound
                    ;; variable nodes are `equal' structurally but must
                    ;; still be unified.
                    (or (eq hx hy)
                        (tl-node-var-p hx) (tl-node-var-p hy))))
-            (let ((hx (tl-node-head x)) (hy (tl-node-head y)))
+            (let ((hx (tl-gnode--head (tl-node-head x)))
+                   (hy (tl-gnode--head (tl-node-head y))))
               ;; Higher-kinded: a variable in head position unifies with
               ;; the other head (e.g. `(f a)' against `(Maybe Int)').
               (unless (eq hx hy)

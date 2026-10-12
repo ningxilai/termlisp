@@ -30,6 +30,8 @@
 ;; and the type layer (`tl-typecheck-ir', `tl-typecheck') is a Haskell-98-
 ;; style HM oracle with type classes over the shared term graph.  See
 ;; `termlisp-base' for the error hierarchy shared by every module.
+;;
+;; `termlisp-repl' opens an interactive REPL for exploring the language.
 
 ;;; Code:
 
@@ -74,6 +76,10 @@
 
 ;; The Reader monad; it depends on `cats', declared in Package-Requires.
 (require 'termlisp-data-reader)
+
+;;; Interactive REPL
+
+(require 'termlisp-repl)
 
 (provide 'termlisp)
 ;;; termlisp.el ends here

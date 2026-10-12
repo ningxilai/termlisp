@@ -39,6 +39,7 @@
 (declare-function tl-eval-datatype "termlisp-eval" (env form))
 (declare-function tl-eval-datatype-extension "termlisp-eval" (env form))
 (declare-function tl-desugar-do "termlisp-eval" (form))
+(declare-function tl-desugar-list "termlisp-eval" (form))
 
 ;;; Representation: a type is a `tl-node' from `termlisp-graph'.
 ;;; A constructor application `(C a b)' is a compound node, a bare
@@ -756,6 +757,12 @@ statement and data forms the Aldor lowering emits.")
     (tl-infer-lambda env (cadr expr) (caddr expr)))
    ((and (consp expr) (eq (car expr) 'do))
     (tl-infer env (tl-desugar-do expr)))
+   ;; `(list e...)' is variadic, so it carries no scheme of its own.  Expand
+   ;; it to nested `Cons' applications (as the evaluator does in `tl-run')
+   ;; and infer the result, which gives `list' an arity-indexed type at every
+   ;; call site and enforces element homogeneity.
+   ((and (consp expr) (eq (car expr) 'list))
+    (tl-infer env (tl-desugar-list expr)))
    ((and (consp expr) (gethash (car-safe expr) tl-infer-ir-heads))
     (funcall (gethash (car-safe expr) tl-infer-ir-heads) env expr))
    ((consp expr) (tl-infer-application env expr))
