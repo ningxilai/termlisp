@@ -39,6 +39,7 @@
 (declare-function tl-eval-datatype "termlisp-eval" (env form))
 (declare-function tl-eval-datatype-extension "termlisp-eval" (env form))
 (declare-function tl-desugar-do "termlisp-eval" (form))
+(declare-function tl-desugar-let "termlisp-eval" (form))
 (declare-function tl-desugar-list "termlisp-eval" (form))
 
 ;;; Representation: a type is a `tl-node' from `termlisp-graph'.
@@ -849,6 +850,15 @@ statement and data forms the Aldor lowering emits.")
     (tl-infer-lambda env (cadr expr) (caddr expr)))
    ((and (consp expr) (eq (car expr) 'do))
     (tl-infer env (tl-desugar-do expr)))
+   ;; A `let' is inference-neutral: it binds names, nothing more.  It is
+   ;; rewritten into an inline-lambda application, which is the shape
+   ;; inference already understands, rather than being given a rule of its
+   ;; own.  Without this it falls through to `tl-infer-application', where
+   ;; `let' is just an unknown function -- so the whole body typechecks as
+   ;; a fresh unconstrained variable and nothing the body says is checked
+   ;; at all.
+   ((and (consp expr) (eq (car expr) 'let))
+    (tl-infer env (tl-desugar-let expr)))
    ;; `(list e...)' is variadic, so it carries no scheme of its own.  Expand
    ;; it to nested `Cons' applications (as the evaluator does in `tl-run')
    ;; and infer the result, which gives `list' an arity-indexed type at every

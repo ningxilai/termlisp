@@ -32,6 +32,7 @@
 (require 'termlisp-types)
 
 (declare-function tl-desugar-do "termlisp-eval" (form))
+(declare-function tl-desugar-let "termlisp-eval" (form))
 
 (defun tl-instance-dict-term (env inst sub)
   "Return the dictionary term for INST given the matching substitution SUB.
@@ -150,10 +151,17 @@ constraints.  Return the transformed define."
                                          (caddr form) given))))))
 
 (defun tl-desugar-do-tree (form)
-  "Return FORM with every `(do ...)' subterm replaced by its desugaring."
+  "Return FORM with every `do' and `let' subterm replaced by its desugaring.
+Both are rewritten before inference so that the elaborator walks the
+same shape the type checker saw.  `let' is here for the same reason `do'
+is: a recorded call site inside one would otherwise not line up with
+anything the elaborator finds in the source."
   (cond
    ((atom form) form)
-   ((eq (car form) 'do) (tl-desugar-do-tree (tl-desugar-do form)))
+   ((and (consp form) (eq (car form) 'do))
+    (tl-desugar-do-tree (tl-desugar-do form)))
+   ((and (consp form) (eq (car form) 'let))
+    (tl-desugar-do-tree (tl-desugar-let form)))
    (t (cons (tl-desugar-do-tree (car form))
             (tl-desugar-do-tree (cdr form))))))
 
