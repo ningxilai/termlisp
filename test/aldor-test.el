@@ -16,6 +16,7 @@
 (require 'prelude-test)
 (require 'curry-howard-test)
 (require 'nbe-test)
+(require 'graph-rewrite-test)
 
 ;; Generated programs redefine elisp builtins (`cons', `apply', `sort'
 ;; ...).  Letting `defalias' install byte-compiler trampolines then

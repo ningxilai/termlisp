@@ -3,9 +3,12 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
-;; A term is a graph of mutable nodes (head + children + state + memo).
-;; Children are shared node references (hash-consing on build).  Rules
-;; rewrite nodes in place; reduction is strict and phase/priority ordered.
+;; A term is a graph of nodes (head + children + state + memo).
+;; Children are shared node references (hash-consing on build).  A rule
+;; computes a reduct and the walk installs it with `copy-tl-node', so a
+;; node that is reachable from more than one place -- which every node of
+;; a *type* is -- is never edited behind the caller's back.  Reduction is
+;; strict and phase/priority ordered.
 
 ;;; Code:
 
@@ -14,8 +17,7 @@
 
 ;; Clause-based rules are dispatched by `termlisp-case', which builds on this
 ;; file; the declarations avoid a circular `require' at load time.
-(declare-function tl-graph-apply-crule "termlisp-case" (node rule))
-(declare-function tl-graph-crule-applicable-p "termlisp-case" (node rule))
+(declare-function tl-graph-crule-reduce "termlisp-case" (node rule))
 (declare-function tl-pat-dispatch-heads "termlisp-case" (pat))
 
 (cl-defstruct (tl-node (:constructor tl-make-node (head &optional children application)))
@@ -54,6 +56,14 @@ hand an outer variable an inner one."
 
 (defconst tl-graph-opaque-heads '(quote function)
   "Heads whose subterms are never rewritten or descended into (opaque data).")
+
+(defvar tl-graph-whnf nil
+  "Function of one node returning its weak head normal form, or nil.
+A host that reduces *while it matches* binds this: the type layer cannot
+tell that `plus Zero n' is a `Succ' without reducing it first, so a clause
+whose argument is not yet in constructor form would otherwise be missed and
+the type reported as unequal.  Nil means no reduction, which keeps a plain
+syntactic rewrite purely structural.")
 
 (defun tl-graph-build (sexp)
   "Build a term graph from SEXP, sharing structurally identical subterms.
@@ -213,34 +223,40 @@ returning either a node or a further template sexp."
                   t))
    (t (tl-make-node template nil nil))))
 
-(defun tl-graph--commit (node rule new)
-  "Replace NODE's contents with NEW.  Return t, or signal on no progress.
-Shared by the pattern/template path and the clause-based path so both
-enforce the same in-place-update and non-progressing-rewrite contract."
-  (if (and (eq (tl-node-head node) (tl-node-head new))
-           (eq (tl-node-application node) (tl-node-application new))
-           (equal (tl-node-children node) (tl-node-children new)))
-      (signal 'termlisp-eval-error
-              (list (format "Non-progressing rewrite: %S" (tl-grule-name rule))))
-    (setf (tl-node-head node) (tl-node-head new))
-    (setf (tl-node-application node) (tl-node-application new))
-    (setf (tl-node-children node) (tl-node-children new))
-    t))
+(defun tl-graph--check-progress (node rule new)
+  "Signal `termlisp-eval-error' when rewriting NODE to NEW changes nothing.
+A rule that matches and then reproduces what it matched would loop forever,
+so non-progress is a defect in the rule rather than a property of the term.
+A term no rule applies to simply stays where it is: only a rule that has
+been committed to and then produces nothing is a bug."
+  (when (and (eq (tl-node-head node) (tl-node-head new))
+             (eq (tl-node-application node) (tl-node-application new))
+             (equal (tl-node-children node) (tl-node-children new)))
+    (signal 'termlisp-eval-error
+            (list (format "Non-progressing rewrite: %S" (tl-grule-name rule))))))
 
-(defun tl-graph-apply (node rule)
-  "If RULE matches NODE, rewrite NODE in place.  Return t, or nil if no match.
-A clause-based rule (see `tl-make-crule') is dispatched through its compiled
-case tree; otherwise PATTERN/TEMPLATE are used as before.
-Signals `termlisp-eval-error' if the rewrite makes no progress."
+(defun tl-graph-reduce (node rule)
+  "Return RULE's reduct for NODE, or nil when the rule does not apply.
+NODE and everything sharing it are left alone, and the caller decides
+where the reduct goes.  Reduction over a *type* has to be pure, because
+the same node is reachable from every type that mentions it -- rewriting
+it in place would edit a signature as a side effect of comparing two
+unrelated types.
+
+Only the hand-written PATTERN/TEMPLATE path checks that a rule made
+progress.  A rule built from a function's clauses does not: reproducing
+what it matched is what a definition that calls itself does, and the answer
+to that is the fuel in the host's own budget rather than an error class that
+belongs to evaluating source."
   (if (tl-grule-clauses rule)
-      (tl-graph-apply-crule node rule)
+      (tl-graph-crule-reduce node rule)
     (let ((bindings (tl-graph-match (tl-grule-pattern rule) node nil)))
       (when (and bindings
                  (or (null (tl-grule-guard rule))
                      (funcall (tl-grule-guard rule) bindings)))
-        (tl-graph--commit node rule
-                          (tl-graph-instantiate (tl-grule-template rule)
-                                                bindings))))))
+        (let ((new (tl-graph-instantiate (tl-grule-template rule) bindings)))
+          (tl-graph--check-progress node rule new)
+          new)))))
 
 (defconst tl-graph-phases
   '(:surface :normalize :desugar :context :control :load :action :backend)
@@ -320,34 +336,65 @@ it, with GENERIC merged in so a single lookup yields every rule to try."
                specific)
       (cons generic table))))
 
+(defun tl-graph--rebuild (node children)
+  "Return a copy of NODE carrying CHILDREN, leaving NODE itself untouched.
+Copying rather than mutating is what lets `tl-graph--step' rewrite a term
+that is shared: VAR/BIND/RIGID/LEVEL and KIND describe the term and must
+survive the copy, while HEAD, APPLICATION and CHILDREN are the parts a rule
+is allowed to replace."
+  (let ((new (copy-tl-node node)))
+    (setf (tl-node-children new) children)
+    new))
+
 (defun tl-graph--step (graph dispatch)
   "Apply one highest-priority leftmost-outermost rewrite.  Return t if any.
 DISPATCH is a `(GENERIC . TABLE)' index from `tl-graph--rule-dispatch'; only
 the rules indexed under a node's head (plus the generic ones) are tried.
 The graph is walked in pre-order with early exit, so no full node list is
-built and the scan stops at the first applicable rule."
+built and the scan stops at the first applicable rule.
+
+Rewriting is copy-on-write: `tl-graph-reduce' never modifies the node it is
+handed, and only the path back to the root is rebuilt.  A type node is
+shared by every type that mentions it, so mutating one in place would
+rewrite a signature while comparing two other types."
   (let ((generic (car dispatch))
         (table (cdr dispatch))
         (seen (make-hash-table :test #'eq)))
     (cl-labels ((walk (node)
                   (unless (gethash node seen)
                     (puthash node t seen)
-                    (catch 'applied
+                    (catch 'step
                       (dolist (rule (or (gethash (tl-node-head node) table)
                                         generic))
-                        (when (tl-graph-apply node rule)
-                          (throw 'applied t)))
+                        (let ((new (tl-graph-reduce node rule)))
+                          (when new (throw 'step new))))
                       (unless (memq (tl-node-head node) tl-graph-opaque-heads)
-                        (catch 'descend
-                          (dolist (child (tl-node-children node))
-                            (when (walk child)
-                              (throw 'descend t)))))))))
-      (walk (tl-graph-root graph)))))
+                        (let ((children (tl-node-children node))
+                              (out nil)
+                              (moved nil))
+                          (dolist (child children)
+                            (let ((re (walk child)))
+                              (if re
+                                  (progn (push re out) (setq moved t))
+                                (push child out))))
+                          (when moved
+                            (throw 'step
+                                   (tl-graph--rebuild node (nreverse out))))))
+                      nil))))
+      (let ((new (walk (tl-graph-root graph))))
+        (when new
+          (setf (tl-graph-root graph) new)
+          t)))))
 
-(defun tl-graph-rewrite (graph rules &optional fuel)
+(defun tl-graph-rewrite (graph rules &optional fuel fuel-signal)
   "Strictly reduce GRAPH to normal form using RULES, phase by phase.
-Signals `termlisp-eval-error' when FUEL (default 10000) is exhausted."
-  (let ((remaining (or fuel 10000)))
+Signals FUEL-SIGNAL (default `termlisp-eval-error') when FUEL (default
+10000) is exhausted.  A host rewriting *source* reports an evaluation
+error; a host normalising a *type* passes its own class instead, because a
+type-level function that will not stop is a type error and has no business
+being reported as one about evaluation."
+  (let ((remaining (or fuel 10000))
+        (condition (or fuel-signal 'termlisp-eval-error)))
     (dolist (phase tl-graph-phases graph)
       (let ((dispatch (tl-graph--rule-dispatch (tl-graph--rules-for phase rules))))
         (unless (and (null (car dispatch))
@@ -355,30 +402,17 @@ Signals `termlisp-eval-error' when FUEL (default 10000) is exhausted."
           (let ((progress t))
             (while progress
               (when (<= remaining 0)
-                (signal 'termlisp-eval-error '("TGR fuel exhausted")))
+                (signal condition '("TGR fuel exhausted")))
               (setq remaining (1- remaining))
               (setq progress (tl-graph--step graph dispatch)))))))))
 
-(defun tl-graph-rewrite-sexp (sexp rules &optional fuel)
-  "Build a graph from SEXP, strictly reduce it with RULES, and render it back."
-  (tl-node->sexp (tl-graph-root (tl-graph-rewrite (tl-graph-build sexp) rules fuel))))
-
-(defun tl-graph-normal-form-p (graph rules)
-  "Return non-nil if no rule applies anywhere in GRAPH."
-  (let* ((dispatch (tl-graph--rule-dispatch rules))
-         (generic (car dispatch))
-         (table (cdr dispatch)))
-    (catch 'reducible
-      (dolist (node (tl-graph--preorder (tl-graph-root graph)))
-        (dolist (rule (or (gethash (tl-node-head node) table) generic))
-          (when (if (tl-grule-clauses rule)
-                    (tl-graph-crule-applicable-p node rule)
-                  (let ((bindings (tl-graph-match (tl-grule-pattern rule) node nil)))
-                    (and bindings
-                         (or (null (tl-grule-guard rule))
-                             (funcall (tl-grule-guard rule) bindings)))))
-            (throw 'reducible nil))))
-      t)))
+(defun tl-graph-rewrite-sexp (sexp rules &optional fuel fuel-signal)
+  "Build a graph from SEXP, strictly reduce it with RULES, and render it back.
+FUEL and FUEL-SIGNAL are `tl-graph-rewrite''s: how many steps may be taken,
+and the error class to report when they run out."
+  (tl-node->sexp (tl-graph-root
+                  (tl-graph-rewrite (tl-graph-build sexp) rules
+                                    fuel fuel-signal))))
 
 (provide 'termlisp-graph)
 ;;; termlisp-graph.el ends here

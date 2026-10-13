@@ -17,6 +17,17 @@
 ;; `DECISION-unified-term-graph.md').  `tl-gnode-subst''s sharing is what
 ;; keeps substitution from rebuilding what it does not have to.
 ;;
+;; The engine underneath is `termlisp-graph''s: a function's clauses become
+;; a clause-based rewrite rule, `termlisp-case' compiles them into a
+;; decision tree so the first argument's constructor picks the clause
+;; instead of every clause being tried in turn, and `tl-graph-rewrite' walks
+;; the graph until nothing more applies.  What this module adds on top is
+;; the environment a rule unfolds against and the reduction an argument
+;; needs before its constructor is visible -- offered through
+;; `tl-graph-whnf', the hook `termlisp-case' calls while it matches.  The
+;; graph is rewritten copy-on-write, so normalising a type never edits the
+;; type it came from.
+;;
 ;; What is traded away is efficiency: rewriting substitutes afresh at
 ;; every step, so a term that a normalizer would evaluate in linear time
 ;; can blow up here.  Type-level terms in this system are small and the
@@ -100,42 +111,6 @@ MEMO is the node-to-copy table and NAMES the list of bound names."
               (puthash node new memo)
               new))))))
 
-(defun tl-nbe-match (pat node nbe bindings)
-  "Match compiled pattern PAT against NODE under NBE, extending BINDINGS.
-Return `(ok . bindings)', where BINDINGS maps a pattern's name symbol to
-the node it captured, or nil when PAT does not apply.  Only the pattern
-forms a clause can actually take at the type level are handled: a
-constructor, a name, a literal, and the wildcard.  Guards and `or' are
-value-level concerns and have no meaning here."
-  (pcase (car pat)
-    ('wild (cons t bindings))
-    ('var (cons t (cons (cons (cdr pat) node) bindings)))
-    ('lit
-     (let ((n (tl-nbe-whnf node nbe)))
-       (when (and (tl-node-p n) (not (tl-node-var-p n))
-                  (equal (tl-node-head n) (cadr pat)))
-         (cons t bindings))))
-    ('con
-     (let* ((name (cadr pat))
-            (subs (cddr pat))
-            (n (tl-nbe-whnf node nbe)))
-       (when (and (tl-node-p n) (not (tl-node-var-p n))
-                  (eq (tl-node-head n) name))
-         (let ((args (tl-node-children n))
-               (bs bindings)
-               (ok t))
-           (unless (= (length args) (length subs)) (setq ok nil))
-           (while (and ok subs args)
-             (let ((r (tl-nbe-match (car subs) (car args) nbe bs)))
-               (if r
-                   (progn (setq bs (cdr r))
-                          (setq args (cdr args))
-                          (setq subs (cdr subs)))
-                 (setq ok nil))))
-           (when (and ok (null subs) (null args))
-             (cons t bs))))))
-    (_ nil)))
-
 (defun tl-nbe-clauses (name nbe)
   "Return the clause list NAME has in NBE's environment, or nil.
 `tl-env-functions' already maps a name to its list of clauses, so this
@@ -143,36 +118,137 @@ looks it up and nothing more."
   (and (symbolp name)
        (gethash name (tl-env-functions (tl-nbe-env nbe)))))
 
-(defun tl-nbe-match-all (params args nbe bindings)
-  "Match every pattern in PARAMS against the corresponding node in ARGS.
-Return `(ok . bindings)' where BINDINGS maps each pattern's name symbol
-to the node it captured, or nil when any pattern does not apply.  NBE is
-threaded through because a pattern may have to reduce an argument before
-it can tell whether it matches."
-  (let ((bs bindings) (ps params) (as args) (ok t))
-    (while (and ok ps as)
-      (let ((r (tl-nbe-match (car ps) (car as) nbe bs)))
-        (if r
-            (setq bs (cdr r) ps (cdr ps) as (cdr as))
-          (setq ok nil))))
-    (and ok (null ps) (null as) (cons t bs))))
+;;;; Rewriting rules
+
+(defvar tl-nbe-fuel 100000
+  "How many steps one reduction may take.
+A type-level function that calls itself forever is a mistake in the
+definition, not an invitation to hang Emacs; running out of fuel is
+reported as a type error.")
+
+(defvar tl-nbe--fuel nil
+  "Remaining steps of the reduction in flight, as a cons cell, or nil.
+Bound rather than passed down so that every nested reduction -- a match
+that must reduce an argument before it can decide -- spends from the one
+budget instead of opening a fresh one.")
+
+(defvar tl-nbe--rule-tables (make-hash-table :test #'eq)
+  "Environment -> hash of function name -> (CLAUSES . RULE).
+A rule is rebuilt when the function's clause list changes identity, which
+is what `tl-eval-define' hands out when it appends a clause, so a
+redefinition is picked up without a second cache to invalidate by hand.")
+
+(defun tl-nbe--spend ()
+  "Take one step from the reduction budget, or signal when it is gone."
+  (if (and tl-nbe--fuel (> (car tl-nbe--fuel) 0))
+      (decf (car tl-nbe--fuel))
+    (signal 'termlisp-type-error
+            '("type-level reduction did not terminate"))))
+
+(defun tl-nbe--type-pattern-p (pat)
+  "Return non-nil when PAT is a pattern the type layer can match at all.
+Guards, `or', `and', `:lambda' and list-rest patterns are value-level
+concerns with no meaning inside a type, so a clause built from one could
+never be chosen; carrying it into the rule would only give the decision
+tree a branch that must not be taken."
+  (pcase (car-safe pat)
+    ((or 'wild 'var 'lit) t)
+    ('con (and (cl-every #'tl-nbe--type-pattern-p (cddr pat)) t))
+    (_ nil)))
+
+(defun tl-nbe--case-pattern (pat)
+  "Return PAT written the way `termlisp-case' writes a compiled pattern.
+A function's clauses are parsed by `tl-pattern-parse' because the
+evaluator, the checker and the coverage pass all read them; the case tree
+speaks `tl-pat-parse''s tags.  The two describe the same shapes under
+different names, so this renames and nothing more."
+  (pcase (car pat)
+    ('wild '(pwild))
+    ('var (list 'pvar (cdr pat)))
+    ('lit (list 'lit (cadr pat)))
+    ('con (cons 'pcon (cons (cadr pat)
+                            (mapcar #'tl-nbe--case-pattern (cddr pat)))))
+    (_ (signal 'termlisp-error
+               (list (format "Not a type-level pattern: %S" pat))))))
+
+(defun tl-nbe--template (clause)
+  "Return the template that rebuilds CLAUSE's body once its pattern matched.
+A function rather than a sexp because the body names its variables the
+ordinary way -- `n', not `$n' -- and because `tl-nbe-subst' already knows
+how to walk it, stop at a binder that redeclares one of those names, and
+share every subtree the substitution does not touch.  Rebuilding the body
+instead would hand back fresh leaves in place of the matched nodes, and a
+fresh leaf is not the variable that was matched."
+  (lambda (bindings)
+    (tl-nbe-subst (tl-graph-root (tl-graph-build (tl-clause-body clause)))
+                  bindings)))
+
+(defun tl-nbe--make-rule (name clauses)
+  "Return the rewrite rule that unfolds NAME from CLAUSES, or nil.
+Clauses the type layer could never choose are dropped rather than kept as
+dead branches, and a clause with no parameters is written so that it
+matches the *application* `(NAME)' and not the bare name: the type layer
+unfolds applications, and a function's name appearing by itself in a type
+is not a call."
+  (let ((kept nil))
+    (dolist (clause clauses)
+      (when (cl-every #'tl-nbe--type-pattern-p (tl-clause-params clause))
+        (push clause kept)))
+    (when kept
+      (tl-make-crule
+       name :normalize 0
+       (mapcar (lambda (clause)
+                 (let ((params (tl-clause-params clause)))
+                   (cons (if params
+                             (cons 'pcon (cons name (mapcar #'tl-nbe--case-pattern
+                                                           params)))
+                           (list 'pcon name '(pnil)))
+                         (tl-nbe--template clause))))
+               (nreverse kept))))))
+
+(defun tl-nbe--rule (name nbe)
+  "Return the rewrite rule unfolding NAME under NBE, or nil.
+Compiled once per definition and reused, because the decision tree inside
+it is the part worth keeping: `tl-graph-crule-match' memoises the tree on
+the rule."
+  (let ((clauses (tl-nbe-clauses name nbe)))
+    (when clauses
+      (let* ((table (or (gethash (tl-nbe-env nbe) tl-nbe--rule-tables)
+                        (puthash (tl-nbe-env nbe) (make-hash-table :test #'eq)
+                                 tl-nbe--rule-tables)))
+             (entry (gethash name table)))
+        (if (and entry (eq (car entry) clauses))
+            (cdr entry)
+          (let ((rule (tl-nbe--make-rule name clauses)))
+            (puthash name (cons clauses rule) table)
+            rule))))))
+
+(defun tl-nbe--rules (nbe)
+  "Return one rewrite rule per function NBE's environment can unfold.
+The functions with nothing the type layer could match produce no rule and
+are simply absent, which costs the dispatcher a hash lookup that misses."
+  (let ((rules nil))
+    (maphash (lambda (name _clauses)
+               (let ((rule (tl-nbe--rule name nbe)))
+                 (when rule (push rule rules))))
+             (tl-env-functions (tl-nbe-env nbe)))
+    rules))
 
 (defun tl-nbe-unfold (node nbe)
   "Take one unfolding step on the function application NODE under NBE.
 Return the reduct, or nil when no clause matches every argument -- a
-term whose arguments are not yet known simply does not unfold."
-  (let ((clauses (tl-nbe-clauses (tl-node-head node) nbe))
-        (args (tl-node-children node)))
-    (catch 'tl-nbe-unfold
-      (dolist (clause clauses)
-        (let ((r (and (= (length (tl-clause-params clause)) (length args))
-                      (tl-nbe-match-all (tl-clause-params clause) args nbe nil))))
-          (when r
-            (throw 'tl-nbe-unfold
-                   (tl-nbe-subst
-                    (tl-graph-root (tl-graph-build (tl-clause-body clause)))
-                    (cdr r))))))
-      nil)))
+term whose arguments are not yet known simply does not unfold.
+
+Which clause applies is decided by the case tree `termlisp-case' compiles
+from the function's clauses, so the first argument's constructor selects it
+instead of every clause being tried in order.  Deciding still needs the
+arguments reduced first, which is what the `tl-graph-whnf' bound here is
+offered for: `(id Zero)' occupies an argument before it is known to be a
+`Zero'."
+  (let* ((head (tl-node-head node))
+         (rule (and (symbolp head) (tl-nbe--rule head nbe)))
+         (tl-graph-whnf (lambda (arg) (tl-nbe-whnf arg nbe))))
+    (and rule (tl-graph-crule-reduce node rule))))
 
 (defun tl-nbe-lambda-p (node)
   "Return non-nil when NODE is a type-level lambda application."
@@ -193,7 +269,20 @@ anywhere else."
 
 (defun tl-nbe-whnf (node nbe)
   "Reduce NODE to weak head normal form under NBE.  Return a node.
-A term that cannot reduce is returned unchanged; stuck is normal."
+A term that cannot reduce is returned unchanged; stuck is normal.
+Every reduction spends from one budget (`tl-nbe-fuel'), so a type-level
+function that calls itself forever is reported as a type error rather
+than hanging the session."
+  (if tl-nbe--fuel
+      (tl-nbe--whnf node nbe)
+    (let ((tl-nbe--fuel (list tl-nbe-fuel)))
+      (tl-nbe--whnf node nbe))))
+
+(defun tl-nbe--whnf (node nbe)
+  "Take NODE to weak head normal form under NBE, spending one step.
+The budget in `tl-nbe--fuel' is bound by `tl-nbe-whnf', which is what makes
+it shared by the reductions a match performs while it is deciding."
+  (tl-nbe--spend)
   (let ((node (tl-gnode-deref node)))
     (if (not (tl-node-application node))
         (tl-nbe-resolve node nbe)
@@ -220,23 +309,24 @@ A term that cannot reduce is returned unchanged; stuck is normal."
 
 (defun tl-nbe-nf (node nbe)
   "Reduce NODE to normal form under NBE.  Return a node.
-The result is shared where nothing was reduced, so normalizing a type
-twice does not allocate twice."
-  (let ((w (tl-nbe-whnf node nbe)))
-    (if (not (tl-node-application w))
-        w
-      (let ((name (tl-node-head w))
-            (args (tl-node-children w)))
-        (if (memq name '(Pi lambda))
-            ;; The binder is in scope in the body, and it stands for
-            ;; itself: binding it to its own node is what stops an
-            ;; outer name of the same spelling from reaching in.
-            (let* ((binder (car args))
-                   (inner (tl-nbe-extend nbe (tl-node-head binder) binder)))
-              (tl-make-node name (mapcar (lambda (a) (tl-nbe-nf a inner)) args)
-                            t))
-          (tl-make-node name (mapcar (lambda (a) (tl-nbe-nf a nbe)) args)
-                        (tl-node-application w)))))))
+Normalising is `tl-graph-rewrite' walking the node graph with the rules
+NBE's environment provides: outermost first, one rule application at a
+time, until nothing more applies.  A node a rule fits but cannot reduce is
+left where it is -- stuck is a normal form -- and the walk is
+copy-on-write, so the type NODE was taken from is never edited.  Fuel
+bounds it, so a type-level function that never stops is reported as a type
+error rather than hanging the session.
+
+Weak head normal form is deliberately *not* this function: `tl-nbe-whnf'
+stops at the outer constructor, which is what a comparison that only needs
+to see which constructor it has must do."
+  (let ((rules (tl-nbe--rules nbe))
+        (tl-graph-whnf (lambda (arg) (tl-nbe-whnf arg nbe))))
+    (if (null rules)
+        node
+      (tl-graph-root
+       (tl-graph-rewrite (tl-make-graph node nil) rules
+                         tl-nbe-fuel 'termlisp-type-error)))))
 
 (defun tl-nbe-equal (a b nbe)
   "Return non-nil when A and B reduce to the same normal form under NBE.

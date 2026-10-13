@@ -85,6 +85,39 @@ This is exactly what `append''s index looks like before it is called."
   (should (equal (tl-nbe-test--nf '((n : Nat) -> (Vec a n)))
                  '((n : Nat) -> (Vec %1 n)))))
 
+(ert-deftest tl-nbe-normalising-a-type-leaves-the-type-it-came-from ()
+  "Normal form is computed copy-on-write: the type NODE was taken from stays.
+A type node is shared by every type that mentions it, so rewriting it in
+place would edit a signature as a side effect of comparing two other types."
+  (let* ((nbe (tl-nbe-test--env))
+         (node (tl-type-parse '(Vec a (plus (Succ Zero) Zero))))
+         (before (tl-node->sexp node)))
+    ;; Normalising reduces the term...
+    (should (equal (tl-test--alpha (tl-type-to-datum (tl-nbe-nf node nbe)))
+                   '(Vec %1 (Succ Zero))))
+    ;; ...and the walk never edited what it was handed.
+    (should (equal (tl-node->sexp node) before))))
+
+;;; Bounded
+
+(ert-deftest tl-nbe-a-definition-that-never-stops-is-a-type-error ()
+  "A type-level function that calls itself forever is reported, not waited for.
+Nothing bounded reduction before it ran on the term graph, so a mistaken
+definition would have hung the session; now the budget runs out and the
+failure says what it is -- a type error, not an evaluation error."
+  (let* ((env (termlisp-load-prelude
+               (termlisp-make-env '(:type-check t :elaborate t))))
+         (nbe (tl-nbe env nil))
+         (tl-nbe-fuel 40))
+    (puthash 'spin
+             (list (tl-make-clause 'spin (list (tl-pattern-parse 'x))
+                                   '(spin x)))
+             (tl-env-functions env))
+    (should-error (tl-nbe-whnf (tl-type-parse '(spin Zero)) nbe)
+                  :type 'termlisp-type-error)
+    (should-error (tl-nbe-nf (tl-type-parse '(spin Zero)) nbe)
+                  :type 'termlisp-type-error)))
+
 ;;; Definitional equality
 
 (ert-deftest tl-nbe-equal-agrees-with-reduction ()

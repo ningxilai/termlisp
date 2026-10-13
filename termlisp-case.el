@@ -16,9 +16,9 @@
 ;; `prest' may only appear as the final element of a constructor's
 ;; subpatterns, e.g. `(pcon :hooks (pvar $a) (prest $rest))'.  It binds
 ;; `$rest' to the (possibly empty) list of the application node's remaining
-;; children, so a variadic rule can capture an argument list without a
-;; `(:rest)' marker.  Use the binding with a `(:splice $rest)' template
-;; element to splice those nodes back into the replacement.
+;; children, so a variadic rule can capture an argument list; the
+;; template's `(:splice $rest)' element splices those nodes back into the
+;; replacement.
 ;;
 ;; A constructor whose sole subpattern is a list pattern, e.g.
 ;; `(pcon :hooks (plist (pvar $a) (pvar $b) (prest $rest)))', matches its
@@ -28,18 +28,19 @@
 ;; to write repeatable keywords.  A `plist' in any other argument position
 ;; is an ordinary cons/nil pattern over a single child.
 ;;
-;; A template `(:map $item $list TEMPLATE)' instantiates TEMPLATE once for
-;; each element of the list-valued node bound to `$list', with `$item' bound
-;; to that element.  The node is viewed as a list `(head . children)', so a
-;; graph application `(a b c)' maps over `a', `b' and `c'; a non-application
-;; node maps as a singleton.  This is the template counterpart of matching a
-;; list-valued argument, which the graph represents with the first element as
-;; the application head.
+;; A template is instantiated by `tl-graph-instantiate', in
+;; `termlisp-graph', which substitutes the *node* that was matched where a
+;; template says `$name' rather than that node's s-expression.  The
+;; difference matters to a host whose variables are the nodes themselves:
+;; a fresh leaf in place of a matched one is not the variable that was
+;; matched, so anything equated against it would be equated against
+;; nothing.
 ;;
-;; `(:map-chunks $chunk $list ARITY TEMPLATE)' is the same but groups the list
-;; into consecutive ARITY-element chunks and binds `$chunk' to each chunk's
-;; node list (use `(:splice $chunk)' to emit it), which is how a repeatable
-;; keyword is lowered to its fixed-arity sub-forms in a single rewrite.
+;; Matching may reduce.  A host binds `tl-graph-whnf' and every argument is
+;; reduced through it before its constructor is looked at, because `(id
+;; Zero)' occupies an argument before it is known to be a `Zero'.  The node
+;; a rule is being matched against (`tl-pat--subject') is the one exception:
+;; reducing it would be the very step whose clause is being selected.
 ;;
 ;; `tl-case-compile' turns a list of `(PATTERN . TEMPLATE)' clauses into a
 ;; decision tree (an Idris `CaseBuilder'-style dispatcher):
@@ -85,6 +86,25 @@ Signal `termlisp-error' on an unknown form."
       '(pnil)
     (list 'pcon 'cons (tl-pat-parse (car pats)) (tl-pat-parse-list (cdr pats)))))
 
+(defvar tl-pat--subject nil
+  "The node a rule is currently being matched against, or nil outside one.
+`tl-pat-whnf' leaves the subject alone: reducing it would be the very step
+whose clause we are trying to pick, so the matcher would ask the question
+again and never answer.  Everything below the subject is fair game -- an
+argument has to be reduced before its constructor is visible.")
+
+(defun tl-pat-whnf (node)
+  "Return NODE reduced enough to expose its constructor, or NODE itself.
+Reduction comes from `tl-graph-whnf', which a host binds while it matches;
+nil means no reduction is offered and matching stays purely structural.
+The node a rule is being matched against (`tl-pat--subject') is never
+reduced: see there.  Without reduction below the subject a clause could not
+see that `plus Zero n' already *is* a `Succ', so a type that ought to
+reduce would be reported as unequal."
+  (if (and tl-graph-whnf (not (eq node tl-pat--subject)))
+      (funcall tl-graph-whnf node)
+    node))
+
 (defun tl-pat-match (pat node bindings)
   "Match compiled pattern PAT against graph NODE, extending BINDINGS.
 Return `(t . bindings)' on success and nil on failure, following the
@@ -95,7 +115,12 @@ truthy `(t)' so it is distinguishable from failure.
 A `(pcon HEAD)' with no subpatterns matches a non-application node whose
 head is `eq' to HEAD.  A zero-child application `(HEAD)' is deliberately
 not matched, preserving the TGR distinction between the atom `HEAD' and
-the nullary application `(HEAD)'."
+the nullary application `(HEAD)'; a nullary type constructor is built as
+an atom, so nothing at the type level depends on the distinction.
+
+Constructor and literal patterns reduce NODE first through `tl-pat-whnf'.
+A variable or wildcard binds NODE as it stands, because the term that is
+substituted into a body later is the unreduced one."
   (pcase pat
     (`(pvar ,name)
      (let ((cell (assq name bindings)))
@@ -104,28 +129,30 @@ the nullary application `(HEAD)'."
              (t nil))))
     (`(pwild) (cons t bindings))
     (`(plit ,value)
-     (when (and (not (tl-node-application node))
-                (equal (tl-node-head node) value))
-       (cons t bindings)))
+     (let ((node (tl-pat-whnf node)))
+       (when (and (not (tl-node-application node))
+                  (equal (tl-node-head node) value))
+         (cons t bindings))))
     (`(pnil)
      (when (and (not (tl-node-application node))
                 (eq (tl-node-head node) nil))
        (cons t bindings)))
     (`(pcon ,head . ,pats)
-     (cond
-      ((null pats)
-       (when (and (not (tl-node-application node))
-                  (eq (tl-node-head node) head))
-         (cons t bindings)))
-      ;; A sole list subpattern matches the whole child list, so a variadic
-      ;; application can be written `(pcon HEAD (plist ...))'.
-      ((and (null (cdr pats)) (tl-pat-list-pattern-p (car pats)))
-       (when (and (tl-node-application node)
-                  (eq (tl-node-head node) head))
-         (tl-pat-match-list (car pats) (tl-node-children node) bindings)))
-      ((and (tl-node-application node)
-            (eq (tl-node-head node) head))
-       (tl-pat-match-seq pats (tl-node-children node) bindings))))
+     (let ((node (tl-pat-whnf node)))
+       (cond
+        ((null pats)
+         (when (and (not (tl-node-application node))
+                    (eq (tl-node-head node) head))
+           (cons t bindings)))
+        ;; A sole list subpattern matches the whole child list, so a variadic
+        ;; application can be written `(pcon HEAD (plist ...))'.
+        ((and (null (cdr pats)) (tl-pat-list-pattern-p (car pats)))
+         (when (and (tl-node-application node)
+                    (eq (tl-node-head node) head))
+           (tl-pat-match-list (car pats) (tl-node-children node) bindings)))
+        ((and (tl-node-application node)
+              (eq (tl-node-head node) head))
+         (tl-pat-match-seq pats (tl-node-children node) bindings)))))
     (`(pas ,name ,sub)
      (let ((r (tl-pat-match sub node bindings)))
        (when r
@@ -396,10 +423,13 @@ arity requires an application node with exactly ARITY children."
 Return `(INDEX . BINDINGS)' for the first matching clause, or nil when no
 clause matches.  BINDINGS is the alist produced by `tl-pat-match' for the
 winning clause's original pattern, so whole-subterm and nonlinear bindings
-are recovered exactly."
-  (tl-case-match-tree tree clauses
-                      (cons node (tl-node-children node))
-                      node))
+are recovered exactly.
+NODE is bound as `tl-pat--subject' for the duration: it is the term the
+rule is about, and reducing it would be the very step being selected."
+  (let ((tl-pat--subject node))
+    (tl-case-match-tree tree clauses
+                        (cons node (tl-node-children node))
+                        node)))
 
 (defun tl-case-match-tree (tree clauses scrutinees root)
   "Walk TREE over SCRUTINEES, recovering bindings against ROOT.
@@ -408,8 +438,12 @@ descending a constructor splices its children into the vector and a constant
 consumes its column, mirroring `tl-ct-row-refine'."
   (pcase tree
     (`(ct-case ,column ,alts)
+     ;; Dispatch has to reduce before it can decide: `(id Zero)' occupies
+     ;; the column but the branch it belongs to is `Zero''s.  Only the leaf
+     ;; reduces (`tl-pat-match') would leave the tree looking at the syntax
+     ;; of a term that has not been evaluated yet.
      (tl-case-match-alts alts clauses column scrutinees
-                         (nth column scrutinees) root))
+                         (tl-pat-whnf (nth column scrutinees)) root))
     (`(ct-leaf ,index)
      (let ((r (tl-pat-match (car (nth index clauses)) root nil)))
        (when r (cons index (cdr r)))))
@@ -454,152 +488,6 @@ tree; see `tl-case-compile'."
         (_ (signal 'termlisp-error
                    (list (format "Bad case alternative: %S" alt))))))))
 
-(defun tl-case--pvar-p (x)
-  "Return non-nil if X is a template variable (a symbol named \"$...\")."
-  (and (symbolp x)
-       (> (length (symbol-name x)) 0)
-       (eq (aref (symbol-name x) 0) ?$)))
-
-(defun tl-case--splice-p (x)
-  "Return non-nil if X is a `(:splice $name)' template element."
-  (and (consp x) (eq (car x) :splice) (tl-case--pvar-p (cadr x))))
-
-(defun tl-case--map-p (x)
-  "Return non-nil if X is a `(:map $item $list TEMPLATE)' element."
-  (and (consp x) (eq (car x) :map)
-       (= (length x) 4)
-       (tl-case--pvar-p (nth 1 x))
-       (tl-case--pvar-p (nth 2 x))))
-
-(defun tl-case--value-node (x)
-  "Return X as a graph node.
-A node is returned unchanged; a cons is built into a fresh graph; any other
-atom is wrapped as a leaf node.  Used to view the head of an application as
-the first element of its list representation."
-  (cond ((tl-node-p x) x)
-        ((consp x) (tl-graph-root (tl-graph-build x)))
-        (t (tl-make-node x nil nil))))
-
-(defun tl-case--list-elements (node)
-  "Return the elements of NODE viewed as a list of nodes.
-An application `(HEAD . CHILDREN)' is the list `(HEAD CHILDREN...)', so its
-elements are the head and the children; any other node is a singleton list.
-This is how a list-valued argument (whose graph node has the first element
-as its head) is mapped over."
-  (if (tl-node-application node)
-      (cons (tl-case--value-node (tl-node-head node))
-            (tl-node-children node))
-    (list node)))
-
-(defun tl-case--map-nodes (value)
-  "Return VALUE as a list of nodes to map over.
-VALUE is either a single list-valued node (viewed as a list by
-`tl-case--list-elements') or an already-bound node list, such as a
-`(prest NAME)' capture."
-  (if (tl-node-p value) (tl-case--list-elements value) value))
-
-(defun tl-case--map-template (template bindings)
-  "Instantiate the body of a `(:map $item $list TEMPLATE)' element.
-The bound node for `$list' is viewed as a list (see
-`tl-case--list-elements'); TEMPLATE is instantiated once per element with
-`$item' bound to that element.  Returns the list of instantiated sexps."
-  (let ((item (nth 1 template))
-        (list-var (nth 2 template))
-        (body (nth 3 template)))
-    (let ((cell (assq list-var bindings)))
-      (unless cell
-        (signal 'termlisp-error
-                (list (format "Unbound map variable: %S" list-var))))
-      (mapcar (lambda (node)
-                (tl-case-template body (cons (cons item node) bindings)))
-              (tl-case--map-nodes (cdr cell))))))
-
-(defun tl-case--map-chunks-p (x)
-  "Return non-nil if X is a `(:map-chunks $chunk $list ARITY TEMPLATE)' element."
-  (and (consp x) (eq (car x) :map-chunks)
-       (= (length x) 5)
-       (tl-case--pvar-p (nth 1 x))
-       (tl-case--pvar-p (nth 2 x))
-       (integerp (nth 3 x))
-       (> (nth 3 x) 0)))
-
-(defun tl-case--map-chunks-template (template bindings)
-  "Instantiate the body of a `(:map-chunks $chunk $list ARITY TEMPLATE)'.
-The bound node for `$list' is viewed as a list and grouped into consecutive
-chunks of ARITY elements (the final chunk may be shorter); TEMPLATE is
-instantiated once per chunk with `$chunk' bound to that chunk's node list,
-so a `(:splice $chunk)' inside TEMPLATE splices the chunk.  Returns the
-list of instantiated sexps."
-  (let ((chunk-var (nth 1 template))
-        (list-var (nth 2 template))
-        (arity (nth 3 template))
-        (body (nth 4 template)))
-    (let ((cell (assq list-var bindings)))
-      (unless cell
-        (signal 'termlisp-error
-                (list (format "Unbound map variable: %S" list-var))))
-      (let ((nodes (tl-case--map-nodes (cdr cell)))
-            (out nil))
-        (while nodes
-          (let ((chunk (cl-subseq nodes 0 arity)))
-            (setq nodes (nthcdr arity nodes))
-            (push (tl-case-template body (cons (cons chunk-var chunk) bindings))
-                  out)))
-        (nreverse out)))))
-
-(defun tl-case--template-list (templates bindings)
-  "Instantiate TEMPLATES in order, splicing `(:splice $name)' and `:map' elements."
-  (let (out)
-    (dolist (template templates)
-      (cond
-       ((tl-case--splice-p template)
-        (let ((cell (assq (cadr template) bindings)))
-          (unless cell
-            (signal 'termlisp-error
-                    (list (format "Unbound splice variable: %S"
-                                  (cadr template)))))
-          (dolist (node (cdr cell))
-            (push (tl-node->sexp node) out))))
-       ((tl-case--map-p template)
-        (dolist (sexp (tl-case--map-template template bindings))
-          (push sexp out)))
-       ((tl-case--map-chunks-p template)
-        (dolist (sexp (tl-case--map-chunks-template template bindings))
-          (push sexp out)))
-       (t (push (tl-case-template template bindings) out))))
-    (nreverse out)))
-
-(defun tl-case-template (template bindings)
-  "Instantiate TEMPLATE into an s-expression using BINDINGS.
-A `$name' symbol becomes the s-expression of its bound node; a cons recurses
-into its elements; `(:splice $name)' splices the s-expressions of the bound
-node list into the surrounding list; `(:map $item $list TEMPLATE)' instantiates
-TEMPLATE once per element of the list-valued node bound to `$list';
-`(:map-chunks $chunk $list ARITY TEMPLATE)' does the same per ARITY-element
-chunk; any other atom is literal."
-  (cond
-   ((tl-case--pvar-p template)
-    (let ((cell (assq template bindings)))
-      (unless cell
-        (signal 'termlisp-error
-                (list (format "Unbound template variable: %S" template))))
-      (tl-node->sexp (cdr cell))))
-   ((tl-case--splice-p template)
-    (let ((cell (assq (cadr template) bindings)))
-      (unless cell
-        (signal 'termlisp-error
-                (list (format "Unbound splice variable: %S"
-                              (cadr template)))))
-      (mapcar #'tl-node->sexp (cdr cell))))
-   ((tl-case--map-p template)
-    (tl-case--map-template template bindings))
-   ((tl-case--map-chunks-p template)
-    (tl-case--map-chunks-template template bindings))
-   ((consp template)
-    (cons (tl-case-template (car template) bindings)
-          (tl-case--template-list (cdr template) bindings)))
-   (t template)))
-
 ;;; Integration with the term-graph rewriter.
 
 (defun tl-graph-crule-match (node rule)
@@ -615,30 +503,24 @@ rule's `compiled' slot."
 (defun tl-graph-crule-instantiate (rule match)
   "Build the replacement node for clause-based RULE and MATCH.
 MATCH is `(INDEX . BINDINGS)' from `tl-graph-crule-match'; the winning
-clause's TEMPLATE is instantiated with `tl-case-template' and rebuilt into a
-graph.  A `(:splice $name)' template element splices the node list bound to
-a `(prest $name)' pattern."
-  (let* ((clause (nth (car match) (tl-grule-clauses rule)))
-         (sexp (tl-case-template (cdr clause) (cdr match))))
-    (tl-graph-root (tl-graph-build sexp))))
+clause's TEMPLATE is instantiated with `tl-graph-instantiate', which puts
+the *matched nodes themselves* where the template says `$name'.  Rendering
+the reduct through a sexp and rebuilding it would hand back fresh leaves in
+place of the variables that were matched, and a fresh leaf is not a
+unification variable: the type layer would then equate a copy while the
+original stayed free.  A `(:splice $name)' template element still splices
+the node list bound to a `(prest $name)' pattern."
+  (let ((clause (nth (car match) (tl-grule-clauses rule))))
+    (tl-graph-instantiate (cdr clause) (cdr match))))
 
-(defun tl-graph-apply-crule (node rule)
-  "If clause-based RULE matches NODE, rewrite NODE in place.  Return t or nil.
-Compiles RULE's clauses once, dispatches NODE through the resulting case
-tree, checks RULE's guard, and commits the winning clause's template."
+(defun tl-graph-crule-reduce (node rule)
+  "Return clause-based RULE's reduct for NODE, or nil when it does not apply.
+NODE is never modified; see `tl-graph-reduce'."
   (let ((match (tl-graph-crule-match node rule)))
     (when (and match
                (or (null (tl-grule-guard rule))
                    (funcall (tl-grule-guard rule) (cdr match))))
-      (tl-graph--commit node rule (tl-graph-crule-instantiate rule match)))))
-
-(defun tl-graph-crule-applicable-p (node rule)
-  "Return non-nil when clause-based RULE matches NODE and passes its guard.
-Used by `tl-graph-normal-form-p'."
-  (let ((match (tl-graph-crule-match node rule)))
-    (and match
-         (or (null (tl-grule-guard rule))
-             (funcall (tl-grule-guard rule) (cdr match))))))
+      (tl-graph-crule-instantiate rule match))))
 
 (provide 'termlisp-case)
 ;;; termlisp-case.el ends here
