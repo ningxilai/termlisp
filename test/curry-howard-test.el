@@ -398,6 +398,51 @@ against the signature, and the name carried no information to begin with
                                      (gethash 'keep (tl-env-type-env env)))))
                    '(-> Nat Nat)))))
 
+;;; A binder's domain may be written as it reads
+
+;; `:' used to be looked for exactly one token from the end of the
+;; binder, so a domain containing a bare `->' or a bare application came
+;; back as something else entirely: `(f : a -> b)' split at that arrow
+;; into `f : a' and `b', and `f' was then parsed applied to the keyword
+;; `:'.  Nothing complained at the point of writing -- the nonsense type
+;; only surfaced later as a stray kind error, if it surfaced at all.
+;; The domain now runs from the `:' to the end, so both spellings below
+;; and their parenthesised spellings agree.
+
+(tl-test-type tl-ch-a-domain-arrow-binds-the-name
+              '(-> (f : a -> b) Int)
+              '((f : (-> %1 %2)) -> Int))
+
+(tl-test-type tl-ch-a-domain-application-binds-the-name
+              '(-> (xs : Vec a n) Nat)
+              '((xs : (Vec %1 %2)) -> Nat))
+
+(tl-test-type tl-ch-a-parenthesised-domain-still-binds-the-name
+              '(-> (xs : (Vec a n)) Nat)
+              '((xs : (Vec %1 %2)) -> Nat))
+
+;; The combinator every arithmetic proof needs, written the way it
+;; reads.  `f' is mentioned by the codomain, so it becomes an implicit
+;; parameter -- and nothing but the expected result type ever fixes it,
+;; which is why `cong' is checked rather than inferred: the body's type
+;; is unified with the signature's after the fact, and `Succ' falls out
+;; of that.
+(tl-test-eval tl-ch-cong-is-writable-and-determines-its-function
+  "(: cong (-> (a : *) (b : *) (x : a) (y : a) (f : a -> b)
+                (Eq a x y) (Eq b (f x) (f y))))
+   (define (cong Refl) Refl)
+   (: step (-> (n : Nat) (Vec Nat n) (Eq Nat (plus n Zero) n)
+                        (Eq Nat (Succ (plus n Zero)) (Succ n))))
+   (define (step VNil ih) (cong ih))
+   (step VNil Refl)"
+  "Refl" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-cong-takes-only-the-proof
+  "(: cong (-> (a : *) (b : *) (x : a) (y : a) (f : a -> b)
+                (Eq a x y) (Eq b (f x) (f y))))
+   (define (cong Refl) Refl) (cong Refl)"
+  "Refl" '(:type-check t :elaborate t))
+
 ;;; `append': the stage-2 deliverable
 
 (tl-test-eval tl-ch-append-typechecks

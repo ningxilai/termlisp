@@ -236,24 +236,39 @@ application."
                (mapcar #'tl-type-parse* (cdr segment)))
     (tl-type-parse* (car segment))))
 
+(defun tl-type--domain-sexp (rest)
+  "Turn REST, a binder's tokens after its `:', into a type sexp.
+`Vec a n' is one application and `a -> b' is an arrow chain, and both can
+occur in the same domain, so the tokens are split on `->' first and each
+run is then put back exactly as it was written.  Reading the whole tail
+as a chain instead would turn `Vec a n' into `Vec -> a -> n', which is a
+type nobody wrote and a kind error by the time anything checks it."
+  (cond ((null (cdr rest)) (car rest))
+        ((not (memq '-> rest)) rest)
+        (t (cons '-> (mapcar (lambda (p) (if (cdr p) p (car p)))
+                             (tl-split-arrow rest))))))
+
 (defun tl-type-parse--binder (part)
   "Return (NAMES DOMAIN) when PART is a single binder token `(N... : TYPE)'.
 NAMES is a list of the names, so `(n m : Nat)' binds two names over one
 domain while `(n : Nat)' still binds one -- a comma between the names is
 just whitespace to the reader, so the two spellings differ only in how
-many names precede the `:'.  Exactly one element may follow the `:',
-which is why a domain containing a bare `->' has to be parenthesised,
-the rule the arrow splitter already follows.  Anything else comes back
+many names precede the `:'.  The domain runs from the `:' to the end of
+the token, so both `(f : a -> b)' and `(xs : Vec a n)' bind over the type
+that follows without parentheses.  They used not to: the `:' was only
+looked for a single token from the end, so a bare `->' read as an arrow
+*between* `f : a' and `b', and `f' came back applied to the keyword `:',
+which is a type that looks nothing like the one written and reports
+itself only as a stray kind error much later.  Anything else comes back
 nil, so an ordinary segment is left alone."
   (let ((tok (car part)))
     (when (and (null (cdr part)) (consp tok))
-      (let* ((n (length tok))
-             (colon (- n 2)))
-        (when (and (> colon 0)
-                   (eq (nth colon tok) ':)
+      (let ((colon (cl-position ': tok)))
+        (when (and colon (> colon 0) (< colon (1- (length tok)))
                    (cl-loop for x on tok until (eq x (nthcdr colon tok))
                             always (symbolp (car x))))
-          (list (cl-subseq tok 0 colon) (nth (1- n) tok)))))))
+          (list (cl-subseq tok 0 colon)
+                (tl-type--domain-sexp (nthcdr (1+ colon) tok))))))))
 
 (defun tl-type-parse-pi (name domain parse-body)
   "Build a dependent function type with binder NAME over DOMAIN.
@@ -1514,6 +1529,16 @@ implicit parameter -- the call site passes nothing and unification finds
 the value.  This is what makes `(n m : Nat) -> Vec a n -> Vec a m ->
 Vec a (plus n m)' a two-argument function, `append xs ys', rather than a
 four-argument one.
+Mentioning the name is enough, and only mentioning it works, because the
+alternative would be worse than useless: a binder that is mentioned has
+to stay bound to the occurrences the codomain makes of it, and the only
+way to keep them bound while dropping the Pi is to make `n' an ordinary
+variable that unification then solves.  Spelling it as a plain arrow
+instead would leave those occurrences pointing at a binder no longer
+there.  Whether anything constrains `n' is not this pass's question --
+`cong' has nothing but its own result type to fix `f' against, and that
+is exactly where the clause checker, which unifies the body's type with
+the signature's after inferring it, picks it up.
 A binder whose name nothing mentions is decided by nothing the type can
 see, so the caller has to pass it: the Pi is then spelled as the plain
 arrow it always was, and the definition's lambda supplies the argument.
@@ -1522,22 +1547,21 @@ mentioned -- so nothing is lost in dropping it.
 A definition's clauses infer plain arrows, never Pis, so leaving these
 as Pis would make a signature no clause could ever match."
   (let ((cur type) (changed nil) (domains nil))
-    (catch 'tl-signature-binders-stop
-      (while (and (tl-node-p cur) (tl-node-application cur)
-                  (eq (tl-node-head cur) 'Pi))
-        (let* ((args (tl-node-children cur))
-               (binder (car args))
-               (dom (cadr args))
-               (cod (caddr args)))
-          (if (memq binder (tl-free-tvars cod))
-              ;; Re-spelled rather than deleted outright: the occurrences
-              ;; are shared nodes, and an ordinary variable is what
-              ;; unification is willing to solve -- leaving it rigid
-              ;; would keep the very rigidity that made it useless.
-              (setq cur (tl-type-subst cod (list (cons binder (tl-fresh-tvar))))
-                    changed t)
-            (push dom domains)
-            (setq cur cod changed t)))))
+    (while (and (tl-node-p cur) (tl-node-application cur)
+                (eq (tl-node-head cur) 'Pi))
+      (let* ((args (tl-node-children cur))
+             (binder (car args))
+             (dom (cadr args))
+             (cod (caddr args)))
+        (if (memq binder (tl-free-tvars cod))
+            ;; Re-spelled rather than deleted outright: the occurrences
+            ;; are shared nodes, and an ordinary variable is what
+            ;; unification is willing to solve -- leaving it rigid
+            ;; would keep the very rigidity that made it useless.
+            (setq cur (tl-type-subst cod (list (cons binder (tl-fresh-tvar))))
+                  changed t)
+          (push dom domains)
+          (setq cur cod changed t))))
     ;; Fold the recorded domains back over whatever the walk stopped on,
     ;; outermost first -- `push' has them innermost first.
     (dolist (d domains)
