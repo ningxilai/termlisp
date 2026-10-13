@@ -1312,6 +1312,63 @@ has to become the argument's value, not one fresh variable left to chance.")
    (define (t h) (cong VNil h)) (t Refl)")
   "Cannot apply cong to VNil" '(:type-check t :elaborate t))
 
+;;; The machine: frames are data, and can be read without running them
+;;
+;; `tl-exh-run' used to drive a chain of closures, and the only way to
+;; find out what a frame was waiting for was to read the code that built
+;; it or to run the machine and see.  A frame is now a tagged list, so
+;; the answer it will produce can be checked directly -- which is the
+;; whole reason for the rewrite, since a coverage checker whose state
+;; cannot be inspected has to be trusted rather than tested.
+
+(ert-deftest tl-ch-exh-a-frame-is-data-and-says-what-it-waits-for ()
+  "A wrap frame carries its kind, arity and payload, not a closure.
+Three kinds, and the difference between them is the point: a literal
+and an irrefutable column's head simply go in front of the witness, but
+a constructor's sub-question was asked about the constructor's fields,
+so the first ARITY entries of the witness belong *inside* it.  That
+splice used to be spelled out at each call site, where an off-by-one
+arity moved a witness column and nothing said so."
+  ;; Spelled without quoting inside the frame: `wrap' is the tag, `con'
+  ;; the kind, and the reader would otherwise deliver the list
+  ;; `(quote con)' where the kind belongs and the machine would rebuild
+  ;; a witness it was never asked to.
+  (should (equal (tl-exh--wrap-witness '(wrap nil con 2 Cons) '(_ _ _ _))
+                 '((con Cons _ _) _ _)))
+  (should (equal (tl-exh--wrap-witness '(wrap nil lit nil 7) '(_ _))
+                 '((lit 7) _ _)))
+  (should (equal (tl-exh--wrap-witness '(wrap nil head nil (con Nil _)) '(_))
+                 '((con Nil _) _))))
+
+(ert-deftest tl-ch-exh-run-drives-a-plain-data-root ()
+  "The driver's input, its control and its stack are all lists.
+ROOT is a list, so nothing between the question and the answer is a
+closure, and an exhausted budget or an `:unknown' can name the frame it
+stopped on because a frame is something that can be named."
+  ;; A column is `(PATTERN TYPE)' and a wildcard column is `(wild)', not
+  ;; a bare `_': the pattern carries its own shape, and a column that
+  ;; looks like a symbol is a symbol the checker has no rule for -- it
+  ;; answers `:unknown', which is the honest answer and not the one
+  ;; being asserted here.
+  (let* ((env (termlisp-make-env))
+         (a (tl-fresh-tvar))
+         (wild (list '(wild) a))
+         ;; A matrix is a list of rows and a row is a list of columns,
+         ;; so one wildcard row is one more level of list than the
+         ;; one-column signature it has to cover.
+         (rows (list (list wild)))
+         (sig (list wild)))
+    ;; Nothing stands, so nothing covers the query, and the witness names
+    ;; the one column it was about.
+    (should (equal (tl-exh-run (list 'useful env nil sig (tl-exh--measure sig)
+                                     nil))
+                   '(:yes _)))
+    ;; A wildcard row covers it, which is the answer that must not be
+    ;; confused with `:unknown'.
+    (should (eq (car (tl-exh-run (list 'useful env rows sig
+                                       (tl-exh--measure sig) nil)))
+                :no))))
+
 ;;; `let': where a binding stops being monomorphic
 ;;
 ;; A `let' used to be rewritten into an inline-lambda application before

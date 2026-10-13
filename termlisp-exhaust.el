@@ -57,25 +57,49 @@
 
 (defvar tl-exh-fuel 8192
   "Steps `tl-exh-run' may take before giving up.
-Each step is one thunk or one continuation application.  The measure
-check in `tl-exh--useful' should make this unreachable; it exists
+Each step is one question answered or one frame resumed.  The measure
+check in `tl-exh--step' should make this unreachable; it exists
 because a defence in depth costs one integer and a wrong termination
 argument costs a hang.  Exceeding it signals rather than answering: a
 coverage check that ran out of budget has proved nothing, and reading
 that as coverage is exactly the failure this file exists to prevent.")
 
-;;; Frames and the driver
+;;; The machine: a control form and a stack of plain frames
+;;
+;; The usefulness computation used to be a chain of closures: each
+;; `tl-exh--useful*' built a frame holding a thunk to run and a
+;; continuation to hand its answer to, and the driver applied whichever
+;; of the two it got.  It was correct, and it was opaque.  The only way
+;; to see what a frame was waiting for was to read the closure that
+;; built it, so neither an exhausted budget nor an `:unknown' could say
+;; which of them had run out -- and a frame could not be asked what it
+;; was for without running it.
+;;
+;; Nothing here is a closure now.  Control is a list, a frame is a
+;; list, and the machine's whole state at any step is one list and one
+;; list of lists.  A frame is either
+;;
+;;   (wrap ANCESTORS KIND ARITY DATA)   rebuild a `:yes' witness
+;;   (join ANCESTORS KIND PENDING UNKNOWN ENV MATRIX REST MEASURE TY)
+;;                                      try the next alternative
+;;
+;; and ANCESTORS rides on both, as it did on the old frame, because the
+;; sub-question a frame launched may have pushed an expansion the
+;; enclosing one must not see.  A frame never re-enters itself: it
+;; consumes an answer and yields either a finished answer or a
+;; *smaller* question, so the stack cannot grow on the way back down.
+;; That is the whole termination story, and it is the one
+;; `tl-exh--measure' and `tl-exh-ancestors' already gave -- only now the
+;; claim is visible in the frame instead of being true of a closure.
 
-(cl-defstruct (tl-exh-frame (:constructor tl-exh-frame (k thunk ancestors)))
-  "One suspended step of the usefulness computation.
-THUNK computes an answer or the next frame.  K consumes an answer and
-yields the enclosing answer or the frame continuing it.  A
-continuation's output is never fed back to it, which is what keeps the
-stack flat.  ANCESTORS is the expansion path in force when THUNK runs;
-it rides on the frame rather than being bound dynamically around the
-call, because a frame is constructed now and stepped later, by which
-time any dynamic extent is long gone."
-  k thunk ancestors)
+(defsubst tl-exh--answer-p (control)
+  "Non-nil when CONTROL is an answer rather than a question.
+An answer is `(STATUS . WITNESS)' with STATUS one of `:yes', `:no' or
+`:unknown'; a question opens with the symbol `useful'.  The two can
+never be confused, which is what lets the driver dispatch on a tag
+instead of on a predicate whoever built the value would have had to
+supply."
+  (keywordp (car-safe control)))
 
 (defvar tl-exh-ancestors nil
   "Column-type keys currently being expanded down the recursion path.
@@ -88,25 +112,37 @@ so the path is bounded, and cutting with `:unknown' rather than with an
 answer keeps the cut from being mistaken for a decision.")
 
 (defun tl-exh-run (root &optional fuel)
-  "Drive ROOT, a `tl-exh-frame', to an answer.
-A thunk either hands back the frame to step next or an answer that is
-passed once to the frame's continuation; that continuation's output is
-likewise an answer or a frame and is never re-fed.  FUEL bounds the
-number of steps, and exceeding it signals rather than answering."
+  "Drive ROOT, a usefulness question, to an answer.
+ROOT is `(useful ENV MATRIX SIG MEASURE ANCESTORS)'.  One step either
+computes an answer or descends into a sub-question, pushing the frame
+that will rebuild the answer when it comes back; an answer is handed to
+the frame on top of the stack or, with the stack empty, is the result.
+FUEL bounds the number of steps, and exceeding it signals rather than
+answering: a coverage check that ran out of budget has proved nothing,
+and reading that as coverage is exactly the failure this file exists to
+prevent."
   (let ((fuel (or fuel tl-exh-fuel))
-        (frame root)
+        (control root)
+        (stack nil)
         (steps 0))
     (catch 'tl-exh-done
       (while (< steps fuel)
         (setq steps (1+ steps))
-        (let* ((tl-exh-ancestors (tl-exh-frame-ancestors frame))
-               (out (funcall (tl-exh-frame-thunk frame))))
-          (if (tl-exh-frame-p out)
-              (setq frame out)
-            (let ((next (funcall (tl-exh-frame-k frame) out)))
-              (if (tl-exh-frame-p next)
-                  (setq frame next)
-                (throw 'tl-exh-done next))))))
+        (cond
+         ((tl-exh--answer-p control)
+          (if (null stack)
+              (throw 'tl-exh-done control)
+            (let* ((frame (pop stack))
+                   ;; The frame resumes in the ancestors it was built
+                   ;; in, not in whatever the sub-question pushed.
+                   (tl-exh-ancestors (nth 1 frame))
+                   (r (tl-exh--resume frame control stack)))
+              (setq control (car r))
+              (setq stack (cdr r)))))
+         (t (let* ((tl-exh-ancestors (nth 5 control))
+                   (r (tl-exh--step control stack)))
+              (setq control (car r))
+              (setq stack (cdr r))))))
       (signal 'termlisp-type-error
               (list (format "Coverage: fuel exhausted after %d steps" fuel))))))
 
@@ -264,15 +300,9 @@ invent coverage or discard it, so the caller reports `:unknown'."
 ;; wildcard column becomes that constructor's field columns and the
 ;; measure grows.  That branch is bounded by the ancestor set instead.
 
-(defvar tl-exh-ancestors nil
-  "Column-type keys currently being expanded down the recursion path.
-Bound while `tl-exh--useful' runs, never set globally.  A constructor-set
-expansion pushes its column type here, and a repeat is cut with
-`:unknown': an equirecursive datatype such as `Tree' would otherwise ask
-whether `Tree' is covered, find that it is made of `Tree's, and ask
-again forever.  The set only ever grows along a path, so the path is
-bounded, and cutting with `:unknown' rather than with an answer keeps the
-cut from being mistaken for a decision.")
+;; The expansion path again, in the section that uses it.  The variable
+;; itself and its rationale are with the driver, where it is bound
+;; around each step and never set globally.
 
 (defun tl-exh--pat-size (pat)
   "Size of PAT, counting every subpattern it contains.
@@ -454,17 +484,6 @@ remaining rows the ones that cover the whole column."
         (when (tl-exh--con-p pat)
           (cl-pushnew (tl-exh--con-name pat) out))))))
 
-(defun tl-exh--prefix-con (name arity witness)
-  "Prefix WITNESS by constructor NAME applied to ARITY columns.
-WITNESS covers the specialised columns, so its first ARITY entries
-belong inside the constructor and the rest stand after it."
-  (append (list (cons 'con (cons name (cl-subseq witness 0 arity))))
-          (cl-subseq witness arity)))
-
-(defun tl-exh--prefix-lit (value witness)
-  "Prefix WITNESS by literal VALUE, which stands for the column before it."
-  (cons (list 'lit value) witness))
-
 (defun tl-exh--witness (sig)
   "A column witness for each column of SIG, naming exactly what it covers."
   (mapcar (lambda (col)
@@ -480,70 +499,71 @@ belong inside the constructor and the rest stand after it."
 
 ;;; The usefulness computation
 
-(defun tl-exh--useful (env matrix sig k &optional measure ancestors)
-  "Frame asking whether SIG is useful against MATRIX, answering into K.
-MATRIX is a list of rows, each a list of `(PATTERN TYPE)' columns; SIG
-is one such row, asked as a question.  Useful means: some value matches
-SIG that no row of MATRIX matches.  ENV supplies the datatype
-declarations that say which constructors a column can hold at all.
-MEASURE is the budget `tl-exh--measure' granted to this subgoal, checked
-against every step taken below it; ANCESTORS is the expansion path in
-force, see `tl-exh-ancestors'."
-  (let ((measure (or measure (tl-exh--measure sig)))
-        (ancestors (or ancestors tl-exh-ancestors)))
-    (tl-exh-frame
-     k
-     (lambda ()
-       (cond
-        ;; No row stands, so nothing covers SIG.
-        ((null matrix) (tl-exh--yes (tl-exh--witness sig)))
-        ;; SIG is fully specified and a row stands, so SIG is matched.
-        ((null sig) (tl-exh--no))
-        (t (let* ((col (car sig))
-                  (pat (tl-exh--col-pat col))
-                  (ty (cadr col))
-                  (rest (cdr sig)))
-             (cond
-              ((tl-exh--con-p pat)
-               (tl-exh--useful-con env matrix col rest k measure ancestors))
-              ((eq (car-safe pat) 'lit)
-               (tl-exh--useful-lit env matrix pat rest k measure ancestors))
-              ((eq (car-safe pat) 'or)
-               (tl-exh--useful-or env matrix (tl-exh--expand-or pat) rest k
-                                  measure ancestors))
-              ((eq (car-safe pat) 'and)
-               (let ((norm (tl-exh--normalize-and pat)))
-                 (if (not norm)
-                     (tl-exh--unknown nil)
-                   (let ((sig2 (cons norm rest)))
-                     ;; Normalisation is expected to shrink the pattern.
-                     ;; One that does not has not simplified the question
-                     ;; at all, and asking it again would spin, so this
-                     ;; admits it cannot decide rather than repeating
-                     ;; itself or claiming the conjunction settles
-                     ;; something it left alone.
-                     (if (>= (tl-exh--measure sig2) measure)
-                         (tl-exh--unknown nil)
-                       (tl-exh--useful env matrix sig2 k
-                                       (tl-exh--measure sig2) ancestors))))))
-              ((tl-exh--irrefutable-p pat)
-               (tl-exh--useful-default env matrix ty rest k measure ancestors))
-              ;; `guard' and `rest' have no meaning in a column: a guard
-              ;; is a runtime predicate this checker cannot evaluate, and
-              ;; `rest' addresses a sibling list rather than a value.
-              ;; Neither may contribute a decision.
-              (t (tl-exh--unknown nil)))))))
-     ancestors)))
+(defun tl-exh--step (control stack)
+  "Take one step of the question CONTROL, with STACK beneath it.
+Return `(NEW-CONTROL . NEW-STACK)'.  A step either answers outright --
+the two base cases, where the matrix or the signature has run out --
+or picks the first column apart and descends, pushing the frame that
+will rebuild the answer.  What it never does is hand an answer to
+anyone: that is `tl-exh--resume''s job, and keeping the two apart is
+what makes the machine readable one function at a time."
+  (let* ((env (nth 1 control))
+         (matrix (nth 2 control))
+         (sig (nth 3 control))
+         (measure (nth 4 control))
+         (ancestors (nth 5 control)))
+    (cond
+     ;; No row stands, so nothing covers SIG.
+     ((null matrix) (cons (tl-exh--yes (tl-exh--witness sig)) stack))
+     ;; SIG is fully specified and a row stands, so SIG is matched.
+     ((null sig) (cons (tl-exh--no) stack))
+     (t (let* ((col (car sig))
+               (pat (tl-exh--col-pat col))
+               (ty (cadr col))
+               (rest (cdr sig)))
+          (cond
+           ((tl-exh--con-p pat)
+            (tl-exh--step-con env matrix col rest measure ancestors stack))
+           ((eq (car-safe pat) 'lit)
+            (tl-exh--step-lit env matrix pat rest measure ancestors stack))
+           ((eq (car-safe pat) 'or)
+            (tl-exh--step-or env matrix (tl-exh--expand-or pat) rest
+                             measure ancestors stack))
+           ((eq (car-safe pat) 'and)
+            (let ((norm (tl-exh--normalize-and pat)))
+              (if (not norm)
+                  (cons (tl-exh--unknown nil) stack)
+                (let* ((sig2 (cons norm rest))
+                       (m2 (tl-exh--measure sig2)))
+                  ;; Normalisation is expected to shrink the pattern.
+                  ;; One that does not has not simplified the question at
+                  ;; all, and asking it again would spin, so this admits
+                  ;; it cannot decide rather than repeating itself or
+                  ;; claiming the conjunction settles something it left
+                  ;; alone.
+                  (if (>= m2 measure)
+                      (cons (tl-exh--unknown nil) stack)
+                    (cons (list 'useful env matrix sig2 m2 ancestors)
+                          stack))))))
+           ((tl-exh--irrefutable-p pat)
+            (tl-exh--step-default env matrix ty rest measure ancestors stack))
+           ;; `guard' and `rest' have no meaning in a column: a guard is a
+           ;; runtime predicate this checker cannot evaluate, and `rest'
+           ;; addresses a sibling list rather than a value.  Neither may
+           ;; contribute a decision.
+           (t (cons (tl-exh--unknown nil) stack))))))))
 
-(defun tl-exh--useful-con (env matrix col rest k measure ancestors)
-  "Frame specialising by COL's constructor, answering into K.
+(defun tl-exh--step-con (env matrix col rest measure ancestors stack)
+  "Descend by COL's constructor, with STACK beneath it.
 COL's type is looked up in ENV, and may not resolve -- an `open'
-datatype, a variable -- in which case the field types are unknown and the
-recursion below simply cannot enumerate, which yields `:unknown' rather
-than a guess.  MATRIX is specialised to the rows that can hold this
-constructor, which is what makes the question smaller.  No ancestor is
-pushed here: specialising by a constructor the pattern already names
-shrinks that pattern, so the measure alone bounds it."
+datatype, a variable -- in which case the field types are unknown and
+the recursion below simply cannot enumerate, which yields `:unknown'
+rather than a guess.  MATRIX is specialised to the rows that can hold
+this constructor, which is what makes the question smaller.  No
+ancestor is pushed here: specialising by a constructor the pattern
+already names shrinks that pattern, so the measure alone bounds it.
+The frame waits with the constructor's name and arity, since that is
+what the answer's witness has to be rebuilt into."
   (let* ((pat (tl-exh--col-pat col))
          (name (tl-exh--con-name pat))
          (subs (tl-exh--con-args pat))
@@ -557,23 +577,19 @@ shrinks that pattern, so the measure alone bounds it."
                   (make-list arity nil)))
          (sig (append (tl-exh--zip subs types) rest)))
     (tl-exh--check-decrease measure sig)
-    (tl-exh--useful
-     env (tl-exh--specialize matrix name arity types) sig
-     (lambda (a)
-       (funcall k
-                (if (eq (car a) :yes)
-                    (tl-exh--yes (tl-exh--prefix-con name arity (cdr a)))
-                  a)))
-     (tl-exh--measure sig) ancestors)))
+    (cons (list 'useful env (tl-exh--specialize matrix name arity types)
+                sig (tl-exh--measure sig) ancestors)
+          (cons (list 'wrap ancestors 'con arity name) stack))))
 
-(defun tl-exh--useful-lit (env matrix pat rest k measure ancestors)
-  "Frame asking whether literal PAT escapes MATRIX, answering into K.
-A literal column keeps only rows that can hold this exact value, which
-are rows led by the same literal or by anything irrefutable.  ENV is
-passed down to the recursion, which needs it to read the constructors of
-every column beside this one.  Literals are never enumerable as a type,
-so an all-literal column always reaches the incomplete branch and so can
-never be shown complete."
+(defun tl-exh--step-lit (env matrix pat rest measure ancestors stack)
+  "Descend past a literal PAT, with STACK beneath it.
+MATRIX keeps only the rows that can hold this exact value, which are
+rows led by the same literal or by anything irrefutable -- that is the
+whole of the restriction, and it is what makes the question smaller.
+ENV is passed down to the recursion, which needs it to read the
+constructors of every column beside this one.  Literals are never
+enumerable as a type, so an all-literal column always reaches the
+incomplete branch and so can never be shown complete."
   (let* ((value (cadr pat))
          (sig rest)
          (m (cl-remove-if-not
@@ -583,54 +599,36 @@ never be shown complete."
                      (and (eq (car-safe c) 'lit) (equal (cadr c) value)))))
              matrix)))
     (tl-exh--check-decrease measure sig)
-    (tl-exh--useful
-     env m sig
-     (lambda (a)
-       (funcall k
-                (if (eq (car a) :yes)
-                    (tl-exh--yes (tl-exh--prefix-lit value (cdr a)))
-                  a)))
-     (tl-exh--measure sig) ancestors)))
+    (cons (list 'useful env m sig (tl-exh--measure sig) ancestors)
+          (cons (list 'wrap ancestors 'lit nil value) stack))))
 
-(defun tl-exh--useful-or (env matrix alts rest k measure ancestors)
-  "Frame trying each of ALTS in turn, answering into K.
-Alternatives are independent questions about the same MATRIX, and ENV is
-passed to each of them unchanged, so one `:yes' settles the lot.  An
-`:unknown' settles nothing but is remembered: if no alternative proves
-useful and at least one was undecided, the honest answer is that the
-question is undecided, not that it is answered."
-  (let ((pending alts)
-        (unknown nil))
-    (cl-labels
-        ((next ()
-           (tl-exh-frame
-            k
-            (lambda ()
-              (if (null pending)
-                  (if unknown (tl-exh--unknown unknown) (tl-exh--no))
-                (let* ((alt (pop pending))
-                       (sig (cons alt rest)))
-                  (tl-exh--check-decrease measure sig)
-                  (tl-exh--useful
-                   env matrix sig
-                   (lambda (a)
-                     (pcase (car a)
-                       (:yes (funcall k a))
-                       (:unknown (setq unknown (cdr a)) (next))
-                       (_ (next))))
-                   (tl-exh--measure sig) ancestors))))
-            ancestors)))
-      (next))))
+(defun tl-exh--step-or (env matrix alts rest measure ancestors stack)
+  "Descend into ALTS in turn, with STACK beneath it.
+Alternatives are independent questions about the same MATRIX, and ENV
+is passed to each unchanged, so one `:yes' settles the lot.  The join
+frame waits for each in turn; an `:unknown' settles nothing but is
+remembered, because if no alternative proves useful and at least one
+was undecided the honest answer is that the question is undecided, not
+that it is answered."
+  (if (null alts)
+      (cons (tl-exh--no) stack)
+    (let* ((alt (car alts))
+           (sig (cons alt rest)))
+      (tl-exh--check-decrease measure sig)
+      (cons (list 'useful env matrix sig (tl-exh--measure sig) ancestors)
+            (cons (list 'join ancestors 'or (cdr alts) nil
+                        env matrix rest measure nil)
+                  stack)))))
 
-(defun tl-exh--useful-default (env matrix ty rest k measure ancestors)
-  "Frame asking whether an irrefutable column at TY is covered, answering into K.
-This is the branch that decides whether a match can be complete at all,
-and it goes two ways.  ENV says which constructors TY has.  When every
-one of them is named somewhere in MATRIX, whether each one's fields are
-covered is a finite question, asked once per constructor.  When some
-constructor is not named, coverage rests solely on the rows that make no
-demand of the column, so the question falls through to `D(P)' over the
-remaining columns."
+(defun tl-exh--step-default (env matrix ty rest measure ancestors stack)
+  "Descend from an irrefutable column at TY, with STACK beneath it.
+This is the branch that decides whether a match can be complete at
+all, and it goes two ways.  ENV says which constructors TY has.  When
+every one of them is named somewhere in MATRIX, whether each one's
+fields are covered is a finite question, asked once per constructor.
+When some constructor is not named, coverage rests solely on the rows
+that make no demand of the column, so the question falls through to
+`D(P)' over the remaining columns."
   (let* ((ctors (tl-exh--constructors-of env ty))
          (openp (not (listp ctors)))
          (mentioned (tl-exh--mentioned matrix))
@@ -652,67 +650,122 @@ remaining columns."
                                          (make-list (length (nth 1 c)) '_))))
                     '_)))
         (tl-exh--check-decrease measure sig)
-        (tl-exh--useful
-         env (tl-exh--default matrix) sig
-         (lambda (a)
-           (funcall k
-                    (if (eq (car a) :yes)
-                        (tl-exh--yes (cons head (cdr a)))
-                      a)))
-         (tl-exh--measure sig) ancestors)))
+        (cons (list 'useful env (tl-exh--default matrix) sig
+                    (tl-exh--measure sig) ancestors)
+              (cons (list 'wrap ancestors 'head nil head) stack))))
      ;; Every constructor is named, so this expansion asks the same shape
      ;; of question about each of their fields.  That is where an
      ;; equirecursive datatype would ask about `Tree' by asking about
      ;; `Tree', and the ancestor set is what ends it.
-     ((tl-exh--already-expanded-p ty) (tl-exh--unknown nil))
-     (t (tl-exh--useful-ctors env matrix ctors ty rest k measure ancestors)))))
+     ((tl-exh--already-expanded-p ty) (cons (tl-exh--unknown nil) stack))
+     (t (tl-exh--step-ctors env matrix ctors ty rest measure ancestors stack)))))
 
-(defun tl-exh--useful-ctors (env matrix ctors ty rest k measure ancestors)
-  "Frame asking whether any constructor's fields are uncovered, answering into K.
-CTORS is a list of `(NAME FIELDS RESULT)', the constructors of TY as ENV
-reports them; each is a separate question about a copy of MATRIX
+(defun tl-exh--step-ctors (env matrix ctors ty rest measure ancestors stack)
+  "Descend into the constructors of TY in turn, with STACK beneath it.
+CTORS is a list of `(NAME FIELDS RESULT)', the constructors of TY as
+ENV reports them; each is a separate question about a copy of MATRIX
 specialised to that constructor, so one `:yes' settles the lot and an
 undecided one is merely remembered.  TY is recorded as expanded for the
 duration, which is what bounds a recursive datatype.  MEASURE is
-accepted to keep the frame signature uniform but deliberately not
-consulted, for the reason given at the call below."
+accepted to keep the signature uniform but deliberately not consulted,
+for the reason below: this is the one branch where a wildcard column
+becomes the constructor's field columns, so the measure is expected to
+grow, and the pushed ancestors are what bound it."
   (ignore measure)
-  (let ((pending ctors)
-        (unknown nil)
-        (ancestors (tl-exh--push-expansion ty ancestors)))
-    (cl-labels
-        ((next ()
-           (tl-exh-frame
-            k
-            (lambda ()
-              (cond
-               ((null pending)
-                (if unknown (tl-exh--unknown unknown) (tl-exh--no)))
-               (t (let* ((c (pop pending))
-                         (name (car c))
-                         (fields (nth 1 c))
-                         (arity (length fields))
-                         ;; No decrease is checked below: this is the one
-                         ;; branch where a wildcard column becomes the
-                         ;; constructor's field columns, so the measure is
-                         ;; expected to grow.  `tl-exh-ancestors' bounds it.
-                         (sig (append (tl-exh--wild-columns arity fields) rest)))
-                    (tl-exh--useful
-                     env (tl-exh--specialize matrix name arity fields) sig
-                     (lambda (a)
-                       (pcase (car a)
-                         (:yes (funcall k
-                                        (tl-exh--yes
-                                         (tl-exh--prefix-con name arity (cdr a)))))
-                         (:unknown (setq unknown (cdr a)) (next))
-                         (_ (next))))
-                     (tl-exh--measure sig) ancestors)))))
-            ancestors)))
-      (next))))
+  (let ((pushed (tl-exh--push-expansion ty ancestors)))
+    (if (null ctors)
+        (cons (tl-exh--no) stack)
+      (let* ((c (car ctors))
+             (name (car c))
+             (fields (nth 1 c))
+             (arity (length fields))
+             (sig (append (tl-exh--wild-columns arity fields) rest)))
+        (cons (list 'useful env (tl-exh--specialize matrix name arity fields)
+                    sig (tl-exh--measure sig) pushed)
+              ;; The sub-question is asked about the constructor's
+              ;; fields, so its witness is a witness for them and says
+              ;; nothing about the constructor.  The wrap above the join
+              ;; puts the name back before the join ever reads the
+              ;; answer; above it, because a frame answers to the one on
+              ;; top of it, and the join must see the answer rebuilt.
+              ;; It sits above the join for the other reason the machine
+              ;; keeps the two apart: a rebuild is not a decision, and
+              ;; only the join is allowed to make one.
+              (cons (list 'wrap pushed 'con arity name)
+                    (cons (list 'join pushed 'ctors (cdr ctors) nil
+                                env matrix rest measure ty)
+                          stack)))))))
+
+(defun tl-exh--resume (frame answer stack)
+  "Hand ANSWER to FRAME, with STACK beneath it.
+Return `(NEW-CONTROL . NEW-STACK)'.  A frame consumes an answer and
+yields either that answer rebuilt or a *smaller* question -- never the
+one it was waiting on -- so a frame cannot re-enter itself and the
+stack cannot grow on the way back down.  That is the whole termination
+argument, and it is now a property of two data shapes rather than of
+whatever the closures happened to have captured."
+  (pcase (car frame)
+    ;; Rebuild a `:yes' witness and pass everything else through
+    ;; untouched: `:no' carries no witness and `:unknown' must keep the
+    ;; one it reached on its own, un-rebuilt, or a caller reading it
+    ;; would be reading a claim this frame added.
+    ('wrap
+     (cons (if (eq (car answer) :yes)
+               (tl-exh--yes (tl-exh--wrap-witness frame (cdr answer)))
+             answer)
+           stack))
+    ('join
+     (let ((kind (nth 2 frame))
+           (pending (nth 3 frame))
+           (unknown (nth 4 frame))
+           (env (nth 5 frame))
+           (matrix (nth 6 frame))
+           (rest (nth 7 frame))
+           (measure (nth 8 frame))
+           (ty (nth 9 frame))
+           (ancestors (nth 1 frame)))
+       (cond
+        ;; One alternative proved useful and that settles the lot.
+        ((eq (car answer) :yes) (cons answer stack))
+        (t
+         (when (eq (car answer) :unknown) (setq unknown (cdr answer)))
+         (if (null pending)
+             (cons (if unknown (tl-exh--unknown unknown) (tl-exh--no)) stack)
+           (if (eq kind 'or)
+               (tl-exh--step-or env matrix pending rest measure ancestors stack)
+             (tl-exh--step-ctors env matrix pending ty rest measure
+                                 ancestors stack)))))))
+    ;; A frame is one of those two.  Anything else means the machine
+    ;; state was corrupted, and answering from it would be a coverage
+    ;; claim that no computation produced.
+    (_ (signal 'termlisp-type-error
+               (list (format "Coverage: unknown frame %S" (car frame)))))))
+
+(defun tl-exh--wrap-witness (frame witness)
+  "Rebuild WITNESS with FRAME's column standing in front of it.
+There are three shapes and the difference between them is the point of
+having a KIND.  A literal, and an irrefutable column's forgotten
+constructor -- or the `_' that stands in when there is none -- each
+stand for the whole column and simply go in front.  A constructor's
+witness is unlike them: the sub-question was asked about the
+constructor's *fields*, so the first ARITY entries of WITNESS belong
+inside the constructor and the rest stand after it.  Splicing them in
+by hand at every call site is how this used to be spelled, and getting
+the arity wrong there moved a witness column without saying so."
+  (let ((kind (nth 2 frame))
+        (arity (nth 3 frame))
+        (data (nth 4 frame)))
+    (cond
+     ((eq kind 'con)
+      (append (list (cons 'con (cons data (cl-subseq witness 0 arity))))
+              (cl-subseq witness arity)))
+     ((eq kind 'lit) (cons (list 'lit data) witness))
+     (t (cons data witness)))))
 
 (defun tl-exh--useful-col (env matrix sig)
-  "Answer whether SIG is useful against MATRIX in ENV, running the trampoline."
-  (tl-exh-run (tl-exh--useful env matrix sig #'identity)))
+  "Answer whether SIG is useful against MATRIX in ENV, running the machine."
+  (tl-exh-run (list 'useful env matrix sig (tl-exh--measure sig)
+                    tl-exh-ancestors)))
 
 ;;; Queries
 
