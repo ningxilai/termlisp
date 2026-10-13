@@ -618,6 +618,67 @@ still matches, still binds nothing, and leaves no goal behind."
                bad"
               "bad" '(:type-check t :elaborate t))
 
+;;; A proof that fails must say where
+
+;; Credibility in stage 3 comes from two things, and only one of them is
+;; "a proof can be checked".  The other is that a proof which does not
+;; check names the difference.  `Eq Nat Zero (Succ Zero)' and
+;; `Eq Nat (Succ Zero) Zero' agree everywhere but one index; printing
+;; both types is most of what fixing the proof needs.
+
+(tl-test-reject tl-ch-a-failed-proof-names-both-types
+  "(: h (Eq Nat Zero (Succ Zero) -> Eq Nat (Succ Zero) Zero))
+   (define (h p) p) h"
+  "the signature says" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-an-index-disagreement-is-visible
+  "(: f (-> (n : Nat) (Vec Nat (Succ n)) (Vec Nat (Succ n))))
+   (define (f n) VNil) f"
+  "Vec Nat Zero" '(:type-check t :elaborate t))
+
+;; A variable name has to survive the trip.  `format' with `%S' would
+;; write the symbol `?3' as `\?3', because a bare one reads back as a
+;; character constant -- correct for source, noise for a message.
+(tl-test-reject tl-ch-a-mismatch-note-keeps-names-readable
+  "(: h (Eq Nat Zero (Succ Zero) -> Eq Nat (Succ Zero) Zero))
+   (define (h p) p) h"
+  "(Eq Nat Zero (Succ Zero))" '(:type-check t :elaborate t))
+
+;;; The proof path is strict
+
+;; Oracle mode tolerates a failed unification and clauses that share no
+;; common type.  A proof may tolerate neither: both turn a mistake into
+;; an unconstrained variable rather than an error, which is the one
+;; failure a Curry-Howard system must not have.  Nothing on the typed
+;; path sets those flags today -- the only binder is `tl-typecheck-ir',
+;; which no evaluator, loader or REPL entry point reaches -- but a
+;; guarantee resting on nobody happening to set a variable is not a
+;; guarantee, so `tl-typecheck-form' now binds them off.
+
+(defvar tl-ch--seen-flags nil
+  "Oracle flags observed by `tl-ch--record-flags'.")
+
+(defun tl-ch--record-flags (orig &rest args)
+  "Advice: record the oracle flags ORIG runs under, then run it with ARGS."
+  (push (cons tl-type-lenient tl-type-lenient-clauses) tl-ch--seen-flags)
+  (apply orig args))
+
+(ert-deftest tl-ch-the-typed-path-binds-the-oracle-flags-off ()
+  "Checking a form binds oracle tolerance off, not merely finds it off.
+`tl-typecheck-form' is what every top-level form on the typed path goes
+through, so that is where the binding has to live."
+  (let ((env (termlisp-make-env '(:type-check t :elaborate t))))
+    (setq tl-ch--seen-flags nil)
+    (advice-add 'tl-infer-define-clauses :around #'tl-ch--record-flags)
+    (unwind-protect
+        (termlisp-eval "(define (probe x) x)" env)
+      (advice-remove 'tl-infer-define-clauses #'tl-ch--record-flags))
+    (should (equal tl-ch--seen-flags '((nil . nil))))))
+
+(tl-test-reject tl-ch-the-oracle-does-not-soften-a-proof
+  "(: o (-> Nat Nat)) (define (o Zero) Zero) (define (o (Succ x)) \"s\") o"
+  "does not match its signature" '(:type-check t :elaborate t))
+
 ;;; Datatype kinds
 
 ;; A constructor's field and its result are kind-checked where the

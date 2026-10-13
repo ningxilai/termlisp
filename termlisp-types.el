@@ -1340,6 +1340,32 @@ Return `(LOCAL-BINDINGS . SUBST)'."
           (cons binds bs)))))
    (t (signal 'termlisp-type-error (list (format "Bad pattern: %S" pat))))))
 
+(defun tl-type-text (datum)
+  "Print DATUM as text, leaving a `?N' variable name readable.
+`format' with `%S' escapes a symbol named `?3' as `\\?3', because a
+bare one would read back as a character constant.  In an error message
+that escape is noise twice over: the message is read, not read in."
+  (cond ((consp datum)
+         (concat "(" (mapconcat #'tl-type-text datum " ") ")"))
+        ((null datum) "nil")
+        ((symbolp datum) (symbol-name datum))
+        (t (format "%s" datum))))
+
+(defun tl-type-mismatch-note (target got)
+  "A note naming the two types TARGET and GOT that failed to agree.
+A proof that fails has to say where, or the reader is left bisecting:
+`Eq Nat Zero (Succ Zero)' and `Eq Nat (Succ Zero) Zero' agree everywhere
+but one index, and naming that difference is most of what fixing the
+proof needs.  TARGET may be nil, where only GOT is known.  Rendering is
+best-effort: an unreadable type is not worth losing the error over."
+  (condition-case nil
+      (concat (when target
+                (format "\n  the signature says: %s"
+                        (tl-type-text (tl-type-to-datum target))))
+              (format "\n  this clause gives:  %s"
+                      (tl-type-text (tl-type-to-datum got))))
+    (error "")))
+
 (defvar tl-type-lenient-clauses nil
   "When non-nil, clauses of a definition that do not share one type are
 treated as an overloaded name with an unconstrained scheme rather than
@@ -1413,11 +1439,13 @@ a hard failure.")
                         (if (or tl-type-lenient tl-type-lenient-clauses)
                             (throw 'tl-clause-inconsistent t)
                           (signal 'termlisp-type-error
-                                  (list (format
-                                         (if sig
-                                             "Clause of %S does not match its signature"
-                                           "Clause of %S has inconsistent type")
-                                         name)))))
+                                  (list (format "Clause of %s%s%s"
+                                                name
+                                                (if sig
+                                                    " does not match its signature"
+                                                  " has inconsistent type")
+                                                (tl-type-mismatch-note
+                                                 (and sig target) ctype))))))
                       (setq bindings (cdr u)))))))
             nil)
           (puthash name (tl-tscheme nil (tl-fresh-tvar)) tyenv)
@@ -1636,7 +1664,19 @@ the elaborator inserts as the first argument of overloaded method calls."
 (defun tl-typecheck-form (env form)
   "Typecheck one top-level FORM in ENV."
   (let ((tl-infer-constraints nil)
-        (tl-occurrence-check (tl-env-option env :occurs-check)))
+        (tl-occurrence-check (tl-env-option env :occurs-check))
+        ;; Oracle mode tolerates a failed unification and clauses that
+        ;; share no common type; a proof may tolerate neither, since both
+        ;; turn a mistake into an unconstrained variable instead of an
+        ;; error.  Nothing on this path sets either flag today -- the only
+        ;; binder is `tl-typecheck-ir', which no evaluator, loader or REPL
+        ;; entry point reaches -- but a guarantee that rests on nobody
+        ;; happening to set a variable is not a guarantee.  Binding them
+        ;; here makes the typed path strict by construction, so a caller
+        ;; that later does reach the oracle cannot quietly widen what a
+        ;; proof is allowed to contain.
+        (tl-type-lenient nil)
+        (tl-type-lenient-clauses nil))
     (cond
      ((and (consp form) (eq (car form) 'datatype)) (tl-eval-datatype env form))
      ((and (consp form) (eq (car form) 'datatype-extension))
