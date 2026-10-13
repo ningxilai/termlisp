@@ -411,6 +411,35 @@ from clover's `remove-duplicates-by-key'."
   (let ((ty (tl-type-parse sexp)))
     (tl-tscheme (tl-free-tvars ty) ty)))
 
+(defun tl--splice-head (head)
+  "Return `(HEAD-NAME . EXTRA-CHILDREN)' for HEAD used in head position.
+A binder in head position stands for the argument's value, and a value
+with arguments of its own is a *spine*, not a head: `(f x)' over
+`f := (VCons Zero)' is `(VCons Zero x)'.  So a substituted head is either
+reduced to the symbol it names -- the shape a head written in a type
+already has, and the only shape the reducer can look a function up
+under -- or spliced, its own children going in front of the ones it is
+being applied to.
+
+Without this the two spellings of one term diverge exactly where it
+counts: `(zc t)' reduces to `(VCons Zero t)' while the substituted
+`((zc) t)' reduces to nothing, and a unifier that would have agreed with
+either side on its own is left comparing a `VCons' against a `zc'.
+
+Variables are left alone, since a higher-kinded head variable is a head
+and not a term to splice.  So are `lambda' and `Pi', whose children are
+bound syntax rather than arguments: splicing `(lambda (v) body)' into
+the applications around it would turn three children into three
+unrelated ones where the lambda is a function of two."
+  (cond
+   ((not (tl-node-p head)) (cons head nil))
+   ((tl-node-var-p head) (cons head nil))
+   ((memq (tl-node-head head) '(lambda Pi)) (cons head nil))
+   ((not (tl-node-application head)) (cons (tl-node-head head) nil))
+   (t (let ((inner (tl--splice-head (tl-node-head head))))
+        (cons (car inner)
+              (append (cdr inner) (tl-node-children head)))))))
+
 (defun tl-map-type (f type)
   "Apply F to each type variable in TYPE, rebuilding the node graph.
 F is applied to a variable node wherever it occurs; its result is
@@ -430,17 +459,25 @@ inserted without further traversal.  Cycle-safe (equirecursive types)."
                         (if (null args)
                             node
                           (or (gethash node memo)
-                              (let ((new (tl-make-node
+                              (let* ((spliced
+                                      (if (tl-node-var-p head)
                                           ;; a higher-kinded head var is
                                           ;; substituted too, so scheme
-                                          ;; instantiation copies it
-                                          (if (tl-node-var-p head)
-                                              (funcall f head)
-                                            head)
-                                          nil t)))
+                                          ;; instantiation copies it --
+                                          ;; and what it is substituted
+                                          ;; with is a *value*, which may
+                                          ;; be a spine and not a name.
+                                          (tl--splice-head (funcall f head))
+                                        ;; A head that was never a variable
+                                        ;; was written where it stands:
+                                        ;; leave it, spine and all, exactly
+                                        ;; as it was.
+                                        (cons head nil)))
+                                     (new (tl-make-node (car spliced) nil t)))
                                 (puthash node new memo)
                                 (setf (tl-node-children new)
-                                      (mapcar #'go args))
+                                      (append (cdr spliced)
+                                              (mapcar #'go args)))
                                 new)))))
                      (t node)))))
       (go type))))
@@ -1182,22 +1219,76 @@ A local binding or an ordinary type binding shadows the method."
          (not (assq sym (tl-tenv-locals env)))
          (gethash sym (tl-env-method-env base)))))
 
-(defun tl-apply-pi (ftype)
+(defun tl-expr-term--global-p (env name)
+  "Return non-nil when NAME denotes something at the type level in ENV.
+Local bindings are excluded by the caller: a local named `g' read here
+would come back as a global `g' of the same spelling, and a type that
+then reduced through the wrong one would compare equal to the wrong
+type.  Everything else that a bare name can mean -- a defined function,
+a method, a constructor, a declared datatype, a builtin -- is a term
+the type level may name."
+  (let ((base (tl-tenv-base env)))
+    (and base
+         (or (gethash name (tl-env-type-env base))
+             (gethash name (tl-env-method-env base))
+             (gethash name (tl-env-constructors base))
+             (gethash name (tl-env-datatypes base))
+             (gethash name tl-builtin-types)))))
+
+(defun tl-expr-term (env expr)
+  "Return the type-level term node the call-site expression EXPR denotes.
+A `Pi' binder in a callee's type stands for its argument's *value*, and
+at the call site that value is in hand -- it is EXPR.  Writing it here is
+what turns `(?13 ?6)', a fresh variable nothing would ever tie back,
+into `(zc ?6)', the spelling the signature already had.  Before this the
+binder's occurrences were all bound to `tl-fresh-tvar', so a result type
+such as `Eq b (f x) (f y)' kept an unsolved head and only agreed with its
+signature when a later unification happened to name the function -- which
+is why `cong Succ' worked and `cong zc' did not.
+
+A name whose type-level reading would be the wrong name -- a local, or an
+argument with no head to write such as a literal or a `lambda' -- answers
+nil, and the caller keeps the old fresh variable there.  That is a
+degradation to the behaviour every argument had before this function
+existed, not a new failure."
+  (cond
+   ((symbolp expr)
+    (and (not (assq expr (tl-tenv-locals env)))
+         (tl-expr-term--global-p env expr)
+         (tl-tcon expr nil)))
+   ((and (consp expr) (symbolp (car expr))
+         (not (memq (car expr) '(lambda do let list quote)))
+         (tl-expr-term--global-p env (car expr)))
+    ;; An argument with no type-level spelling of its own -- a local, a
+    ;; literal -- becomes a fresh variable rather than voiding the whole
+    ;; term, which is the same choice `tl-clause--pattern-term' makes for
+    ;; a subpattern that denotes nothing: part of a term still tells the
+    ;; caller more than none of it.
+    (tl-tcon (car expr)
+             (mapcar (lambda (a) (or (tl-expr-term env a)
+                                     (tl-fresh-tvar)))
+                     (cdr expr))))
+   (t nil)))
+
+(defun tl-apply-pi (ftype &optional term)
   "Spell FTYPE as an ordinary arrow when it is a `Pi' about to be applied.
-The codomain's occurrences of its binder become one fresh variable.  What
-the binder stood for is the argument's *value*, which the type level
-never sees, so the caller's context is left to say what it was -- exactly
-what happens to a parameter `tl-signature-binders' made implicit, and for
-the same reason: unification can only find a value that something else
-puts in reach.  A plain `->' comes back untouched, and so does a type
-with no argument left to consume."
+The codomain's occurrences of its binder become one fresh variable,
+unless TERM -- the argument this Pi is being applied to, as a type-level
+term from `tl-expr-term' -- says what the binder was, in which case they
+become TERM instead.  The binder stood for the argument's value, and the
+call site has it; leaving it to unification to rediscover was a
+description of a gap, not a reason for one.
+
+A plain `->' comes back untouched, and so does a type with no argument
+left to consume."
   (if (and (tl-node-p ftype) (tl-node-application ftype)
            (eq (tl-node-head ftype) 'Pi)
            (= (length (tl-node-children ftype)) 3))
       (let ((args (tl-node-children ftype)))
         (tl-tarrow (cadr args)
                    (tl-type-subst (caddr args)
-                                  (list (cons (car args) (tl-fresh-tvar))))))
+                                  (list (cons (car args)
+                                              (or term (tl-fresh-tvar)))))))
     ftype))
 
 (defun tl-infer-application (env expr)
@@ -1241,7 +1332,8 @@ with no argument left to consume."
              (aty (car ra))
              (res (tl-fresh-tvar)))
         (setq bindings (tl-compose-bindings bindings (cdr ra)))
-        (setq ftype (tl-apply-pi (tl-apply-bindings ftype bindings)))
+        (setq ftype (tl-apply-pi (tl-apply-bindings ftype bindings)
+                                 (tl-expr-term env arg)))
         (setq aty (tl-apply-bindings aty bindings))
         (let ((u (tl-unify-types ftype (tl-tarrow aty res) bindings)))
           (cond ((car u)

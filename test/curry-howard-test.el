@@ -1216,5 +1216,102 @@ written."
                     "(define (g True) 1) (define (g False) 2) (g True)")
                    "1"))))
 
+;;; `tl-apply-pi': what fills a `Pi' binder at a call site
+;;
+;; A `Pi' codomain's occurrences of its binder stand for the argument's
+;; *value*.  This suite covers every shape that value can arrive in, and
+;; every shape the codomain can hold the binder in, because the old code
+;; put a fresh variable there and let unification rediscover the answer --
+;; which worked exactly when something else happened to name the function
+;; and failed silently when nothing did.
+
+(defconst tl-ch--apply-pi-cong
+  "(: cong (-> (a : *) (b : *) (x : a) (y : a) (f : a -> b)
+                (Eq a x y) (Eq b (f x) (f y))))
+   (define (cong f Refl) Refl)"
+  "A congruence rule whose codomain mentions its function binder twice.
+The two occurrences are what make this the probe for `tl-apply-pi': each
+has to become the argument's value, not one fresh variable left to chance.")
+
+(tl-test-eval tl-ch-apply-pi-fills-a-named-function
+  (concat tl-ch--apply-pi-cong "
+   (: zc (-> (n : Nat) (Vec Nat n) (Vec Nat (Succ n))))
+   (define (zc xs) (VCons Zero xs))
+   (: t (-> (n : Nat) (xs : Vec Nat n) (ys : Vec Nat n)
+             (Eq (Vec Nat n) xs ys)
+             (Eq (Vec Nat (Succ n)) (zc xs) (zc ys))))
+   (define (t h) (cong zc h)) (t Refl)")
+  "Refl" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-apply-pi-fills-a-partial-constructor
+  (concat tl-ch--apply-pi-cong "
+   (: t (-> (n : Nat) (xs : Vec Nat n) (ys : Vec Nat n)
+             (Eq (Vec Nat n) xs ys)
+             (Eq (Vec Nat (Succ n)) (VCons Zero xs) (VCons Zero ys))))
+   (define (t h) (cong (VCons Zero) h)) (t Refl)")
+  "Refl" '(:type-check t :elaborate t))
+
+;; Two leading Pis, each filled by a different value, each mentioned
+;; twice.  `Succ' fills the first as a bare name and `dblf' as a head
+;; applied to one argument, so the codomain's two spines come out as
+;; `(Succ Zero)' and `(dblf Zero)' -- the second only agrees with its
+;; signature if the substituted head was spliced into the applications
+;; around it rather than dropped into the head slot as a node the
+;; reducer could not name.
+(tl-test-eval tl-ch-apply-pi-fills-two-nested-pis-differently
+  "(: bothf (-> (f : Nat -> Nat) (g : Nat -> Nat) Nat
+                 (Pair (Eq Nat (f Zero) (f Zero)) (Eq Nat (g Zero) (g Zero)))))
+   (define (bothf f g k) (Pair Refl Refl))
+   (: dblf (-> (n : Nat) Nat))
+   (define (dblf n) (Succ (Succ n)))
+   (car (bothf Succ dblf Zero))"
+  "Refl" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-apply-pi-leaves-a-lambda-to-unification
+  (concat tl-ch--apply-pi-cong "
+   (: t (-> (n : Nat) (Eq Nat n n) (Eq Nat n n)))
+   (define (t h) (cong (lambda (v) (Succ v)) h)) (t Refl)")
+  "Refl" '(:type-check t :elaborate t))
+
+;; The signature says the lambda twice where the clause says one variable.
+;; The two spellings are separate lists, so a head compared with `eq'
+;; calls them different terms and the clause is refused for agreeing with
+;; its own statement.
+(tl-test-eval tl-ch-apply-pi-agrees-when-the-signature-spells-the-same-lambda
+  (concat tl-ch--apply-pi-cong "
+   (: t (-> (x : Nat) (y : Nat) (Eq Nat x y)
+             (Eq Nat ((lambda (v) (Succ v)) x) ((lambda (v) (Succ v)) y))))
+   (define (t h) (cong (lambda (v) (Succ v)) h)) (t Refl)")
+  "Refl" '(:type-check t :elaborate t))
+
+;; The argument names a global through a local, so only part of it
+;; converts.  The head is known and converts; the local has no type-level
+;; spelling and becomes a variable, which is the degradation to the
+;; behaviour every argument had before -- and the theorem still goes
+;; through, because what the codomain needs is the head.
+(tl-test-eval tl-ch-apply-pi-converts-a-global-applied-to-a-local
+  (concat tl-ch--apply-pi-cong "
+   (: t (-> (k : Nat) (x : Nat) (y : Nat) (Eq Nat x y)
+             (Eq Nat (plus k x) (plus k y))))
+   (define (t k h) (cong (plus k) h)) (t Zero Refl)")
+  "Refl" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-apply-pi-still-refuses-the-wrong-function
+  (concat tl-ch--apply-pi-cong "
+   (: zc (-> (n : Nat) (Vec Nat n) (Vec Nat (Succ n))))
+   (define (zc xs) (VCons Zero xs))
+   (: t (-> (n : Nat) (xs : Vec Nat n) (ys : Vec Nat n)
+             (Eq (Vec Nat n) xs ys)
+             (Eq (Vec Nat (Succ n)) (zc xs) (zc ys))))
+   (define (t h) (cong (lambda (v) v) h)) (t Refl)")
+  "does not match its signature" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-apply-pi-still-refuses-the-wrong-argument
+  (concat tl-ch--apply-pi-cong "
+   (: t (-> (x : Nat) (y : Nat) (Eq Nat x y) (Eq Nat x y)))
+   (define (t h) (cong VNil h)) (t Refl)")
+  "Cannot apply cong to VNil" '(:type-check t :elaborate t))
+
+
 (provide 'curry-howard-test)
 ;;; curry-howard-test.el ends here

@@ -277,6 +277,18 @@ rejected a cyclic binding."
                    ;; variable nodes are `equal' structurally but must
                    ;; still be unified.
                    (and (or (eq hx hy)
+                            ;; A head that is neither a symbol nor a node
+                            ;; has no `eq' to offer: a `lambda' written
+                            ;; straight into a type is a list, and its two
+                            ;; occurrences in one signature are two
+                            ;; different lists spelling one term.  Compare
+                            ;; by value, but only where neither side is a
+                            ;; node -- two distinct unbound variables are
+                            ;; `equal' structurally and must still be
+                            ;; unified, which is the whole reason `eq' is
+                            ;; here in the first place.
+                            (and (not (tl-node-p hx)) (not (tl-node-p hy))
+                                 (equal hx hy))
                             (or (tl-node-var-p hx) (tl-node-var-p hy)))
                         ;; Matching heads are not by themselves a licence
                         ;; to decompose: `plus Zero (plus m k)' and `plus
