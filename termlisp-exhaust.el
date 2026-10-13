@@ -547,6 +547,16 @@ what makes the machine readable one function at a time."
                           stack))))))
            ((tl-exh--irrefutable-p pat)
             (tl-exh--step-default env matrix ty rest measure ancestors stack))
+           ;; A dot is a term the checker asserted, not one it can read.
+           ;; It could stand for one value or for a thousand: nothing in
+           ;; a column of dots can be enumerated, and nothing in one can
+           ;; be shown complete either.  What it must not do is fall
+           ;; through to the catch-all below as an unknown *tag* -- an
+           ;; unrecognised pattern is a bug in this file, and answering
+           ;; `:unknown' for one hides it.  A dot is a known pattern with
+           ;; a known limitation, and naming the two apart is the whole
+           ;; reason for the branch.
+           ((eq (car-safe pat) 'dot) (cons (tl-exh--unknown nil) stack))
            ;; `guard' and `rest' have no meaning in a column: a guard is a
            ;; runtime predicate this checker cannot evaluate, and `rest'
            ;; addresses a sibling list rather than a value.  Neither may

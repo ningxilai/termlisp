@@ -7,6 +7,7 @@
 ;;   (wild)            match anything, bind nothing
 ;;   (var . NAME)      bind NAME
 ;;   (lit . EXPR)      compare with value of EXPR
+;;   (dot . EXPR)      compare with value of EXPR, and say what it means
 ;;   (con . (NAME . SUBPATTERNS))
 ;;   (rest . NAME)     bind remaining sequence elements
 ;;   (lam . NAME)      bind a function value
@@ -14,6 +15,33 @@
 ;;   (or PAT...)
 ;;   (and PAT...)
 ;; `tl-match' returns a cons `(ok . bindings)' or nil.
+;;
+;; `lit' and `dot' run the same check -- evaluate the expression in the
+;; definition's scope and compare it with the value on offer -- and are
+;; still different patterns, because the checker reads them differently
+;; and only one of them says what the value *is*.
+;;
+;; A literal is a constant the checker cannot enumerate: `(:literal 1)'
+;; matches one value out of a type whose values it has no way to list,
+;; so a column of literals can never be shown complete.  A dot is a
+;; computed term, and the reason it exists is the opposite one.  It is
+;; the programmer telling the checker what stands at a position that a
+;; constructor pattern could not name -- a variable that must already be
+;; *that* value, or an expression that has been reduced to one:
+;;
+;;   (define (f (dot (plus n m))) ...)    ; only when the argument is
+;;                                        ; already `plus n m' reduced
+;;   (define (g (dot k)) ...)             ; only when the argument is
+;;                                        ; the value of `k', which is
+;;                                        ; not a pattern otherwise --
+;;                                        ; a bare `k' would bind it
+;;
+;; At the value level it constrains nothing that a literal would not.
+;; What it buys is at the type level: `tl-clause--pattern-term' hands
+;; the checker the term itself, so the codomain can reduce under it the
+;; way it reduces under a constructor.  Without the dot there is no way
+;; to say "assume this position is that term" -- the alternative is to
+;; bind it and hope, which constrains nothing.
 
 ;;; Code:
 
@@ -35,6 +63,9 @@ nullary constructor pattern instead of a variable."
         (list 'con pat)
       (cons 'var pat)))
    ((and (consp pat) (eq (car pat) :literal)) (list 'lit (cadr pat)))
+   ;; Before the generic cons branch below, which would take `:dot' for a
+   ;; constructor called `:dot' and parse its argument as a subpattern.
+   ((and (consp pat) (eq (car pat) :dot)) (list 'dot (cadr pat)))
    ((and (consp pat) (eq (car pat) :list)) (cons 'rest (cadr pat)))
    ((and (consp pat) (eq (car pat) :lambda)) (cons 'lam (cadr pat)))
    ((and (consp pat) (eq (car pat) 'guard))
@@ -62,6 +93,21 @@ Return `(ok . bindings)'.  CTX provides force/lit-eval/guard-eval/lambda-value."
              nil)
          (cons t (cons (cons name value) bindings)))))
     ('lit
+     (let ((expected (funcall (tl-match-ctx-lit-eval ctx) (cadr pat))))
+       (if (tl-value-equal expected value (tl-match-ctx-force ctx))
+           (cons t bindings)
+         nil)))
+    ;; The same check as a literal, reached by a different road and
+    ;; meaning a different thing.  The expression is evaluated in the
+    ;; definition's scope, with no clause bindings in force -- a dot
+    ;; cannot refer to a name this very pattern would bind, because
+    ;; nothing it says is available until after it has been decided.
+    ;; It binds nothing either: what it constrains is the value on
+    ;; offer, not a name for it.  Running it through `lit-eval' rather
+    ;; than a dot-specific hook is deliberate -- there is only one
+    ;; expression to evaluate and one value to compare, and a second
+    ;; hook would be a place for the two to drift apart.
+    ('dot
      (let ((expected (funcall (tl-match-ctx-lit-eval ctx) (cadr pat))))
        (if (tl-value-equal expected value (tl-match-ctx-force ctx))
            (cons t bindings)

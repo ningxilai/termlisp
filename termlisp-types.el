@@ -1402,6 +1402,22 @@ Return `(LOCAL-BINDINGS . SUBST)'."
                       (list (format "Constructor %S mismatches expected type" pat))))
             (cons nil (cdr u))))
       (cons (list (cons pat expected)) nil)))
+   ((and (consp pat) (eq (car pat) :dot))
+    ;; Checked exactly as a literal is -- the term has a type and that
+    ;; type must be the type of the position -- but for the opposite
+    ;; reason.  A literal is checked because its value was written and
+    ;; may not fit; a dot is checked because the value was *asserted*,
+    ;; and the assertion is a claim about the argument.  Both reduce to
+    ;; one unification.  The term is inferred in the definition's scope,
+    ;; so a name only this pattern introduces is not available here, and
+    ;; says so as an unknown symbol rather than as a mismatch.
+    (let* ((r (tl-infer env (cadr pat)))
+           (bs (cdr r))
+           (u (tl-unify-types (tl-apply-bindings (car r) bs) expected bs)))
+      (unless (car u)
+        (signal 'termlisp-type-error
+                (list (format "Dot pattern %S mismatches" pat))))
+      (cons nil (cdr u))))
    ((and (consp pat) (eq (car pat) :literal))
     (let* ((r (tl-infer env (cadr pat)))
            (bs (cdr r))
@@ -1528,11 +1544,20 @@ lets the codomain reduce: `(lenV (vapp xs ys))' over the pattern `VNil'
 is `(lenV (vapp VNil ys))', which is `lenV ys', and without it the base
 case of that theorem has nothing to prove.  A constructor is told from a
 variable the same way `tl-infer-pattern' tells them, because a pattern
-is only an answer to that question."
+is only an answer to that question.  A dot pattern is a constructor
+pattern that was written as a term, so it is read as one -- the dotted
+term is asked what it denotes and the answer is used as it would have
+been had the term been spelt as a pattern.  A dotted variable still
+denotes nothing, which is the honest answer: `(dot k)' pins the
+argument to a value the checker cannot enumerate and cannot reduce
+either, and pretending otherwise would let a codomain reduce to
+something the match never guaranteed."
   (cond
    ((or (eq pattern '_) (eq pattern nil)) nil)
    ((symbolp pattern)
     (and (tl-constructor-name-p env pattern) (tl-tcon pattern nil)))
+   ((and (consp pattern) (eq (car pattern) :dot))
+    (tl-clause--pattern-term env (cadr pattern)))
    ((and (consp pattern) (eq (car pattern) :literal))
     (tl-tcon (cadr pattern) nil))
    ((and (consp pattern) (symbolp (car pattern))

@@ -147,10 +147,21 @@ redefinition is picked up without a second cache to invalidate by hand.")
 
 (defun tl-nbe--type-pattern-p (pat)
   "Return non-nil when PAT is a pattern the type layer can match at all.
-Guards, `or', `and', `:lambda' and list-rest patterns are value-level
-concerns with no meaning inside a type, so a clause built from one could
-never be chosen; carrying it into the rule would only give the decision
-tree a branch that must not be taken."
+Guards, `or', `and', `:lambda', list-rest patterns and dot patterns are
+value-level concerns with no meaning inside a type, so a clause built
+from one could never be chosen; carrying it into the rule would only
+give the decision tree a branch that must not be taken.
+
+A dot is excluded for a reason the others are not.  Checking one
+against a node means comparing two *terms*, and the comparison has to
+happen in the environment the clause was written in -- the rule is
+built before that environment is in hand, so the dotted term would be
+carried around as an uninterpreted sexp and compared as one, which is
+neither what it means nor what the value-level matcher does with it.
+What the dot does buy the type layer it already gets elsewhere:
+`tl-clause--pattern-term' hands the checker the dotted term, so the
+codomain reduces under it.  Only the unfolding is given up, and only
+for clauses that asked for a dot."
   (pcase (car-safe pat)
     ((or 'wild 'var 'lit) t)
     ('con (and (cl-every #'tl-nbe--type-pattern-p (cddr pat)) t))

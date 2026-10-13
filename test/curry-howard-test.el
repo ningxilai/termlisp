@@ -1369,6 +1369,79 @@ stopped on because a frame is something that can be named."
                                        (tl-exh--measure sig) nil)))
                 :no))))
 
+;;; Dot patterns: a position that must already be a given term
+;;
+;; `(:dot TERM)' is the programmer telling the checker what stands at a
+;; position that a constructor pattern could not name.  It runs the same
+;; check a literal does -- evaluate TERM in the definition's scope and
+;; compare it with the value on offer -- and means the opposite thing: a
+;; literal is a constant the checker cannot enumerate, a dot is a term
+;; the checker was *told*, and what it buys is at the type level, where
+;; `tl-clause--pattern-term' hands the codomain the term so it can
+;; reduce under it.  Without it there is no way to say "assume this
+;; position is that term"; the alternative is to bind the position and
+;; constrain nothing.
+;;
+;; The scope rule is the one thing to be clear about: a dot term is
+;; evaluated in the *definition's* scope and may not name any of the
+;; clause's own parameters.  Letting it see earlier parameters at
+;; runtime while the type checker could not see them would make one
+;; program run under one rule and check under another, which is the
+;; fault this file's neighbours were just fixed for.
+
+(tl-test-eval tl-ch-dot-matches-the-asserted-value
+  "(define (f (:dot (Succ Zero))) 1) (define (f x) 2) (f (Succ Zero))"
+  "1" '(:type-check t :elaborate t))
+
+;; A dot is a claim about the argument, and a claim can be wrong.
+(tl-test-eval tl-ch-dot-refuses-a-different-value
+  "(define (f (:dot (Succ Zero))) 1) (define (f x) 2) (f Zero)"
+  "2" '(:type-check t :elaborate t))
+
+;; The clause matched `c' by name and the caller passed the same value
+;; written out longhand, so the comparison is of values and not of the
+;; syntax that produced them -- which is the only reason a dot can name
+;; a constant at all.
+(tl-test-eval tl-ch-dot-compares-values-not-spelling
+  "(define c (Succ (Succ Zero))) (define (g (:dot c)) 1) (define (g x) 2) (g (Succ (Succ Zero)))"
+  "1" '(:type-check t :elaborate t))
+
+;; A dot sits wherever a pattern sits, including under a constructor.
+(tl-test-eval tl-ch-dot-in-a-nested-position
+  "(define (f (Cons (:dot Zero) xs)) 1) (define (f x) 2) (f (Cons Zero Nil))"
+  "1" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-dot-in-a-nested-position-refuses
+  "(define (f (Cons (:dot Zero) xs)) 1) (define (f x) 2) (f (Cons (Succ Zero) Nil))"
+  "2" '(:type-check t :elaborate t))
+
+;; A dot cannot be one alternative of an `or' whose other alternative
+;; binds a name, since it binds none.  That is not a special case for
+;; dots, it is the rule `or' already has.
+(tl-test-eval tl-ch-dot-under-or
+  "(define (f (or (:dot Zero) (Succ _))) 1) (define (f x) 2) (f Zero)"
+  "1" '(:type-check t :elaborate t))
+
+;; The scope rule, asserted so that it cannot drift: a dot term is read
+;; in the definition's scope, and `n' is a parameter of the very clause
+;; that mentions it.
+(tl-test-reject tl-ch-dot-may-not-name-a-clause-parameter
+  "(define (f (:dot (Succ n))) 1)"
+  "Unknown symbol" '(:type-check t :elaborate t))
+
+;; A dot is not a constructor, so a row led by one covers one value out
+;; of a type the checker cannot enumerate, and the column still has a
+;; concrete gap to report.
+(tl-test-coverage-reject tl-ch-dot-cannot-prove-exhaustiveness
+  "(define (f (:dot (Succ Zero))) 1) f"
+  "no case for Zero" '(:type-check t :elaborate t :coverage t))
+
+;; A wildcard row covers the column whatever the dot says, so the dot
+;; makes the function undecidable at worst -- never incomplete.
+(tl-test-covers tl-ch-dot-leaves-a-covered-column-covered
+  "(define (f (:dot (Succ Zero))) 1) (define (f x) 2) f"
+  '(:type-check t :elaborate t :coverage t))
+
 ;;; `let': where a binding stops being monomorphic
 ;;
 ;; A `let' used to be rewritten into an inline-lambda application before
