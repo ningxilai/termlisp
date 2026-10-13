@@ -156,22 +156,39 @@ effects.  A single form is returned unchanged."
         (setq acc (list 'seq f acc)))
       acc)))
 
-(defun tl-desugar-let (form)
-  "Desugar FORM `(let ((NAME EXPR)...) BODY...)' into an inline-lambda application.
-Bindings are sequential, so each EXPR is evaluated in the enclosing scope and
-the names are bound together, matching Scheme's `let'.  The body is an
-implicit `begin', returning its last expression."
-  (let ((bindings (cadr form)) (body (cddr form)) (names nil) (exprs nil))
+(defun tl-let-check-form (form)
+  "Signal unless FORM is a well-shaped `(let ((NAME EXPR)...) BODY...)'.
+The evaluator reaches a `let' through `tl-desugar-let'; inference no
+longer does, because it hands the bindings to `tl-infer-ir-Let' instead
+of wrapping them in a lambda.  Both ask the same questions of the same
+form, so the questions live here once -- otherwise a malformed binding
+reaches inference as an elisp `wrong-type-argument' where the evaluator
+used to raise a termlisp error."
+  (let ((bindings (cadr form)) (body (cddr form)))
     (when (and bindings (not (listp bindings)))
       (signal 'termlisp-eval-error '("let requires a binding list")))
     (dolist (b bindings)
       (unless (and (consp b) (consp (cdr b)) (null (cddr b)))
         (signal 'termlisp-eval-error
-                (list (format "Invalid let binding: %S" b))))
+                (list (format "Invalid let binding: %S" b)))))
+    (unless body
+      (signal 'termlisp-eval-error '("let requires a body")))))
+
+(defun tl-desugar-let (form)
+  "Desugar FORM `(let ((NAME EXPR)...) BODY...)' into an inline-lambda application.
+Bindings are sequential, so each EXPR is evaluated in the enclosing scope and
+the names are bound together, matching Scheme's `let'.  The body is an
+implicit `begin', returning its last expression.
+
+This is the *evaluator's* lowering.  Inference does not come this way:
+it keeps the bindings as bindings so that `tl-infer-ir-Let' can quantify
+the ones worth quantifying, where a lambda application admits no
+generalization at all."
+  (tl-let-check-form form)
+  (let ((bindings (cadr form)) (body (cddr form)) (names nil) (exprs nil))
+    (dolist (b bindings)
       (push (car b) names)
       (push (cadr b) exprs))
-    (unless body
-      (signal 'termlisp-eval-error '("let requires a body")))
     (cons (list 'lambda (nreverse names) (tl-seq-begin body))
           (nreverse exprs))))
 

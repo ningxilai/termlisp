@@ -1312,6 +1312,94 @@ has to become the argument's value, not one fresh variable left to chance.")
    (define (t h) (cong VNil h)) (t Refl)")
   "Cannot apply cong to VNil" '(:type-check t :elaborate t))
 
+;;; `let': where a binding stops being monomorphic
+;;
+;; A `let' used to be rewritten into an inline-lambda application before
+;; inference, and a lambda application instantiates its argument at one
+;; type -- so every binding was monomorphic and an identity could not be
+;; used twice.  The bindings now reach `tl-infer-ir-Let', which is where
+;; the capitalised `Let' of the lowering IR has always been quantified.
+
+(tl-test-eval tl-ch-let-quantifies-a-binding-introduced-inside-it
+  "(define (use n) (let ((f (lambda (x) x))) (Pair (f 1) (f \"s\")))) (car (use 0))"
+  "1" '(:type-check t :elaborate t))
+
+;; The elaborator used to rewrite `let' into the very lambda application
+;; that closed the question, so a program could be polymorphic under
+;; `:type-check' and monomorphic under `:elaborate'.  It leaves `let'
+;; alone now, and the same source means the same thing either way.
+(tl-test-eval tl-ch-let-quantifies-under-elaboration
+  "(define (use n) (let ((f (lambda (x) x))) (Pair (f 1) (f \"s\")))) (cdr (use 0))"
+  "s" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-let-inner-binding-sees-the-outer-one
+  "(define (use n) (let ((f (lambda (y) y))) (let ((g (lambda (x) (f x)))) (g \"s\")))) (use 0)"
+  "s" '(:type-check t :elaborate t))
+
+(ert-deftest tl-ch-let-says-what-the-ir-let-always-said ()
+  "Surface `let' and capitalised `Let' are one rule, not two.
+The only test that a binding is quantified at all is that its scheme
+looks the same whichever spelling introduced it -- and the surrounding
+argument, bound to a type the caller fixed, stays put, which is what
+keeps generalization from reaching outside its own scope."
+  (should (equal (tl-test--scheme-datum
+                  "(define (k x) (let ((id (lambda (v) v))) (let ((u (id 1))) (id \"s\"))))"
+                  'k)
+                 '(-> %1 String))))
+
+(tl-test-eval tl-ch-let-a-lambda-is-a-value-even-when-its-body-is-not
+  "(define (use n) (let ((mk (lambda (z) (Pair z z)))) (car (mk \"s\")))) (use 0)"
+  "s" '(:type-check t :elaborate t))
+
+;; The value restriction: an application has already run, so its type
+;; may still be pinned by whatever else used it.  `idl' applied to one
+;; argument is not a value, `g' is not generalized, and the second use
+;; cannot pick a type the first one did not.
+(tl-test-reject tl-ch-let-keeps-an-application-monomorphic
+  "(: idl (-> (a : *) (f : a -> a) (b : a) a))
+   (define (idl f x) (f x))
+   (define (use n) (let ((g (idl (lambda (v) v)))) (Pair (g 1) (g \"s\"))))"
+  "Cannot apply g to" '(:type-check t :elaborate t))
+
+;; The hole generalizing levels were built to close.  `y' was created
+;; before this scope opened, so its variable is not the binding's to
+;; quantify over, and `z' cannot be used at two types.
+(tl-test-reject tl-ch-let-does-not-let-a-parameter-escape
+  "(define (h y) (let ((z y)) (seq (z 1) (z \"s\"))))"
+  "Cannot apply z to" '(:type-check t :elaborate t))
+
+;; One value read at as many types as it was instantiated at cannot have
+;; its value swapped under all of them at once.
+(tl-test-reject tl-ch-let-refuses-to-reassign-a-polymorphic-binding
+  "(define (bad y) (let ((f (lambda (x) x))) (seq (Setq f (lambda (x) \"s\")) (f 1))))"
+  "bound polymorphically" '(:type-check t :elaborate t))
+
+(ert-deftest tl-ch-let-leaves-an-accumulator-reassignable ()
+  "`While' and `Setq' are not the value restriction's business.
+An accumulator is bound to a literal, so there is nothing to quantify
+and nothing to retain; were it wrapped in a closed scheme the
+reassignment below would be refused as polymorphism, and every loop
+that carries its sum in a `let' would stop compiling.  The assertion is
+the absence of a signal, since `termlisp-typecheck-def' reports by
+signaling and returns nothing to look at -- and `While' is a form of the
+lowering IR, so it can be checked but not run."
+  (let ((env (termlisp-load-prelude
+              (termlisp-make-env '(:type-check t :elaborate t)))))
+    (should (progn
+              (termlisp-typecheck-def
+               env
+               "(define (accf n)
+                  (let ((i 1) (acc 0))
+                    (While (<= i n) (Setq acc (+ acc i)) (Setq i (+ i 1)))
+                    acc))")
+              t))))
+
+;; Each binding expression is read in the enclosing scope, so a later one
+;; cannot name an earlier -- the rewrite into a lambda application used
+;; to mask this by binding both names at once.
+(tl-test-reject tl-ch-let-is-simultaneous
+  "(let ((a Zero) (b a)) b)"
+  "Unknown symbol" '(:type-check t :elaborate t))
 
 (provide 'curry-howard-test)
 ;;; curry-howard-test.el ends here

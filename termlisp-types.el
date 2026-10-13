@@ -40,6 +40,7 @@
 (declare-function tl-eval-datatype-extension "termlisp-eval" (env form))
 (declare-function tl-desugar-do "termlisp-eval" (form))
 (declare-function tl-desugar-let "termlisp-eval" (form))
+(declare-function tl-let-check-form "termlisp-eval" (form))
 (declare-function tl-desugar-list "termlisp-eval" (form))
 
 ;;; Representation: a type is a `tl-node' from `termlisp-graph'.
@@ -1003,15 +1004,29 @@ statement and data forms the Aldor lowering emits.")
     (tl-infer-lambda env (cadr expr) (caddr expr)))
    ((and (consp expr) (eq (car expr) 'do))
     (tl-infer env (tl-desugar-do expr)))
-   ;; A `let' is inference-neutral: it binds names, nothing more.  It is
-   ;; rewritten into an inline-lambda application, which is the shape
-   ;; inference already understands, rather than being given a rule of its
-   ;; own.  Without this it falls through to `tl-infer-application', where
-   ;; `let' is just an unknown function -- so the whole body typechecks as
-   ;; a fresh unconstrained variable and nothing the body says is checked
-   ;; at all.
+   ;; A `let' binds names and gives their values types, and that is all it
+   ;; does -- but the shape it is given in decides whether those types can
+   ;; ever be quantified.  Rewriting it into an inline-lambda application,
+   ;; which is what inference used to do, closes the question before it is
+   ;; asked: a lambda application instantiates its argument's scheme at one
+   ;; type and the binding is monomorphic from then on.  `let' therefore
+   ;; keeps its bindings as bindings and goes to the rule that knows how to
+   ;; quantify them.  Without a rule of its own it falls through to
+   ;; `tl-infer-application', where `let' is just an unknown function -- so
+   ;; the whole body typechecks as a fresh unconstrained variable and
+   ;; nothing the body says is checked at all.
    ((and (consp expr) (eq (car expr) 'let))
-    (tl-infer env (tl-desugar-let expr)))
+    (tl-let-check-form expr)
+    (let ((rule (gethash 'Let tl-infer-ir-heads)))
+      ;; With `termlisp-ir-types' loaded there is a rule that can quantify
+      ;; the bindings; without it the table is empty and `let' falls back
+      ;; to the lambda application, which typechecks if it does not
+      ;; generalize -- still better than dropping to
+      ;; `tl-infer-application', where `let' is an unknown function and
+      ;; the body is never checked.
+      (if rule
+          (funcall rule env (cons 'Let (cdr expr)))
+        (tl-infer env (tl-desugar-let expr)))))
    ;; `(list e...)' is variadic, so it carries no scheme of its own.  Expand
    ;; it to nested `Cons' applications (as the evaluator does in `tl-run')
    ;; and infer the result, which gives `list' an arity-indexed type at every

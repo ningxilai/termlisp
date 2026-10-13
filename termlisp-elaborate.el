@@ -151,17 +151,22 @@ constraints.  Return the transformed define."
                                          (caddr form) given))))))
 
 (defun tl-desugar-do-tree (form)
-  "Return FORM with every `do' and `let' subterm replaced by its desugaring.
-Both are rewritten before inference so that the elaborator walks the
-same shape the type checker saw.  `let' is here for the same reason `do'
-is: a recorded call site inside one would otherwise not line up with
-anything the elaborator finds in the source."
+  "Return FORM with every `do' subterm replaced by its desugaring.
+Rewritten before inference so that the elaborator walks the same shape
+the type checker saw, and so that a recorded call site inside one lines
+up with something the elaborator can find in the source.
+
+`let' used to come this way for the same reason and no longer does.  A
+`let' is now read as `tl-infer-ir-Let', which is where its bindings are
+quantified; rewriting it into a lambda application here would hand the
+elaborator a shape inference would never see again, and would make one
+program polymorphic under `:type-check' and monomorphic under
+`:elaborate' -- two answers, chosen by a flag that has nothing to do
+with the program."
   (cond
    ((atom form) form)
    ((and (consp form) (eq (car form) 'do))
     (tl-desugar-do-tree (tl-desugar-do form)))
-   ((and (consp form) (eq (car form) 'let))
-    (tl-desugar-do-tree (tl-desugar-let form)))
    (t (cons (tl-desugar-do-tree (car form))
             (tl-desugar-do-tree (cdr form))))))
 
