@@ -105,6 +105,10 @@
            (let ((cs (tl-node-children k)))
              (format "(%s -> %s)" (tl-ch--kind-text (car cs))
                      (tl-ch--kind-text (cadr cs)))))
+          ;; A parameter nothing has constrained renders as `?', which is
+          ;; what makes an index parameter visible: it ranges over
+          ;; universes as well as over proper types.
+          ((and (tl-node-p k) (tl-node-var-p k)) "?")
           ((tl-node-p k) (format "%S" (tl-node-head k)))
           (t (format "%S" k)))))
 
@@ -134,8 +138,16 @@
   "An indexed family records the kind its index must satisfy."
   (let ((env (tl-ch--typed-env)))
     (should (equal (tl-ch--kind-string env 'Vec) "(* -> (Nat -> *))"))
-    (should (equal (tl-ch--kind-string env 'Fin) "(Nat -> *)"))
-    (should (equal (tl-ch--kind-string env 'Eq) "(* -> *)"))))
+    (should (equal (tl-ch--kind-string env 'Fin) "(Nat -> *)"))))
+
+(ert-deftest tl-ch-equal-s-kind-is-fully-general ()
+  "`Eq' indexes by values, so nothing has constrained its parameters.
+`Vec' fixes its index to `Nat' because `Succ' says so.  `Refl' is
+nullary and says nothing at all, so `Eq' ranges over every element type
+and every pair of values in it -- which is what lets one declaration
+mean equality on naturals, on lists, on anything."
+  (let ((env (tl-ch--typed-env)))
+    (should (equal (tl-ch--kind-string env 'Eq) "(? -> (? -> (? -> *)))"))))
 
 (ert-deftest tl-ch-constructor-schemes-carry-indices ()
   "A constructor returns at its own index, not at the datatype's parameters."
@@ -179,8 +191,12 @@
 (tl-test-reject tl-ch-fin-at-zero
   "(: f (Fin Zero)) (define f FZ) f"
   "does not match its signature" '(:type-check t :elaborate t))
-(tl-test-eval tl-ch-refl-at-a-type
-  "(: r (Eq Int)) (define r (Refl)) r" "Refl" '(:type-check t :elaborate t))
+;; `Eq' takes an element type and two values in it, so the one-parameter
+;; application that Stage 1's placeholder allowed is a partial
+;; application now -- well-formed syntax, but not a type.
+(tl-test-reject tl-ch-eq-applied-to-too-few-arguments
+  "(: r (Eq Int)) (define r (Refl)) r"
+  "is not a proper type" '(:type-check t :elaborate t))
 
 ;;; Stage 2 (a): terms in types -- the unified term graph
 
@@ -548,6 +564,59 @@ still matches, still binds nothing, and leaves no goal behind."
        (define (appd VNil ys) ys)
        (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))")
      :type 'termlisp-type-error)))
+
+;;; Propositional equality
+
+;; `Eq a x y' is inhabited exactly when `x' and `y' are the same value of
+;; type `a'.  No eliminator is needed to earn that: `Refl' returns at
+;; `x' twice, so unifying its result with `Eq a x y' binds `x' once and
+;; then insists the two occurrences agree.
+
+(tl-test-eval tl-ch-eq-refl-inhabits-the-reflexive-index
+              "(: r (Eq Nat Zero Zero -> Int)) (define (r p) 1) (r Refl)"
+              "1" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-eq-refl-does-not-inhabit-a-mismatch
+                "(: r (Eq Nat Zero (Succ Zero) -> Int)) (define (r p) 1) (r Refl)"
+                "Cannot apply" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-eq-checks-the-element-type
+                "(: r (Eq Nat Int Zero -> Int)) (define (r p) 1) (r Refl)"
+                "Cannot apply" '(:type-check t :elaborate t))
+
+;; The index need not be written in canonical form: what matters is that
+;; both sides reduce to the same value.
+(tl-test-eval tl-ch-eq-agrees-after-reduction
+              "(: r (Eq Nat (plus Zero Zero) Zero -> Int)) (define (r p) 1) (r Refl)"
+              "1" '(:type-check t :elaborate t))
+
+;; One declaration serves every element type, because nothing in it
+;; constrains which.
+(tl-test-eval tl-ch-eq-is-not-confined-to-naturals
+              "(: r (Eq Bool True True -> Int)) (define (r p) 1) (r Refl)"
+              "1" '(:type-check t :elaborate t))
+(tl-test-reject tl-ch-eq-still-sees-a-bool-mismatch
+                "(: r (Eq Bool True False -> Int)) (define (r p) 1) (r Refl)"
+                "Cannot apply" '(:type-check t :elaborate t))
+
+;; Symmetry and transitivity need no eliminator.  Matching a proof
+;; against `Refl' refines the index to the reflexive case, which is
+;; exactly when the result type holds, so `sym' is one clause and `trans'
+;; two.
+(tl-test-eval tl-ch-eq-sym-turns-the-index-around
+              "(sym Refl)" "Refl" '(:type-check t :elaborate t))
+(tl-test-eval tl-ch-eq-trans-joins-two-proofs
+              "(trans Refl Refl)" "Refl" '(:type-check t :elaborate t))
+
+;; Both stay total where nothing is provable.  `Eq Nat Zero (Succ Zero)'
+;; admits no proof at all, so a function from one is vacuously correct --
+;; which is the point of a proposition being empty rather than merely
+;; being rejected at the call.
+(tl-test-eval tl-ch-eq-sym-is-total-over-an-empty-proposition
+              "(: bad (Eq Nat Zero (Succ Zero) -> Eq Nat (Succ Zero) Zero))
+               (define (bad p) (sym p))
+               bad"
+              "bad" '(:type-check t :elaborate t))
 
 ;;; Datatype kinds
 

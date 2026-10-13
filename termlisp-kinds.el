@@ -48,6 +48,21 @@
 (defun tl-kind-var () (tl-make-var-node 'kind))
 (defun tl-kind-deref (k) (if (tl-node-p k) (tl-gnode-deref k) k))
 
+(defun tl-kind-freshen (k)
+  "Return K with every kind variable replaced by a fresh one.
+A datatype's kind is a scheme: `Eq' ranges over every element type and
+over every pair of values in it, and its free variables are what say
+so.  Each application has to decide those for itself, so the registered
+kind is copied rather than unified against.  Unifying in place would let
+the first use to mention `Eq' -- its own declaration, even -- fix the
+kinds for every use after it."
+  (cond ((not (tl-node-p k)) k)
+        ((tl-node-var-p k) (tl-kind-var))
+        ((eq (tl-node-head k) 'karr)
+         (let ((cs (tl-node-children k)))
+           (tl-karr (tl-kind-freshen (car cs)) (tl-kind-freshen (cadr cs)))))
+        (t k)))
+
 (defun tl-kind-star-p (k)
   (eq (tl-kind-deref k) tl-kind-star))
 
@@ -67,19 +82,28 @@
 
 (defun tl-register-datatype-kind (env name params)
   "Register NAME's kind from its parameter variables' inferred kinds.
-PARAMS is the list of parameter type-variable nodes.  A parameter whose
-kind no use ever pinned down is a proper type: `*' is what a type
-parameter ranges over unless something says otherwise -- typically an
-index met by a lifted constructor such as `Succ n'.  Leaving it free
-instead would let whichever application happens to come first decide its
-kind, so the declaration would kind differently depending on the order
-the rest of the program was written in."
+PARAMS is the list of parameter type-variable nodes.
+
+A parameter a constructor field has pinned keeps that kind: a field's
+type must be a proper type, so `a' in `(Mk a)' is `*'.  A parameter an
+index has pinned keeps that too: `n' in `(Vec a (Succ n))' is the
+universe `Nat', because `Succ' says so.
+
+A parameter nothing has pinned is left free rather than defaulted to
+`*'.  Such a parameter appears only in index position -- `x' and `y' in
+`Refl : (Eq a x x)' are the reason this matters -- and an index ranges
+over the values of some type, which at the kind level means a universe
+leaf such as `Nat', not `*'.  Defaulting it would reject `(Eq Nat Zero
+Zero)' for being applied to a value where a type was expected, and
+there is nothing in the declaration to say which it should be.  Leaving
+it free lets each application decide, and an application that decides
+inconsistently is a kind error there rather than a silent success."
   (let ((k tl-kind-star))
     (dolist (p (reverse params))
       (let* ((raw (and (tl-node-p p) (tl-node-kind p)))
              (deref (and raw (tl-kind-deref raw)))
              (pk (if (or (null deref) (tl-node-var-p deref))
-                     tl-kind-star
+                     (tl-kind-var)
                    deref)))
         (setq k (tl-karr pk k))))
     (puthash name k (tl-env-kind-env env))))
@@ -158,8 +182,8 @@ repeated inference consistent; unknown heads get a fresh kind variable."
             (if (tl-node-var-p head)
                 (or (tl-node-kind head)
                     (let ((k (tl-kind-var))) (setf (tl-node-kind head) k) k))
-              (or (tl-kind-of env head)
-                  (let ((k (tl-kind-var))) k)))
+              (or (tl-kind-freshen (tl-kind-of env head))
+                  (tl-kind-var)))
           (let* ((arg-ks (mapcar (lambda (a) (tl-kind-infer env a)) args))
                  (res (tl-kind-var))
                  (want (let ((k res))
@@ -169,7 +193,10 @@ repeated inference consistent; unknown heads get a fresh kind variable."
                             (or (tl-node-kind head)
                                 (let ((k (tl-kind-var)))
                                   (setf (tl-node-kind head) k) k)))
-                           ((tl-kind-of env head))
+                           ;; A registered kind is a scheme: copy it, so
+                           ;; this application decides its variables
+                           ;; without deciding them for the next one.
+                           ((tl-kind-freshen (tl-kind-of env head)))
                            (t (tl-kind-var)))))
             (unless (tl-kind-unify hk want)
               (signal 'termlisp-type-error

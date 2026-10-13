@@ -29,11 +29,25 @@
 ;; `Void'; it is unreachable, because `Void' has no constructors.
 (datatype Void)
 (datatype Either (Left a) (Right b))
-;; Type-level equality, the fragment of Stage 1 that reads as a
-;; proposition.  Its index is a *type* rather than a value, which is all
-;; a non-dependent type language can express; equality between values
-;; needs Stage 3's dependent elimination.
-(datatype (Eq a) (Refl : (Eq a)))
+;; Propositional equality, the Curry-Howard reading of `x = y'.  `Eq a x
+;; y' is inhabited exactly when `x' and `y' are the same value of type
+;; `a': `Refl' returns at `x' twice, so unifying its result with `Eq a x
+;; y' binds `x' once and then demands the two occurrences agree.  The
+;; index is a value rather than a type -- `Zero' and `(Succ Zero)' are
+;; the kind-level spellings of the two naturals, which is why they take
+;; the universe `Nat' where `Nat' itself takes `*' -- so `(Eq Nat Zero
+;; (Succ Zero))' is well-kinded and yet admits no value at all.
+(datatype (Eq a x y) (Refl : (Eq a x x)))
+
+;; Symmetry and transitivity follow from the same fact, with no eliminator
+;; to write: matching a proof against `Refl' refines the index to the
+;; reflexive case, which is precisely when the result type holds.  `Refl'
+;; is `Eq's only constructor, so one clause settles each.
+(: sym (-> (a : *) (x : a) (y : a) (Eq a x y) (Eq a y x)))
+(define (sym Refl) Refl)
+(: trans (-> (a : *) (x : a) (y : a) (z : a)
+             (Eq a x y) (Eq a y z) (Eq a x z)))
+(define (trans Refl Refl) Refl)
 
 ;; Peano naturals
 (datatype Nat (Zero) (Succ Nat))
