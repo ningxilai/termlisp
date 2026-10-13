@@ -618,6 +618,54 @@ still matches, still binds nothing, and leaves no goal behind."
                bad"
               "bad" '(:type-check t :elaborate t))
 
+;;; Transport along an equality
+
+;; The briefing predicted that `subst' and `rewrite' would need a
+;; universe, because the library signatures quantify over a motive --
+;;
+;;     subst : (p : a -> *) -> Eq a x y -> p x -> p y
+;;
+;; -- and a motive is a type of types, so stage 4 would gate on it.
+;; That prediction was wrong twice over.  The motive is never
+;; quantified over: it is read off the value's own type, so
+;; `Vec Nat n -> Vec Nat m' already says everything a motive would have
+;; said.  ACL2 does exactly this -- `fertilize-clause1' substitutes one
+;; side of an equality for the other through the goal and deletes the
+;; hypothesis, with the goal standing in for the motive -- and has no
+;; universe either, which `doc.lisp:1888-1896' records as deliberate.
+;;
+;; And no new machinery is needed: the signature's indices are flexible
+;; binders, so unification itself performs the transport.
+
+(tl-test-eval tl-ch-a-vector-moves-between-indices
+  "(: cast (-> (n : Nat) (m : Nat) (Eq Nat n m) (Vec Nat n) (Vec Nat m)))
+   (define (cast Refl xs) xs)
+   (cast Refl (VCons Zero (VCons (Succ Zero) VNil)))"
+  "(VCons Zero (VCons (Succ Zero) VNil))" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-a-proof-built-elsewhere-drives-a-transport
+  "(: refl-thm (-> (n : Nat) (Eq Nat n n)))
+   (define (refl-thm) Refl)
+   (: cast (-> (n : Nat) (m : Nat) (Eq Nat n m) (Vec Nat n) (Vec Nat m)))
+   (define (cast Refl xs) xs)
+   (cast (refl-thm) VNil)"
+  "VNil" '(:type-check t :elaborate t))
+
+;; An implicit binder is not a parameter.  A leading Pi binder whose
+;; name the tail still mentions is moved by `tl-signature-binders',
+;; which is what lets `sym' take only its proof; so `(n : Nat)' in
+;; `(-> (n : Nat) (Eq Nat n n))' is inferred rather than passed, and a
+;; definition that takes it anyway has the wrong arity.
+(tl-test-reject tl-ch-an-implicit-binder-is-not-a-parameter
+  "(: refl-thm (-> (n : Nat) (Eq Nat n n)))
+   (define (refl-thm n) Refl) refl-thm"
+  "does not match its signature" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-an-implicit-binder-arrives-by-inference
+  "(: refl-thm (-> (n : Nat) (Eq Nat n n)))
+   (define (refl-thm) Refl) (refl-thm)"
+  "Refl" '(:type-check t :elaborate t))
+
 ;;; A proof that fails must say where
 
 ;; Credibility in stage 3 comes from two things, and only one of them is
