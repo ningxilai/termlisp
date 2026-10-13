@@ -422,26 +422,27 @@ against the signature, and the name carried no information to begin with
               '((xs : (Vec %1 %2)) -> Nat))
 
 ;; The combinator every arithmetic proof needs, written the way it
-;; reads.  `f' is mentioned by the codomain, so it becomes an implicit
-;; parameter -- and nothing but the expected result type ever fixes it,
-;; which is why `cong' is checked rather than inferred: the body's type
-;; is unified with the signature's after the fact, and `Succ' falls out
-;; of that.
-(tl-test-eval tl-ch-cong-is-writable-and-determines-its-function
+;; reads.  `f' is mentioned by the codomain but no later argument fixes
+;; it, so the Pi stays and `cong' takes the function as well: a plain
+;; arrow would strand every `(f x)' in its own codomain on a binder that
+;; was no longer there.  What the proof argument alone could not say --
+;; which function -- is now the caller's to say, and the theorem it is
+;; used in decides whether that is a cost.
+(tl-test-eval tl-ch-cong-takes-the-function-its-codomain-mentions
   "(: cong (-> (a : *) (b : *) (x : a) (y : a) (f : a -> b)
                 (Eq a x y) (Eq b (f x) (f y))))
-   (define (cong Refl) Refl)
+   (define (cong f Refl) Refl)
    (: step (-> (n : Nat) (Vec Nat n) (Eq Nat (plus n Zero) n)
                         (Eq Nat (Succ (plus n Zero)) (Succ n))))
-   (define (step VNil ih) (cong ih))
+   (define (step VNil ih) (cong Succ ih))
    (step VNil Refl)"
   "Refl" '(:type-check t :elaborate t))
 
-(tl-test-eval tl-ch-cong-takes-only-the-proof
+(tl-test-reject tl-ch-cong-will-not-take-the-proof-alone
   "(: cong (-> (a : *) (b : *) (x : a) (y : a) (f : a -> b)
                 (Eq a x y) (Eq b (f x) (f y))))
-   (define (cong Refl) Refl) (cong Refl)"
-  "Refl" '(:type-check t :elaborate t))
+   (define (cong Refl) Refl) cong"
+  "does not match its signature" '(:type-check t :elaborate t))
 
 ;;; `append': the stage-2 deliverable
 
@@ -478,6 +479,71 @@ against the signature, and the name carried no information to begin with
   "inconsistent type" '(:type-check t :elaborate t))
 (tl-test-reject tl-ch-an-ordinary-signature-is-still-enforced
   "(: g (-> Int String)) (define (g) 1) g"
+  "does not match its signature" '(:type-check t :elaborate t))
+
+;;; A theorem proved by induction
+
+;; Stage 3's test is not that `Eq' exists but that a statement about an
+;; indexed family can be proved by cases on that family itself, with the
+;; induction hypothesis doing work no amount of computing could do.
+;; `lenAppend' needs both halves and neither substitutes for the other:
+;; the base case is decided by `vapp' reducing, the step by what comes
+;; back from the recursive call.  Its signature is also the first thing
+;; written here that needed the *third* answer of
+;; `tl-signature-binders' -- `xs' and `ys' are mentioned by the
+;; codomain and fixed by nothing after them, so only keeping their Pi
+;; gives the theorem the two vectors it is about.
+
+(defconst tl-ch--len-append
+  "(: cong (-> (a : *) (b : *) (x : a) (y : a) (f : a -> b)
+                (Eq a x y) (Eq b (f x) (f y))))
+   (define (cong f Refl) Refl)
+   (: vapp (-> (a : *) (n : Nat) (m : Nat)
+                (Vec a n) (Vec a m) (Vec a (plus n m))))
+   (define (vapp VNil ys) ys)
+   (define (vapp (VCons x xs) ys) (VCons x (vapp xs ys)))
+   (: lenV (-> (a : *) (n : Nat) (Vec a n) Nat))
+   (define (lenV VNil) Zero)
+   (define (lenV (VCons x xs)) (Succ (lenV xs)))
+   (: lenAppend (-> (a : *) (n : Nat) (m : Nat)
+                     (xs : Vec a n) (ys : Vec a m)
+                     (Eq Nat (lenV (vapp xs ys))
+                            (plus (lenV xs) (lenV ys)))))
+   (define (lenAppend VNil ys) Refl)
+   (define (lenAppend (VCons x xs) ys) (cong Succ (lenAppend xs ys)))")
+
+(tl-test-eval tl-ch-the-base-case-is-decided-by-reduction
+  (concat tl-ch--len-append " (lenAppend VNil VNil)")
+  "Refl" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-the-step-is-decided-by-the-hypothesis
+  (concat tl-ch--len-append " (lenAppend (VCons Zero VNil) VNil)")
+  "Refl" '(:type-check t :elaborate t))
+
+;; The step case with the recursive call replaced by `Refl'.  Nothing
+;; computes `lenV (vapp (VCons x xs) ys)' down to `plus (lenV (VCons x
+;; xs)) (lenV ys)' -- what is left over is exactly the statement for the
+;; tail, so without the hypothesis the two sides are one constructor and
+;; an unstuck `plus' apart, and no proof is there to be written.
+(tl-test-reject tl-ch-the-induction-hypothesis-cannot-be-skipped
+  "(: vapp (-> (a : *) (n : Nat) (m : Nat)
+                (Vec a n) (Vec a m) (Vec a (plus n m))))
+   (define (vapp VNil ys) ys)
+   (define (vapp (VCons x xs) ys) (VCons x (vapp xs ys)))
+   (: lenV (-> (a : *) (n : Nat) (Vec a n) Nat))
+   (define (lenV VNil) Zero)
+   (define (lenV (VCons x xs)) (Succ (lenV xs)))
+   (: broken (-> (a : *) (n : Nat) (m : Nat)
+                  (xs : Vec a n) (ys : Vec a m)
+                  (Eq Nat (lenV (vapp xs ys))
+                         (plus (lenV xs) (lenV ys)))))
+   (define (broken VNil ys) Refl)
+   (define (broken (VCons x xs) ys) Refl) broken"
+  "does not match its signature" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-a-false-theorem-is-not-provable
+  "(: bad (-> (n : Nat) (Vec Nat n) (Eq Nat (plus n Zero) (Succ n))))
+   (define (bad VNil) Refl) (bad VNil)"
   "does not match its signature" '(:type-check t :elaborate t))
 
 ;;; Holes: the program asks, the REPL answers
@@ -690,25 +756,33 @@ still matches, still binds nothing, and leaves no goal behind."
 
 (tl-test-eval tl-ch-a-proof-built-elsewhere-drives-a-transport
   "(: refl-thm (-> (n : Nat) (Eq Nat n n)))
-   (define (refl-thm) Refl)
+   (define (refl-thm n) Refl)
    (: cast (-> (n : Nat) (m : Nat) (Eq Nat n m) (Vec Nat n) (Vec Nat m)))
    (define (cast Refl xs) xs)
-   (cast (refl-thm) VNil)"
+   (cast (refl-thm Zero) VNil)"
   "VNil" '(:type-check t :elaborate t))
 
-;; An implicit binder is not a parameter.  A leading Pi binder whose
-;; name the tail still mentions is moved by `tl-signature-binders',
-;; which is what lets `sym' take only its proof; so `(n : Nat)' in
-;; `(-> (n : Nat) (Eq Nat n n))' is inferred rather than passed, and a
-;; definition that takes it anyway has the wrong arity.
+;; An implicit binder is not a parameter, and what makes one implicit is
+;; that some *later argument* fixes its value: `n' here is pinned by the
+;; `Vec Nat n' the caller has to pass anyway, so `tl-signature-binders'
+;; drops the Pi and leaves `n' for unification to find -- which is what
+;; lets `pinh' take only its proof.  A definition that takes `n' anyway
+;; has the wrong arity.  A binder no later argument fixes is the other
+;; case, and there the Pi stays: `tl-ch-a-mentioned-but-unfixed-binder-
+;; stays-a-parameter' below is the same rule seen from that side.
 (tl-test-reject tl-ch-an-implicit-binder-is-not-a-parameter
-  "(: refl-thm (-> (n : Nat) (Eq Nat n n)))
-   (define (refl-thm n) Refl) refl-thm"
+  "(: pinh (-> (n : Nat) (Vec Nat n) (Eq Nat n n)))
+   (define (pinh n h) Refl) pinh"
   "does not match its signature" '(:type-check t :elaborate t))
 
 (tl-test-eval tl-ch-an-implicit-binder-arrives-by-inference
+  "(: pinh (-> (n : Nat) (Vec Nat n) (Eq Nat n n)))
+   (define (pinh h) Refl) (pinh VNil)"
+  "Refl" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-a-mentioned-but-unfixed-binder-stays-a-parameter
   "(: refl-thm (-> (n : Nat) (Eq Nat n n)))
-   (define (refl-thm) Refl) (refl-thm)"
+   (define (refl-thm n) Refl) (refl-thm Zero)"
   "Refl" '(:type-check t :elaborate t))
 
 ;;; A proof that fails must say where

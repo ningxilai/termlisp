@@ -188,6 +188,20 @@ Reducing is only ever a second look at a pair nothing else matched, so
 the fuel is there to bound the case where it does not help: a type the
 unifier is about to reject anyway, whose reduction runs on forever.")
 
+(defun tl-gnode--moves (x y fuel)
+  "Non-nil when reducing X or Y would take either one any further.
+Called before a variable in head position is bound, where the decision
+is irreversible: `f X' against `lenV (vapp xs ys)' would fix `f' to
+`lenV', when what it has to become is the `Succ' that side reduces to.
+Checking here costs a reduction that the comparison may not need, which
+is why it is guarded on `tl-unify-reduce' and FUEL -- with no evaluator
+hooked in, nothing ever moves and the binding stands as before."
+  (and tl-unify-reduce (> fuel 0)
+       (or (and (tl-node-application x)
+                (not (eq (funcall tl-unify-reduce x) x)))
+           (and (tl-node-application y)
+                (not (eq (funcall tl-unify-reduce y) y))))))
+
 (defun tl-gnode-unify (a b &optional occurs-check)
   "Unify nodes A and B, mutating BIND slots.  Return t, or nil (rolled back).
 With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
@@ -263,7 +277,8 @@ rejected a cyclic binding."
                    ;; variable nodes are `equal' structurally but must
                    ;; still be unified.
                    (or (eq hx hy)
-                       (tl-node-var-p hx) (tl-node-var-p hy))))
+                       (and (or (tl-node-var-p hx) (tl-node-var-p hy))
+                            (not (tl-gnode--moves x y fuel))))))
             (let ((hx (tl-gnode--head (tl-node-head x)))
                    (hy (tl-gnode--head (tl-node-head y))))
               ;; Higher-kinded: a variable in head position unifies with

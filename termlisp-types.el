@@ -1182,6 +1182,24 @@ A local binding or an ordinary type binding shadows the method."
          (not (assq sym (tl-tenv-locals env)))
          (gethash sym (tl-env-method-env base)))))
 
+(defun tl-apply-pi (ftype)
+  "Spell FTYPE as an ordinary arrow when it is a `Pi' about to be applied.
+The codomain's occurrences of its binder become one fresh variable.  What
+the binder stood for is the argument's *value*, which the type level
+never sees, so the caller's context is left to say what it was -- exactly
+what happens to a parameter `tl-signature-binders' made implicit, and for
+the same reason: unification can only find a value that something else
+puts in reach.  A plain `->' comes back untouched, and so does a type
+with no argument left to consume."
+  (if (and (tl-node-p ftype) (tl-node-application ftype)
+           (eq (tl-node-head ftype) 'Pi)
+           (= (length (tl-node-children ftype)) 3))
+      (let ((args (tl-node-children ftype)))
+        (tl-tarrow (cadr args)
+                   (tl-type-subst (caddr args)
+                                  (list (cons (car args) (tl-fresh-tvar))))))
+    ftype))
+
 (defun tl-infer-application (env expr)
   "Infer a function application EXPR = (F A1 ... AN)."
   (let* ((head (car expr))
@@ -1223,7 +1241,7 @@ A local binding or an ordinary type binding shadows the method."
              (aty (car ra))
              (res (tl-fresh-tvar)))
         (setq bindings (tl-compose-bindings bindings (cdr ra)))
-        (setq ftype (tl-apply-bindings ftype bindings))
+        (setq ftype (tl-apply-pi (tl-apply-bindings ftype bindings)))
         (setq aty (tl-apply-bindings aty bindings))
         (let ((u (tl-unify-types ftype (tl-tarrow aty res) bindings)))
           (cond ((car u)
@@ -1393,6 +1411,61 @@ Used when typing the lowering IR, whose higher-order/tuple/overload
 shapes are broader than the HM core; a lenient result is preferred to
 a hard failure.")
 
+(defun tl-clause--pattern-term (env pattern)
+  "The term node PATTERN denotes in ENV, or nil when it denotes nothing to put.
+A variable pattern matches without saying what the argument was, so it
+contributes nothing and the codomain keeps the binder it already had --
+a name nothing in a type can reduce, so leaving it alone costs nothing.
+A constructor pattern says exactly what the argument was, and only that
+lets the codomain reduce: `(lenV (vapp xs ys))' over the pattern `VNil'
+is `(lenV (vapp VNil ys))', which is `lenV ys', and without it the base
+case of that theorem has nothing to prove.  A constructor is told from a
+variable the same way `tl-infer-pattern' tells them, because a pattern
+is only an answer to that question."
+  (cond
+   ((or (eq pattern '_) (eq pattern nil)) nil)
+   ((symbolp pattern)
+    (and (tl-constructor-name-p env pattern) (tl-tcon pattern nil)))
+   ((and (consp pattern) (eq (car pattern) :literal))
+    (tl-tcon (cadr pattern) nil))
+   ((and (consp pattern) (symbolp (car pattern))
+         (tl-constructor-name-p env (car pattern)))
+    (tl-tcon (tl-type-head (car pattern))
+             (mapcar (lambda (p) (or (tl-clause--pattern-term env p)
+                                     (tl-fresh-tvar)))
+                     (cdr pattern))))
+   (t nil)))
+
+(defun tl-clause--peel-pis (env target params)
+  "Replace TARGET's leading Pis with arrows, one per PARAMS, in order.
+A definition's clauses infer plain arrows, never Pis, so the two shapes
+have to agree before anything can be unified -- but simply dropping the
+Pi would strand the codomain's occurrences of its binder on a name no
+longer there.  So each binder is first replaced by what that clause's
+pattern says the argument was in ENV, which is also what lets the codomain
+reduce: over `VNil', `(lenV (vapp xs ys))' becomes `(lenV (vapp VNil
+ys))' and thence `lenV ys', and the base case of `lenAppend' comes out
+as `Eq Nat (lenV ys) (lenV ys)', which `Refl' inhabits.
+A parameter that runs out of Pis keeps whatever shape TARGET had left,
+and a TARGET that runs out of parameters is left whole, so neither
+mismatch in count is an error here -- `tl-unify-types' reports it, with
+the two types printed, which is more useful than a complaint about
+arity."
+  (let ((cur target) (ps params) (domains nil))
+    (while (and ps (tl-node-p cur) (tl-node-application cur)
+                (eq (tl-node-head cur) 'Pi))
+      (let* ((args (tl-node-children cur))
+             (binder (car args))
+             (dom (cadr args))
+             (cod (caddr args))
+             (val (tl-clause--pattern-term env (car ps))))
+        (setq cur (if val (tl-type-subst cod (list (cons binder val))) cod)
+              ps (cdr ps))
+        (push dom domains)))
+    (dolist (d domains)
+      (setq cur (tl-tarrow d cur)))
+    cur))
+
 (defun tl-infer-define-clauses (env name clauses)
   "Infer NAME from CLAUSES (list of `(PARAMS . BODY)'); register a scheme."
   (let* ((placeholder (tl-fresh-tvar))
@@ -1447,8 +1520,11 @@ a hard failure.")
                     ;; elaboration bidirectional: with a signature the
                     ;; clause is *checked* against it, and only in the
                     ;; signature's absence is its type inferred.
-                    (let* ((target (if sig (car (tl-instantiate-scheme sig))
-                                     placeholder))
+                    (let* ((target (tl-clause--peel-pis
+                                    env
+                                    (if sig (car (tl-instantiate-scheme sig))
+                                      placeholder)
+                                    params))
                            (u (tl-unify-types target ctype bindings)))
                       (unless (car u)
                         (if (or tl-type-lenient tl-type-lenient-clauses)
@@ -1519,54 +1595,86 @@ a hard failure.")
           (puthash name (tl-tscheme nil ty) (tl-env-type-env env)))
         ty))))
 
-(defun tl-signature-binders (type)
-  "Settle TYPE's leading dependent binders into either quantifier or argument.
-A binder `(n : Nat) ->' whose `n' the codomain goes on to mention is a
-name the type already fixes: `Vec a n' says as much as any argument
-would, so the caller need not supply it.  Dropping that Pi and leaving
-`n' to be quantified alongside the rest of the type is what makes it an
-implicit parameter -- the call site passes nothing and unification finds
-the value.  This is what makes `(n m : Nat) -> Vec a n -> Vec a m ->
-Vec a (plus n m)' a two-argument function, `append xs ys', rather than a
-four-argument one.
-Mentioning the name is enough, and only mentioning it works, because the
-alternative would be worse than useless: a binder that is mentioned has
-to stay bound to the occurrences the codomain makes of it, and the only
-way to keep them bound while dropping the Pi is to make `n' an ordinary
-variable that unification then solves.  Spelling it as a plain arrow
-instead would leave those occurrences pointing at a binder no longer
-there.  Whether anything constrains `n' is not this pass's question --
-`cong' has nothing but its own result type to fix `f' against, and that
-is exactly where the clause checker, which unifies the body's type with
-the signature's after inferring it, picks it up.
-A binder whose name nothing mentions is decided by nothing the type can
-see, so the caller has to pass it: the Pi is then spelled as the plain
-arrow it always was, and the definition's lambda supplies the argument.
-The name carried no information -- that is precisely why it was never
-mentioned -- so nothing is lost in dropping it.
-A definition's clauses infer plain arrows, never Pis, so leaving these
-as Pis would make a signature no clause could ever match."
-  (let ((cur type) (changed nil) (domains nil))
+(defun tl-type--argument-domains (type)
+  "Every argument domain TYPE exposes, outermost first.
+Walks the chain of `Pi' and `->' nodes and stops at the first thing that
+is neither, so it sees the arguments that survive as arguments whether
+or not the binder above each one was named.  A domain this pass drops is
+no longer there to constrain anything, which is why a binder is judged
+against the domains after it rather than against all of them."
+  (let ((acc nil) (cur type))
     (while (and (tl-node-p cur) (tl-node-application cur)
+                (memq (tl-node-head cur) '(Pi ->)))
+      (let ((args (tl-node-children cur)))
+        (push (if (eq (tl-node-head cur) 'Pi) (cadr args) (car args)) acc)
+        (setq cur (car (last args)))))
+    (nreverse acc)))
+
+(defun tl-type--mentions-p (name domains)
+  "Non-nil when the variable NAME is free in any of DOMAINS."
+  (cl-some (lambda (d) (memq name (tl-free-tvars d))) domains))
+
+(defun tl-signature-binders (type)
+  "Settle TYPE's leading dependent binders as argument, implicit or kept.
+Each leading `(NAME : DOMAIN) ->' binder is decided by two questions:
+does the codomain still mention NAME, and can anything after it fix the
+value down?
+
+Mentioned and fixed -- `(n m : Nat) -> Vec a n -> Vec a m ->
+Vec a (plus n m)' -- the caller need pass nothing: the vectors say as
+much as `n' and `m' would, so the Pi is dropped and NAME is left for
+unification to find.  That is what makes `append' a two-argument
+function instead of a four-argument one, and it is what this pass did
+for every mentioned binder until a proof by induction said the rule was
+too coarse.
+
+Mentioned and *not* fixed -- `(xs : Vec a n) -> (ys : Vec a m) ->
+Eq Nat (lenV (vapp xs ys)) (plus (lenV xs) (lenV ys))' -- nothing
+after the binder constrains it, so there is nothing for the call site
+to find and nothing for it to pass either, unless the Pi stays.  It
+stays.  This is the one case a plain arrow cannot serve: dropping the
+Pi would strand every occurrence of NAME in the codomain on a binder no
+longer there.  Keeping it is what makes `lenAppend' take the two
+vectors it is a statement about.
+
+Unmentioned -- `(n : Nat) -> Nat' -- the name says nothing the type can
+use, so it is an ordinary argument, spelled as the plain arrow it always
+was.  Nothing is lost in dropping the Pi, because nothing ever referred
+to the name.
+
+Decisions run outermost inward, so by the time a binder is reached every
+domain after it is already settled: dropping a Pi takes its domain away
+with it, and a domain no longer there constrains nothing.
+
+A kept Pi is quantified like any other free variable, so each
+instantiation gets a binder of its own and a call site sees the codomain
+said about an unknown value -- which is exactly what happens to an
+implicit parameter, and for the same reason: the value is the caller's
+context to supply."
+  (let ((cur type) (domains nil) (done nil))
+    (while (and (not done)
+                (tl-node-p cur) (tl-node-application cur)
                 (eq (tl-node-head cur) 'Pi))
       (let* ((args (tl-node-children cur))
              (binder (car args))
              (dom (cadr args))
              (cod (caddr args)))
-        (if (memq binder (tl-free-tvars cod))
-            ;; Re-spelled rather than deleted outright: the occurrences
-            ;; are shared nodes, and an ordinary variable is what
-            ;; unification is willing to solve -- leaving it rigid
-            ;; would keep the very rigidity that made it useless.
-            (setq cur (tl-type-subst cod (list (cons binder (tl-fresh-tvar))))
-                  changed t)
+        (cond
+         ((not (memq binder (tl-free-tvars cod)))
           (push dom domains)
-          (setq cur cod changed t))))
+          (setq cur cod))
+         ((tl-type--mentions-p binder (tl-type--argument-domains cod))
+          ;; Re-spelled rather than deleted outright: the occurrences
+          ;; are shared nodes, and an ordinary variable is what
+          ;; unification is willing to solve -- leaving it rigid would
+          ;; keep the very rigidity that made it useless.
+          (setq cur (tl-type-subst cod (list (cons binder (tl-fresh-tvar))))))
+         (t (setq done t)))))
     ;; Fold the recorded domains back over whatever the walk stopped on,
     ;; outermost first -- `push' has them innermost first.
     (dolist (d domains)
       (setq cur (tl-tarrow d cur)))
-    (if changed cur type)))
+    cur))
 
 (defun tl-register-signature (env form)
   "Register a `(: NAME TYPE)' signature in ENV.
