@@ -276,9 +276,21 @@ rejected a cyclic binding."
                    ;; Heads are compared with `eq': two distinct unbound
                    ;; variable nodes are `equal' structurally but must
                    ;; still be unified.
-                   (or (eq hx hy)
-                       (and (or (tl-node-var-p hx) (tl-node-var-p hy))
-                            (not (tl-gnode--moves x y fuel))))))
+                   (and (or (eq hx hy)
+                            (or (tl-node-var-p hx) (tl-node-var-p hy)))
+                        ;; Matching heads are not by themselves a licence
+                        ;; to decompose: `plus Zero (plus m k)' and `plus
+                        ;; (plus Zero m) k' share the head `plus' and are
+                        ;; one and the same number, yet their first
+                        ;; arguments are `Zero' and a stuck `plus', so
+                        ;; decomposing compares those and fails where
+                        ;; reducing would say they agree.  A head that is
+                        ;; not a function never moves, so this costs
+                        ;; nothing where nothing can reduce -- and with no
+                        ;; evaluator hooked in `tl-gnode--moves' answers
+                        ;; nil for everything, which is the ordinary
+                        ;; Hindley-Milner case exactly as before.
+                        (not (tl-gnode--moves x y fuel)))))
             (let ((hx (tl-gnode--head (tl-node-head x)))
                    (hy (tl-gnode--head (tl-node-head y))))
               ;; Higher-kinded: a variable in head position unifies with

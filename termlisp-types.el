@@ -1436,6 +1436,22 @@ is only an answer to that question."
                      (cdr pattern))))
    (t nil)))
 
+(defun tl-clause--skolem (binder)
+  "Return a rigid constant standing for BINDER's universally quantified value.
+A signature says \"for every x\", and the body of one clause cannot say
+which x it meant, so while the clause is checked x has to be something
+that may equal only itself.  Left a *variable* it would be solved to
+whatever the body turned out to need, and
+`(: f (-> (x : Nat) (Eq Nat x (Succ x))))' would be inhabited by `Refl'
+-- the same constant `tl-infer-constant' already checks a plain
+definition against.  A constant still lets the body's own fresh
+variables be *told* what it is, `?z' binding to it, so the true case
+`(: w (-> (x : Nat) (Eq Nat x x)))' comes out right and the two
+occurrences then have to agree or the clause is refused.
+
+The name carries the binder's so a refusal can say which one it was."
+  (tl-tcon (gensym (format "%s/" (tl-node-head binder))) nil))
+
 (defun tl-clause--peel-pis (env target params)
   "Replace TARGET's leading Pis with arrows, one per PARAMS, in order.
 A definition's clauses infer plain arrows, never Pis, so the two shapes
@@ -1446,6 +1462,14 @@ pattern says the argument was in ENV, which is also what lets the codomain
 reduce: over `VNil', `(lenV (vapp xs ys))' becomes `(lenV (vapp VNil
 ys))' and thence `lenV ys', and the base case of `lenAppend' comes out
 as `Eq Nat (lenV ys) (lenV ys)', which `Refl' inhabits.
+
+A pattern that says nothing -- a variable, or `_ -- leaves the binder
+where it was, and that binder is replaced by `tl-clause--skolem' instead
+of left alone.  It came here instantiated as an ordinary variable, which
+is the right thing at a call site and the wrong thing here: this is the
+one place the signature is being *read back*, and a variable it can be
+solved to is a signature that any body may satisfy.
+
 A parameter that runs out of Pis keeps whatever shape TARGET had left,
 and a TARGET that runs out of parameters is left whole, so neither
 mismatch in count is an error here -- `tl-unify-types' reports it, with
@@ -1459,9 +1483,23 @@ arity."
              (dom (cadr args))
              (cod (caddr args))
              (val (tl-clause--pattern-term env (car ps))))
-        (setq cur (if val (tl-type-subst cod (list (cons binder val))) cod)
+        (setq cur (tl-type-subst
+                   cod (list (cons binder (or val (tl-clause--skolem binder)))))
               ps (cdr ps))
         (push dom domains)))
+    ;; Pis left over after the patterns ran out are still universally
+    ;; quantified, and get the same treatment for the same reason: with
+    ;; a fresh variable there, a body that ignores the argument would
+    ;; have the whole rest of the statement to solve it against.
+    (while (and (tl-node-p cur) (tl-node-application cur)
+                (eq (tl-node-head cur) 'Pi))
+      (let ((args (tl-node-children cur)))
+        (setq cur (tl-tarrow
+                   (cadr args)
+                   (tl-type-subst (caddr args)
+                                  (list (cons (car args)
+                                              (tl-clause--skolem
+                                               (car args)))))))))
     (dolist (d domains)
       (setq cur (tl-tarrow d cur)))
     cur))
@@ -1650,10 +1688,15 @@ A kept Pi is quantified like any other free variable, so each
 instantiation gets a binder of its own and a call site sees the codomain
 said about an unknown value -- which is exactly what happens to an
 implicit parameter, and for the same reason: the value is the caller's
-context to supply."
-  (let ((cur type) (domains nil) (done nil))
-    (while (and (not done)
-                (tl-node-p cur) (tl-node-application cur)
+context to supply.
+
+Keeping one Pi says nothing about the binders behind it, so the walk
+goes on: `(n : Nat) -> (x : Nat) -> (xs : Vec a n) -> Vec a n ->
+Eq a x x' settles `n' and `x', and then finds `xs' fixed by the vectors
+after all.  Stopping at the first explicit binder would have left `xs'
+an argument the caller has to pass, for no reason the type gave."
+  (let ((cur type) (wrap nil))
+    (while (and (tl-node-p cur) (tl-node-application cur)
                 (eq (tl-node-head cur) 'Pi))
       (let* ((args (tl-node-children cur))
              (binder (car args))
@@ -1661,7 +1704,7 @@ context to supply."
              (cod (caddr args)))
         (cond
          ((not (memq binder (tl-free-tvars cod)))
-          (push dom domains)
+          (push dom wrap)
           (setq cur cod))
          ((tl-type--mentions-p binder (tl-type--argument-domains cod))
           ;; Re-spelled rather than deleted outright: the occurrences
@@ -1669,11 +1712,16 @@ context to supply."
           ;; unification is willing to solve -- leaving it rigid would
           ;; keep the very rigidity that made it useless.
           (setq cur (tl-type-subst cod (list (cons binder (tl-fresh-tvar))))))
-         (t (setq done t)))))
-    ;; Fold the recorded domains back over whatever the walk stopped on,
-    ;; outermost first -- `push' has them innermost first.
-    (dolist (d domains)
-      (setq cur (tl-tarrow d cur)))
+         (t
+          (push (cons binder dom) wrap)
+          (setq cur cod)))))
+    ;; Fold what the walk recorded back over whatever it stopped on,
+    ;; innermost first -- `push' has them innermost first.  A bare domain
+    ;; came back as a plain arrow, a kept Pi as the Pi it was.
+    (dolist (w wrap)
+      (setq cur (if (tl-node-p w)
+                    (tl-tarrow w cur)
+                  (tl-tcon 'Pi (list (car w) (cdr w) cur)))))
     cur))
 
 (defun tl-register-signature (env form)

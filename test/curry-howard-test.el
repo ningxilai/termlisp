@@ -494,10 +494,19 @@ against the signature, and the name carried no information to begin with
 ;; codomain and fixed by nothing after them, so only keeping their Pi
 ;; gives the theorem the two vectors it is about.
 
-(defconst tl-ch--len-append
+;; A congruence rule is a lemma, not a primitive -- the prelude stops at
+;; `sym' and `trans' -- so the theorems below carry their own, proved by
+;; matching `Refl'.
+(defconst tl-ch--cong
   "(: cong (-> (a : *) (b : *) (x : a) (y : a) (f : a -> b)
                 (Eq a x y) (Eq b (f x) (f y))))
-   (define (cong f Refl) Refl)
+   (define (cong f Refl) Refl)"
+  "The congruence rule, as a theorem rather than a primitive.
+Matching the proof against `Refl' refines the two indices to one term,
+and the body's `Refl' then covers the statement.")
+
+(defconst tl-ch--len-append
+  (concat tl-ch--cong "
    (: vapp (-> (a : *) (n : Nat) (m : Nat)
                 (Vec a n) (Vec a m) (Vec a (plus n m))))
    (define (vapp VNil ys) ys)
@@ -511,6 +520,7 @@ against the signature, and the name carried no information to begin with
                             (plus (lenV xs) (lenV ys)))))
    (define (lenAppend VNil ys) Refl)
    (define (lenAppend (VCons x xs) ys) (cong Succ (lenAppend xs ys)))")
+  "Vector append and its length, the stage-3 theorem proved by induction.")
 
 (tl-test-eval tl-ch-the-base-case-is-decided-by-reduction
   (concat tl-ch--len-append " (lenAppend VNil VNil)")
@@ -545,6 +555,124 @@ against the signature, and the name carried no information to begin with
   "(: bad (-> (n : Nat) (Vec Nat n) (Eq Nat (plus n Zero) (Succ n))))
    (define (bad VNil) Refl) (bad VNil)"
   "does not match its signature" '(:type-check t :elaborate t))
+
+;;; Congruence, by matching rather than by a primitive
+
+;; `lenAppend' was the first theorem proved by induction, but it works by
+;; the constructor's own arithmetic: `plus' commutes past `Succ' on its
+;; own.  Anything about a *container* needs to step under its head --
+;; and that is congruence, which `cong' provides only when the two
+;; spellings of the goal happen to line up (a constructor applied to
+;; everything it takes, say).  It does not line up for a `Vec' element,
+;; so congruence is derived here instead of imported: matching the
+;; hypothesis against `Refl' refines `xs' to `ys', and once it has,
+;; both sides of the goal are literally the same term.
+
+(tl-test-eval tl-ch-congruence-under-a-vector-head
+  "(: cng (-> (n : Nat) (x : Nat) (xs : Vec Nat n) (ys : Vec Nat n)
+               (Eq (Vec Nat n) xs ys)
+               (Eq (Vec Nat (Succ n)) (VCons x xs) (VCons x ys))))
+   (define (cng x Refl) Refl)
+   (cng Zero Refl)"
+  "Refl" '(:type-check t :elaborate t))
+
+;; Writing the hypothesis as a plain variable works just as well, and
+;; that is worth pausing on: nothing refined `xs' to `ys' this time, so
+;; the body got two indices *it* had to choose.  What makes the choice
+;; legal is the argument itself -- `h : Eq (Vec Nat n) xs ys' says the
+;; two are one, and unification is free to say which.  The same body
+;; with the hypothesis argument withdrawn is refused, because there the
+;; choice is the body's alone (`tl-ch-a-universal-index-cannot-be-invented').
+(tl-test-eval tl-ch-the-hypothesis-argument-licenses-the-tie
+  "(: cng (-> (n : Nat) (x : Nat) (xs : Vec Nat n) (ys : Vec Nat n)
+               (Eq (Vec Nat n) xs ys)
+               (Eq (Vec Nat (Succ n)) (VCons x xs) (VCons x ys))))
+   (define (cng x h) Refl) cng"
+  "cng" '(:type-check t :elaborate t))
+
+;; `map id = id', and `map (f . g) = map f . map g'.  Both step under a
+;; `VCons', and the inductive case is `cng' applied to the induction
+;; hypothesis -- the shape every container theorem takes.
+
+;; `cong' is not in the prelude, so these theorems carry their own --
+;; the same rule `lenAppend' uses, proved by matching `Refl' exactly as
+;; below.
+(defconst tl-ch--vec-mp
+  (concat tl-ch--cong "
+   (: mp (-> (a : *) (b : *) (n : Nat) (a -> b) (Vec a n) (Vec b n)))
+   (define (mp f VNil) VNil)
+   (define (mp f (VCons x xs)) (VCons (f x) (mp f xs)))
+   (: cng (-> (n : Nat) (x : Nat) (xs : Vec Nat n) (ys : Vec Nat n)
+               (Eq (Vec Nat n) xs ys)
+               (Eq (Vec Nat (Succ n)) (VCons x xs) (VCons x ys))))
+   (define (cng x Refl) Refl)")
+  "Congruence under a vector head, plus the `map' it proves theorems about.")
+
+(tl-test-eval tl-ch-map-of-the-identity-is-the-identity
+  (concat tl-ch--vec-mp "
+   (: t (-> (n : Nat) (xs : Vec Nat n)
+             (Eq (Vec Nat n) (mp (lambda (y) y) xs) xs)))
+   (define (t VNil) Refl)
+   (define (t (VCons x xs)) (cng x (t xs)))
+   (t VNil)")
+  "Refl" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-map-fusion-holds
+  (concat tl-ch--vec-mp "
+   (: fus (-> (n : Nat) (f : Nat -> Nat) (g : Nat -> Nat) (xs : Vec Nat n)
+               (Eq (Vec Nat n)
+                   (mp f (mp g xs))
+                   (mp (lambda (y) (f (g y))) xs))))
+   (define (fus f g VNil) Refl)
+   (define (fus f g (VCons x xs)) (cng (f (g x)) (fus f g xs)))
+   (fus (lambda (y) y) (lambda (y) y) VNil)")
+  "Refl" '(:type-check t :elaborate t))
+
+;;; A signature's binder decision runs the whole chain
+
+;; `tl-signature-binders' judges each leading binder by whether
+;; anything *after* it fixes the value down.  It used to stop at the
+;; first binder that stayed explicit, which meant one explicit argument
+;; froze every binder behind it: `(x : Nat) -> (n : Nat) -> Vec Nat n ->
+;; Eq Nat x x' leaves `n' fixed by the vector after all, but the walk
+;; never got there, so `n' came out an argument the caller had to pass
+;; for no reason the type gave.  Keeping a Pi says nothing about the
+;; binders behind it, so the walk goes on.
+(tl-test-eval tl-ch-a-fixed-binder-behind-an-explicit-one-stays-implicit
+  "(: p (-> (x : Nat) (n : Nat) (v : Vec Nat n) (Eq Nat x x)))
+   (define (p x v) Refl)
+   (p Zero VNil)"
+  "Refl" '(:type-check t :elaborate t))
+
+;; The other arity is then refused, which is what makes the first test
+;; an arity test and not merely a proof that happens to be accepted.
+(tl-test-reject tl-ch-an-explicit-binder-does-not-freeze-the-rest
+  "(: p (-> (x : Nat) (n : Nat) (v : Vec Nat n) (Eq Nat x x)))
+   (define (p x n v) Refl) p"
+  "does not match its signature" '(:type-check t :elaborate t))
+
+;;; The commutativity of addition
+
+;; The first theorem here that a *previous* theorem has to carry.  The
+;; step case needs `plus n (Succ m) = Succ (plus n m)' to move the goal
+;; off its stuck right-hand side, and the base case needs
+;; `plus m Zero = m' -- which is itself an induction, and is `Refl' at
+;; no `m'.  `cong', `sym' and `trans' join the two.
+(tl-test-eval tl-ch-addition-is-commutative
+  (concat tl-ch--cong "
+   (: pzr (-> (n : Nat) (Eq Nat (plus n Zero) n)))
+   (define (pzr Zero) Refl)
+   (define (pzr (Succ n)) (cong Succ (pzr n)))
+   (: psa (-> (n : Nat) (m : Nat)
+               (Eq Nat (plus n (Succ m)) (Succ (plus n m)))))
+   (define (psa Zero m) Refl)
+   (define (psa (Succ n) m) (cong Succ (psa n m)))
+   (: com (-> (n : Nat) (m : Nat) (Eq Nat (plus n m) (plus m n))))
+   (define (com Zero m) (sym (pzr m)))
+   (define (com (Succ n) m)
+     (trans (cong Succ (com n m)) (sym (psa m n))))
+   (com Zero Zero)")
+  "Refl" '(:type-check t :elaborate t))
 
 ;;; Holes: the program asks, the REPL answers
 
@@ -845,6 +973,61 @@ through, so that is where the binding has to live."
 (tl-test-reject tl-ch-the-oracle-does-not-soften-a-proof
   "(: o (-> Nat Nat)) (define (o Zero) Zero) (define (o (Succ x)) \"s\") o"
   "does not match its signature" '(:type-check t :elaborate t))
+
+;;; A universally quantified index is not the body's to choose
+
+;; The indices the signature quantifies over are the caller's, not the
+;; body's: `Eq Nat x y' with both free is a claim about *every* pair, and
+;; `Refl' cannot prove it.  Until now it could, because a case-(c) Pi
+;; binder was collected by `tl-free-tvars', quantified by
+;; `tl-register-signature', and then re-created *flexible* by
+;; `tl-instantiate-scheme' -- losing the rigidity it had.  `Refl' bound
+;; both sides to the same term, `Bool' inhabited `Void', and the answer
+;; had become `t' rather than a check.
+;;
+;; A clause's own keepers are now skolems, so the same three shapes are
+;; refused.  What `sym', `trans' and `cong' rely on is preserved, because
+;; only a binder *nothing else fixes* is skolemised -- and the false
+;; theorems all have that shape.
+
+(tl-test-reject tl-ch-a-universal-index-cannot-be-invented
+  "(: f (-> (x : Nat) (y : Nat) (Eq Nat x y)))
+   (define (f x y) Refl) f"
+  "does not match its signature" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-an-index-mentioned-once-cannot-be-invented
+  "(: h (-> (x : Nat) (Eq Nat Zero x)))
+   (define (h x) Refl) h"
+  "does not match its signature" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-an-index-that-occurs-in-the-goal-cannot-be-invented
+  "(: g (-> (x : Nat) (Eq Nat x (Succ x))))
+   (define (g x) Refl) g"
+  "does not match its signature" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-an-invented-index-is-rejected-through-a-lambda
+  "(: f (-> (x : Nat) (y : Nat) (Eq Nat x y)))
+   (define (f x) (lambda (y) Refl)) f"
+  "does not match its signature" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-an-invented-index-cannot-be-used-at-a-type-parameter
+  "(: k (-> (a : *) (x : a) (y : a) (Eq a x y)))
+   (define (k a x y) Refl) k"
+  "does not match its signature" '(:type-check t :elaborate t))
+
+;; The reflexive claim stays provable, and so does the one that is true
+;; only *because* the hypothesis ties the two indices together -- the
+;; distinction the whole change rests on.
+
+(tl-test-eval tl-ch-the-reflexive-case-is-still-provable
+  "(: w (-> (x : Nat) (Eq Nat x x)))
+   (define (w x) Refl) (w Zero)"
+  "Refl" '(:type-check t :elaborate t))
+
+(tl-test-eval tl-ch-an-index-tied-by-the-hypothesis-is-still-provable
+  "(: b (-> (a : *) (x : a) (y : a) (Eq a x y) (Eq a y x)))
+   (define (b h) Refl) (b Refl)"
+  "Refl" '(:type-check t :elaborate t))
 
 ;;; Datatype kinds
 
