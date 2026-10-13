@@ -549,6 +549,55 @@ still matches, still binds nothing, and leaves no goal behind."
        (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))")
      :type 'termlisp-type-error)))
 
+;;; Datatype kinds
+
+;; A constructor's field and its result are kind-checked where the
+;; declaration is written, so a malformed one is an error there rather
+;; than at the first use, much later.  What stays lenient is a head that
+;; does not exist yet -- a datatype this one is mutually recursive with,
+;; or one an oracle has not declared -- because that head takes a fresh
+;; kind variable, which unifies with anything.
+
+(ert-deftest tl-kind-a-result-takes-the-datatype-s-own-arity ()
+  "`(Bad a a)' applies a one-parameter datatype to two arguments."
+  (should-error (termlisp-eval "(datatype (Bad a) (Mk : (Bad a a)))"
+                               (termlisp-make-env))
+                :type 'termlisp-type-error))
+
+(ert-deftest tl-kind-a-parameterless-type-cannot-be-applied ()
+  "`Int' has no parameters, so `(Bad a Int Int)' over-applies it."
+  (should-error
+   (termlisp-eval "(datatype Nat (Zero) (Succ Nat))
+                   (datatype (Bad a) (Mk a : (Bad a Int Int)))"
+                  (termlisp-make-env))
+   :type 'termlisp-type-error))
+
+(ert-deftest tl-kind-mutually-recursive-declarations-are-accepted ()
+  "`Odd' has no kind yet when `Even' is read, and must not need one."
+  (let ((env (termlisp-make-env)))
+    (termlisp-eval
+     "(datatype (Even n) (EZ : (Even Zero)) (ES (Odd n) : (Even (Succ n))))
+      (datatype (Odd n) (OS (Even n) : (Odd (Succ n))))"
+     env)
+    (should (tl-kind-of env 'Even))
+    (should (tl-kind-of env 'Odd))))
+
+(ert-deftest tl-kind-an-undeclared-head-is-left-unchecked ()
+  "An oracle datatype may mention a head nothing has declared."
+  (should (termlisp-eval "(datatype (Oracle a) (Mk : (NothingDeclared a)))"
+                         (termlisp-make-env))))
+
+(ert-deftest tl-kind-a-name-shared-with-its-constructor-still-kinds ()
+  "A datatype and its constructor may share a name, and kind apart.
+In `(Pair a b)' the name `Pair' is both, and in a result type it means
+the datatype -- which takes `*' where the lifted constructor takes the
+datatype's own universe, so the two must not be read as one kind."
+  (let ((env (termlisp-make-env)))
+    (termlisp-eval "(datatype (Pair a b) (Mk a b))" env)
+    (tl-kind-check env (tl-type-parse '(Pair Int String)))
+    (termlisp-eval "(datatype (Self a) (Self : (Self a)))" env)
+    (should (tl-kind-of env 'Self))))
+
 ;;; Exhaustiveness and redundancy (G7)
 
 ;; Coverage checking is opt-in: `head', `tail' and `if' in the bundled

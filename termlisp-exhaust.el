@@ -117,9 +117,17 @@ number of steps, and exceeding it signals rather than answering."
 ;; list of column witnesses, one per column, naming a value the query was
 ;; about; each column witness is `_' or `(con NAME COLUMN...)'.
 
-(defsubst tl-exh--yes (witness) (cons :yes witness))
-(defsubst tl-exh--no () (cons :no nil))
-(defsubst tl-exh--unknown (witness) (cons :unknown witness))
+(defsubst tl-exh--yes (witness)
+  "Answer that the query matched, with the WITNESS that did it."
+  (cons :yes witness))
+(defsubst tl-exh--no ()
+  "Answer that no row of the matrix reaches the query."
+  (cons :no nil))
+(defsubst tl-exh--unknown (witness)
+  "Answer that the query could not be decided, with WITNESS so far.
+WITNESS is nil where nothing has been pinned down; a caller must never
+read this as `:yes' just because a witness came back with it."
+  (cons :unknown witness))
 
 (defun tl-exh--join (answers)
   "Fold ANSWERS, a list of `(STATUS . WITNESS)', into one answer.
@@ -146,9 +154,15 @@ offered, so each counts as covering the whole column.  A guard does not:
 it can only make a clause match less."
   (memq (car-safe pat) '(wild var lam)))
 
-(defun tl-exh--con-p (pat) (eq (car-safe pat) 'con))
-(defun tl-exh--con-name (pat) (cadr pat))
-(defun tl-exh--con-args (pat) (cddr pat))
+(defun tl-exh--con-p (pat)
+  "Non-nil when PAT is a constructor pattern, `(con NAME SUB...)'."
+  (eq (car-safe pat) 'con))
+(defun tl-exh--con-name (pat)
+  "The constructor PAT names, or nil when PAT is not a constructor."
+  (cadr pat))
+(defun tl-exh--con-args (pat)
+  "The subpatterns PAT applies its constructor to, possibly none."
+  (cddr pat))
 
 (defsubst tl-exh--col-pat (col)
   "The pattern of column COL, whose type is its second element.

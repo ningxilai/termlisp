@@ -856,23 +856,51 @@ parameters, exactly as every ordinary datatype always has."
                                 (car cell) name))))))
     (let* ((params (mapcar (lambda (s) (cdr (assq s tl-type-parse-vars))) syms))
            (results (mapcar (lambda (r) (or r (tl-tcon name params)))
-                            ctor-results)))
+                            ctor-results))
+           ;; The arity is known before anything is kinded, so stand the
+           ;; datatype up now, with a fresh variable for each parameter's
+           ;; kind.  A result that applies this datatype to the wrong
+           ;; number of arguments is then an error here, at the
+           ;; declaration, rather than something the reader meets much
+           ;; later at the first use.  The parameter kinds are still
+           ;; inferred below and the entry registered properly then; this
+           ;; one exists to make the shape checkable, not to decide it.
+           ;; A head that does not exist yet -- one this datatype is
+           ;; mutually recursive with, or one an oracle has not
+           ;; declared -- takes a fresh variable of its own and is left
+           ;; unchecked, which is the leniency a forward reference needs.
+           (early (and (fboundp 'tl-kind-var)
+                       (let ((k tl-kind-star))
+                         (dotimes (_ (length params))
+                           (setq k (tl-karr (tl-kind-var) k)))
+                         k))))
+      (when early (puthash name early (tl-env-kind-env env)))
       ;; Infer each parameter's kind from the constructor field types; a
-      ;; well-formed field is a proper type.  Lenient: oracle datatypes may
-      ;; mention unknown heads, which get fresh kind variables.
+      ;; well-formed field is a proper type.  An unknown head is not an
+      ;; error: it takes a fresh kind variable, which unifies with
+      ;; anything, so only a head that is known and applied wrongly is
+      ;; caught -- exactly the distinction to be drawn.
       (when (fboundp 'tl-kind-check)
         (dolist (ca ctor-args)
           (dolist (argty (cdr ca))
-            (condition-case nil (tl-kind-check env argty) (error nil)))))
+            (tl-kind-check env argty))))
       ;; Lift the constructors to the type level *before* the results are
       ;; kinded: a result is the only place an index variable meets the
       ;; universe it belongs to, so `kind(n) = Nat' is settled right here.
-      ;; The datatype's own kind is only read back out afterwards.
       (when (fboundp 'tl-register-lifted-constructors)
         (tl-register-lifted-constructors env name ctor-args))
+      ;; A constructor may share the datatype's name -- `(Pair a b)' has
+      ;; to -- and lifting writes that constructor's kind under the name
+      ;; too, which is a different kind: `Zero' takes the universe `Nat'
+      ;; where `Nat' itself takes `*'.  In a result type the name means
+      ;; the datatype, so stand the datatype's entry back up before the
+      ;; results are read against it.  This only moves the constructor's
+      ;; entry aside sooner; `tl-register-datatype-kind' below settled it
+      ;; over afterwards all along.
+      (when early (puthash name early (tl-env-kind-env env)))
       (when (fboundp 'tl-kind-check)
         (dolist (r results)
-          (condition-case nil (tl-kind-check env r) (error nil))))
+          (tl-kind-check env r)))
       ;; The datatype's kind is `kind(param1) -> ... -> *', or its arity
       ;; when kind inference is unavailable.
       (cond ((fboundp 'tl-register-datatype-kind)
