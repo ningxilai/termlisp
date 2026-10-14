@@ -449,7 +449,28 @@ constructor argument types are parsed and their schemes registered."
          ;; variable be mentioned before any constructor that uses it.
          (declared-p (consp head))
          (name (if declared-p (car head) head))
+         ;; A declared parameter may carry its kind: `(a : *)' or
+         ;; `(x : (univ a))'.  The names still go where they always
+         ;; went, and the annotations ride along beside them, because
+         ;; only a kind can say that one parameter's values come out of
+         ;; another's -- which is the whole content of `Eq a x y'.  A
+         ;; bare symbol keeps meaning what it always meant: a parameter
+         ;; whose kind nothing has pinned, left for each use to decide.
          (declared (and declared-p (cdr head)))
+         (pnames (and declared
+                      (mapcar (lambda (p) (if (consp p) (car p) p)) declared)))
+         (pkind-sexps
+          (and declared
+               (let ((acc nil))
+                 (dolist (p declared)
+                   (cond
+                    ((and (consp p) (eq (cadr p) ':) (= (length p) 3))
+                     (push (cons (car p) (caddr p)) acc))
+                    ((consp p)
+                     (signal 'termlisp-error
+                             (list (format "Malformed parameter %S in datatype %S; write it as (NAME : KIND)"
+                                           p name))))))
+                 (nreverse acc))))
          (ctors (cdr rest))
          (old (gethash name (tl-env-datatypes env))))
     (when old
@@ -461,7 +482,7 @@ constructor argument types are parsed and their schemes registered."
     ;; parameters", so the argument must genuinely be left off for the
     ;; inferred spelling.
     (let ((syms (if declared-p
-                    (tl-register-datatype-types env name ctors declared)
+                    (tl-register-datatype-types env name ctors pnames pkind-sexps)
                   (tl-register-datatype-types env name ctors))))
       (puthash name (list :open open :constructors (mapcar #'car ctors) :params syms)
                (tl-env-datatypes env)))

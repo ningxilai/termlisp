@@ -105,6 +105,18 @@
            (let ((cs (tl-node-children k)))
              (format "(%s -> %s)" (tl-ch--kind-text (car cs))
                      (tl-ch--kind-text (cadr cs)))))
+          ;; A dependent binder: the spelling that says which parameter
+          ;; the next one comes out of, and the difference between a
+          ;; kind that constrains and three kinds that do not.
+          ((and (tl-node-p k) (eq (tl-node-head k) 'kpi))
+           (let ((cs (tl-node-children k)))
+             (format "Π(%s : %s). %s"
+                     (tl-node->sexp (nth 0 cs))
+                     (tl-ch--kind-text (nth 1 cs))
+                     (tl-ch--kind-text (nth 2 cs)))))
+          ((and (tl-node-p k) (eq (tl-node-head k) 'univ))
+           (format "univ(%s)"
+                   (tl-node->sexp (car (tl-node-children k)))))
           ;; A parameter nothing has constrained renders as `?', which is
           ;; what makes an index parameter visible: it ranges over
           ;; universes as well as over proper types.
@@ -140,14 +152,175 @@
     (should (equal (tl-ch--kind-string env 'Vec) "(* -> (Nat -> *))"))
     (should (equal (tl-ch--kind-string env 'Fin) "(Nat -> *)"))))
 
-(ert-deftest tl-ch-equal-s-kind-is-fully-general ()
-  "`Eq' indexes by values, so nothing has constrained its parameters.
+(ert-deftest tl-ch-equal-s-kind-depends-on-its-element-type ()
+  "`Eq' indexes by values *of its element type*, and the kind says so.
 `Vec' fixes its index to `Nat' because `Succ' says so.  `Refl' is
-nullary and says nothing at all, so `Eq' ranges over every element type
-and every pair of values in it -- which is what lets one declaration
-mean equality on naturals, on lists, on anything."
+nullary and says nothing at all, so nothing in the constructors ties
+`Eq''s indices to anything -- the annotation does, and the kind it
+produces is dependent: `x' and `y' come out of `a'.
+
+It used to read `(? -> (? -> (? -> *)))', three independent slots, and
+that is exactly how `Eq Nat Int Zero' passed the check: each slot
+answered for itself -- `Nat', `*', `Nat' -- and no two answers were
+ever held against each other.  A dependent kind compares them, because
+the second and third are now written in terms of the first.
+
+Generality survives the constraint, and it has to: `Eq' still means
+equality on naturals, on lists, on anything.  Two applications of two
+different element types both kind-check, so the binder was copied
+rather than solved in place."
   (let ((env (tl-ch--typed-env)))
-    (should (equal (tl-ch--kind-string env 'Eq) "(? -> (? -> (? -> *)))"))))
+    (should (equal (tl-ch--kind-string env 'Eq)
+                   "Π(a : *). Π(x : univ(a)). Π(y : univ(a)). *"))
+    (should (tl-kind-check env (tl-tcon 'Eq (list (tl-tcon 'Nat nil)
+                                                  (tl-tcon 'Zero nil)
+                                                  (tl-tcon 'Zero nil)))))
+    (should (tl-kind-check env (tl-tcon 'Eq (list (tl-tcon 'Bool nil)
+                                                  (tl-tcon 'True nil)
+                                                  (tl-tcon 'False nil)))))))
+
+;; Dependent kinds.  The index of `Eq' used to have a kind of its own to
+;; decide, so `Eq Nat Int Zero' answered `Nat', `*' and `Nat' and every
+;; answer was consistent on its own -- nothing ever compared two of
+;; them.  `(x : (univ a))' makes the second and third answers be written
+;; in terms of the first, so what is checked is no longer three kinds but
+;; one relationship, and its failure is the ordinary failure of `*' to be
+;; `Nat' rather than a rule written for `Eq'.
+
+(tl-test-reject tl-ch-an-index-is-checked-against-the-element-type
+                "(: bad (Eq Nat Int Zero))"
+                "Kind error" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-an-index-may-not-be-a-type
+                "(: bad (Eq Nat Nat Nat))"
+                "Kind error" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-an-index-may-not-come-from-another-datatype
+                "(: bad (Eq Nat True True))"
+                "Kind error" '(:type-check t :elaborate t))
+
+(ert-deftest tl-ch-a-kind-error-names-the-argument-it-refused ()
+  "The fault is readable without knowing what a kind is.
+A message that stopped at \"a kind error\" would be true and useless;
+this one says which argument, what arrived and what was wanted -- `Eq
+argument 2 is a * where a Nat is required' -- which is the difference
+between being told the program is wrong and being told where."
+  (let ((env (tl-ch--typed-env)))
+    (should (equal
+             (condition-case e
+                 (tl-kind-check
+                  env (tl-tcon 'Eq (list (tl-tcon 'Nat nil)
+                                         (tl-tcon 'Int nil)
+                                         (tl-tcon 'Zero nil))))
+               (error (cadr e)))
+             "Kind error: Eq argument 2 is a * where a Nat is required"))))
+
+(ert-deftest tl-ch-an-index-names-its-own-datatype-s-universe ()
+  "A universe belongs to one datatype, and the index says which.
+`Nil' is a `List' and `VNil' is a `Vec'; both are values rather than
+proper types, but of *different* types, and the universe leaf is what
+keeps them apart.  No rule about `Eq' is involved: `univ' reduces to the
+leaf on both sides and two leaves are then compared as any two leaves
+are."
+  (let ((env (tl-ch--typed-env)))
+    (should (tl-kind-check
+             env (tl-tcon 'Eq (list (tl-tcon 'Vec (list (tl-tcon 'Nat nil)
+                                                        (tl-tcon 'Zero nil)))
+                                    (tl-tcon 'VNil nil)
+                                    (tl-tcon 'VNil nil)))))
+    (should-error
+     (tl-kind-check
+      env (tl-tcon 'Eq (list (tl-tcon 'Vec (list (tl-tcon 'Nat nil)
+                                                 (tl-tcon 'Zero nil)))
+                             (tl-tcon 'Nil nil)
+                             (tl-tcon 'Nil nil))))
+     :type 'termlisp-type-error)))
+
+(ert-deftest tl-ch-a-constructor-takes-its-fields-as-values ()
+  "`Succ' takes a `Nat' and `VCons' takes a vector, not a proper type.
+A constructor's arguments are values, so what such an argument *is* at
+the type level is the universe of its field's type -- which for `Succ'
+was always spelled that way and for `VCons' was spelled `*', so the two
+spellings of one fact never had to agree.  An index in `Eq''s kind is
+where they finally do: `xs' is `Vec Nat n'-kinded there, and the same
+`xs' is the tail of `VCons'."
+  (let ((env (tl-ch--typed-env)))
+    (should (equal (tl-ch--kind-string env 'Succ) "(Nat -> Nat)"))
+    (should (equal (tl-ch--kind-string env 'VNil) "Vec"))
+    (should (equal (tl-ch--kind-string env 'VCons)
+                   "(univ(a) -> (univ((Vec a n)) -> Vec))"))))
+
+(ert-deftest tl-ch-a-dependent-kind-still-generalizes ()
+  "A binder copied, not solved: `Eq' still means equality on anything.
+The constraint that closed `Eq Nat Int Zero' could have closed it by
+fixing `Eq''s parameters to `Nat', which would have reached the right
+answer by the wrong route -- `Eq' is equality on naturals, on lists, on
+vectors, on anything.  Three element types checked in one environment,
+with `Nat' asked for again *after* the others, is the shape of that
+failure: an unsolved-in-place binder remembers the first answer and
+refuses the rest."
+  (let ((env (tl-ch--typed-env)))
+    (should (tl-kind-check env (tl-tcon 'Eq (list (tl-tcon 'Nat nil)
+                                                  (tl-tcon 'Zero nil)
+                                                  (tl-tcon 'Zero nil)))))
+    (should (tl-kind-check env (tl-tcon 'Eq (list (tl-tcon 'Bool nil)
+                                                  (tl-tcon 'True nil)
+                                                  (tl-tcon 'False nil)))))
+    (should (tl-kind-check
+             env (tl-tcon 'Eq (list (tl-tcon 'Vec (list (tl-tcon 'Nat nil)
+                                                        (tl-tcon 'Zero nil)))
+                                    (tl-tcon 'VNil nil)
+                                    (tl-tcon 'VNil nil)))))
+    ;; And a value that is not a leaf: `(Succ Zero)' has to arrive with
+    ;; `Nat' the same way `Zero' does, having had to work it out.
+    (should (tl-kind-check env (tl-tcon 'Eq (list (tl-tcon 'Nat nil)
+                                                  (tl-tcon 'Zero nil)
+                                                  (tl-tcon 'Succ (list (tl-tcon 'Zero nil)))))))))
+
+(tl-test-eval tl-ch-equality-over-three-element-types-at-once
+              "(: a (Eq (Vec Nat Zero) VNil VNil)) (: b (Eq Nat Zero (Succ Zero))) (: c (Eq Bool True False)) (: d (Eq Nat Zero Zero)) 1"
+              "1" '(:type-check t :elaborate t))
+
+(ert-deftest tl-ch-a-kind-annotation-must-name-a-parameter ()
+  "A parameter written any other way than `(NAME : KIND)' is a mistake.
+`(a b)' is not a parameter and not an annotation, and reading it as one
+would declare a datatype whose `b' is simply absent."
+  (should-error
+   (termlisp-eval "(datatype (Thing (a b)) (Mk a))"
+                  (termlisp-load-prelude
+                   (termlisp-make-env '(:type-check t :elaborate t))))
+   :type 'termlisp-error))
+
+(ert-deftest tl-ch-a-parameter-is-reported-by-its-own-name ()
+  "An annotated parameter is still reported as the name it was given.
+`(a : *)' is one parameter written two ways, and the record a datatype
+hands to everyone else wants the name: a datatype-extension parses its
+own constructors against it, and a type name in term position applies
+one fresh variable per parameter -- which is how `(car Maybe)' is an
+error while `Bool', having none, is not.  Reading the annotation off is
+the whole of that job, and returning nothing instead would be read as
+\"no parameters\", which is exactly what a parameterless datatype says
+and no error would ever be raised."
+  (let ((env (tl-ch--typed-env)))
+    (should (equal (plist-get (gethash 'Eq (tl-env-datatypes env)) :params)
+                   '(a x y)))
+    (should (equal (plist-get (gethash 'Maybe (tl-env-datatypes env)) :params)
+                   '(a)))
+    (should (null (plist-get (gethash 'Bool (tl-env-datatypes env)) :params)))))
+
+(ert-deftest tl-ch-a-kind-annotation-may-only-speak-about-its-own-parameters ()
+  "`(univ q)' with no `q' beside it would be a kind nothing can decide.
+The binder is the parameter, so a name that is not one leaves `univ'
+pointing at a type the declaration never introduced -- and no
+application can substitute for a binder it cannot see, so every use
+would be refused for a reason that appears nowhere in its message.
+Saying so at the declaration is the whole cost, and it is small."
+  (should-error
+   (termlisp-eval
+    "(datatype (Thing (a : *) (x : (univ q))) (Mk a))"
+    (termlisp-load-prelude
+     (termlisp-make-env '(:type-check t :elaborate t))))
+   :type 'termlisp-type-error))
 
 (ert-deftest tl-ch-constructor-schemes-carry-indices ()
   "A constructor returns at its own index, not at the datatype's parameters."
@@ -819,9 +992,16 @@ still matches, still binds nothing, and leaves no goal behind."
                 "(: r (Eq Nat Zero (Succ Zero) -> Int)) (define (r p) 1) (r Refl)"
                 "Cannot apply" '(:type-check t :elaborate t))
 
+;; The element type and the indices are now checked against each other
+;; *at the kind level*, before a proof is ever considered: the kind of
+;; `Eq' says `x' and `y' are taken out of `a', so `Int' in a position
+;; `Nat' governs never gets as far as `Refl' failing to inhabit it.
+;; The needle used to be "Cannot apply", which was the second-best
+;; answer -- right rejection, later, and with the blame on the proof
+;; rather than on the type.
 (tl-test-reject tl-ch-eq-checks-the-element-type
                 "(: r (Eq Nat Int Zero -> Int)) (define (r p) 1) (r Refl)"
-                "Cannot apply" '(:type-check t :elaborate t))
+                "Kind error" '(:type-check t :elaborate t))
 
 ;; The index need not be written in canonical form: what matters is that
 ;; both sides reduce to the same value.

@@ -37,7 +37,16 @@
 ;; the kind-level spellings of the two naturals, which is why they take
 ;; the universe `Nat' where `Nat' itself takes `*' -- so `(Eq Nat Zero
 ;; (Succ Zero))' is well-kinded and yet admits no value at all.
-(datatype (Eq a x y) (Refl : (Eq a x x)))
+;;
+;; The parameters are annotated, and the annotations are what make the
+;; kind depend: `x' and `y' are taken out of `a', so the three arguments
+;; to `Eq' are no longer free to be judged one at a time.  Without them
+;; `Eq : k1 -> k2 -> k3 -> *' has three independent kind variables, and
+;; `Eq Nat Int Zero' answers `Nat', `*' and `Nat' -- each consistent, and
+;; nothing relating them.  `(x : (univ a))' relates them, and the kind
+;; error for `Int' is then not a special case but the ordinary failure
+;; of `*' to be `Nat'.
+(datatype (Eq (a : *) (x : (univ a)) (y : (univ a))) (Refl : (Eq a x x)))
 
 ;; Symmetry and transitivity follow from the same fact, with no eliminator
 ;; to write: matching a proof against `Refl' refines the index to the

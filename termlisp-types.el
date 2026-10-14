@@ -873,10 +873,13 @@ with the same substitution.  A non-scheme is returned as
  (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tarrow (tl-tint) (tl-tbool)))))
 
 (cl-defun tl-register-datatype-types (env name ctors
-                                          &optional (param-syms nil param-syms-p))
+                                          &optional (param-syms nil param-syms-p)
+                                          param-annos)
   "Register constructor type schemes for datatype NAME with CTORS.
 PARAM-SYMS, if non-nil, are the datatype's declared type parameters
 \(reused for extensions and for an explicitly declared parameter list).
+PARAM-ANNOS, when given, is an alist mapping a parameter symbol to the
+kind sexp its declaration annotated it with; see `tl-kind-parse'.
 Returns the datatype's parameter symbols.
 When PARAM-SYMS is explicitly supplied (even nil), CTORS are an
 extension and any type parameter not declared by the datatype is an
@@ -889,7 +892,18 @@ the parameters, so pattern matching can unify that index against the
 scrutinee.  A constructor that omits the `:' returns NAME applied to the
 parameters, exactly as every ordinary datatype always has."
   (let* ((tl-type-parse-vars
-          (mapcar (lambda (s) (cons s (tl-fresh-tvar))) param-syms))
+          ;; A declared parameter is named after itself rather than left
+          ;; as a bare gensym, because a `kpi' binds one and a kind is
+          ;; then read back in messages: `Π(a : *).' says which parameter
+          ;; the next one comes out of, and `Π(t1710 : *).' says nothing
+          ;; at all.  The head of a variable is otherwise unused -- every
+          ;; comparison goes through the BIND slots -- so this costs
+          ;; nothing but legibility.
+          (mapcar (lambda (s)
+                    (let ((v (tl-fresh-tvar)))
+                      (setf (tl-node-head v) s)
+                      (cons s v)))
+                  param-syms))
          (split (mapcar #'tl-split-ctor ctors))
          (ctor-args (cl-mapcar (lambda (ctor cells)
                                  (cons (car ctor) (mapcar #'tl-type-parse* (car cells))))
@@ -900,7 +914,23 @@ parameters, exactly as every ordinary datatype always has."
          (ctor-results (mapcar (lambda (cells)
                                  (and (cdr cells) (tl-type-parse* (cdr cells))))
                                split))
-         (syms (or param-syms (mapcar #'car (reverse tl-type-parse-vars)))))
+         (syms (or param-syms (mapcar #'car (reverse tl-type-parse-vars))))
+         ;; A kind annotation is read in this same scope, so `(univ a)'
+         ;; reaches the very node that parameter `a' already is.  The
+         ;; dependency has to point at the parameter itself and not at a
+         ;; copy of it: the binder `kpi' creates has to be the variable
+         ;; the rest of the declaration talks about, or the two would
+         ;; disagree about which type the index came out of.
+         (kind-annos
+          (and param-annos (fboundp 'tl-kind-parse)
+               (mapcar (lambda (cell)
+                         (let ((tv (cdr (assq (car cell) tl-type-parse-vars))))
+                           (unless tv
+                             (signal 'termlisp-type-error
+                                     (list (format "Kind annotation on unknown parameter %S"
+                                                   (car cell)))))
+                           (cons tv (tl-kind-parse (cdr cell) param-syms))))
+                       param-annos))))
     (when param-syms-p
       (dolist (cell tl-type-parse-vars)
         (unless (memq (car cell) param-syms)
@@ -957,7 +987,7 @@ parameters, exactly as every ordinary datatype always has."
       ;; The datatype's kind is `kind(param1) -> ... -> *', or its arity
       ;; when kind inference is unavailable.
       (cond ((fboundp 'tl-register-datatype-kind)
-             (tl-register-datatype-kind env name params))
+             (tl-register-datatype-kind env name params kind-annos))
             (t (puthash name (length syms) (tl-env-kind-env env))))
       ;; Each constructor arrows its field types onto its own result.
       (dolist (pair (cl-mapcar #'cons ctor-args results))
