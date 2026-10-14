@@ -2,6 +2,27 @@
 
 # term-lisp
 
+<!--toc:start-->
+- [term-lisp](#term-lisp)
+  - [Overview](#overview)
+    - [Term rewriting](#term-rewriting)
+    - [Data types and open terms](#data-types-and-open-terms)
+    - [First-class pattern matching](#first-class-pattern-matching)
+    - [Lazy evaluation and TCO](#lazy-evaluation-and-tco)
+    - [Static types and type classes](#static-types-and-type-classes)
+    - [Propositional types](#propositional-types)
+    - [Indexed families](#indexed-families)
+    - [Monads and `do`](#monads-and-do)
+  - [Using the library](#using-the-library)
+  - [The REPL](#the-repl)
+  - [Project layout](#project-layout)
+    - [Branches](#branches)
+    - [Dependencies](#dependencies)
+  - [Development](#development)
+  - [Scope](#scope)
+  - [License](#license)
+<!--toc:end-->
+
 term-lisp is a language for *term* *lis*t *p*rocessing with first-class pattern
 matching, lazy evaluation, tail-call optimization, static types, type classes,
 and monads. It is implemented in Emacs Lisp as an embedded library.
@@ -100,14 +121,14 @@ Types are propositions and programs are proofs, so the prelude carries the
 constructive connectives.  The Curry–Howard reading holds outright for
 intuitionistic propositional logic:
 
-| Proposition | Type |
-|---|---|
-| truth `⊤` | `Unit` |
+| Proposition   | Type                              |
+|---------------|-----------------------------------|
+| truth `⊤`     | `Unit`                            |
 | falsehood `⊥` | `Void` — declares no constructors |
-| conjunction | `(Pair a b)` |
-| disjunction | `(Either a b)` — `Left`, `Right` |
-| implication | `a -> b` |
-| negation `¬a` | `a -> Void` |
+| conjunction   | `(Pair a b)`                      |
+| disjunction   | `(Either a b)` — `Left`, `Right`  |
+| implication   | `a -> b`                          |
+| negation `¬a` | `a -> Void`                       |
 
 ```lisp
 (define (and-implies-or (Pair a b)) (Left a))   ; A ∧ B → A ∨ B
@@ -290,6 +311,14 @@ The ERT suite lives on `dev` (`make test` there runs it).  `cats` is
 expected on the load path; the Makefile defaults to the elpaca sources
 directory and honours `CATS_DIR`, e.g.
 `make test CATS_DIR=$HOME/src/emacs-cats`.
+
+## Scope
+
+Two things this project has decided not to do. They are recorded here because they are decisions rather than gaps, and because no other file in the repository says them.
+
+Quantitative type theory — a multiplicity on every binder plus a separate linearity pass — along with universe levels, totality  hecking and general proof search would amount to rewriting the type layer, and on elisp the NbE performance it leans on has never been established.  QTT is in any case orthogonal to the Curry–Howard reading this project is about: adding linearity moves it no closer, while costing the whole type layer.
+
+`subst` and `rewrite` stay out of the core. Both already hold as inference rules over `Eq`, `Refl`, `sym` and `trans`, so they need no universe, no new code and no library function — promoting them to primitives would buy nothing the checker does not already do.
 
 ## License
 
