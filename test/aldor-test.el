@@ -370,6 +370,28 @@ The %p<i> placeholders become bound to the actual arguments."
     (should (equal (funcall 'pick (list 'Cons 1 'Nil)) 'gen-hit))
     (should-error (funcall 'pick 7))))
 
+(ert-deftest tl-emit-rejects-pattern-params-in-overload ()
+  "No pattern parameter ever reaches an emitted `lambda' arglist.
+The single-clause path refused one; the overload path, which builds its
+own `apply (lambda ...)' for every clause, silently did not.
+`tl-emit--var-name' renames only colliding constants, so a pattern
+passed straight through into the arglist, where it reads as valid elisp
+and fails only when the function is called."
+  (should-error (tl-emit-program
+                 '((define (f (Cons x xs)) 1)
+                   (define (f Nil) 2)))
+                :type 'termlisp-emit-error)
+  ;; One patterned clause is enough to reject the whole overload.
+  (should-error (tl-emit-program
+                 '((define (g (Cons x xs)) 1)
+                   (define (g x) 2)))
+                :type 'termlisp-emit-error)
+  ;; Plain parameters still dispatch, at one arity or across several.
+  (dolist (forms '(((define (h x) 1) (define (h y) 2))
+                   ((define (h x) 1) (define (h x y) 2))))
+    (let ((el (tl-emit-program forms)))
+      (should (eq (caar el) 'defun)))))
+
 (ert-deftest tl-emit-applied-parameter ()
   (let ((el (tl-emit-program '((define (twice f x) (f (f x)))))))
     (should (equal el '((defun twice (f x) (funcall f (funcall f x))))))
