@@ -262,6 +262,20 @@ while walking."
         ((eq value t) "true")
         ((eq value nil) "false")
         ((stringp value) value)
+        ;; A constructor application, `(Succ Zero)'.  Aldor would send
+        ;; this to an OutputType instance, and with none registered it
+        ;; used to fall through to `%s' below, which prints the raw Lisp
+        ;; -- the argument still unevaluated, and with it the
+        ;; environment every thunk closes over.  Printing one natural
+        ;; number therefore printed the world: tens of thousands of
+        ;; characters of hash tables and clauses, none of them the
+        ;; value asked for.  Rendering the spine keeps `print' on a
+        ;; list of numbers a list of numbers.
+        ((consp value)
+         (concat "(" (mapconcat (lambda (v)
+                                  (tl-output--format (tl-force-or-identity v)))
+                                value " ")
+                 ")"))
         (t (format "%s" value))))
 
 (defun tl-output-value (value)

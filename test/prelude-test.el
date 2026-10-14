@@ -81,6 +81,15 @@
 (tl-test-eval tl-prelude-sqrt "(sqrt 4)" "2.0")
 (tl-test-eval tl-prelude-format-int "(format \"~a\" 5)" "5")
 (tl-test-eval tl-prelude-format-bool "(format \"~a\" True)" "True")
+;; A constructor application has no Aldor OutputType here, and it used
+;; to fall through to `%s', which printed the argument thunks and the
+;; environment they close over instead of the value.  These two are the
+;; regression: one bare constructor, one nested inside a list, where the
+;; list branch had no way to reach it.
+(tl-test-eval tl-prelude-format-constructor
+              "(format \"~a\" (Succ Zero))" "(Succ Zero)")
+(tl-test-eval tl-prelude-format-list-of-constructors
+              "(format \"~a\" (Cons (Succ Zero) Nil))" "[(Succ Zero)]")
 (tl-test-eval tl-prelude-string-join "(string-join (list \"a\" \"b\"))" "ab")
 (tl-test-eval tl-prelude-string-list "(string->list \"ab\")" "(Cons a (Cons b Nil))")
 (tl-test-eval tl-prelude-list-string "(list->string (string->list \"ab\"))" "ab")
