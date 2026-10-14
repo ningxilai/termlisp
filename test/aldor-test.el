@@ -6,9 +6,6 @@
 
 (require 'ert)
 (require 'termlisp)
-;; Test-only support: the graph <-> surface bridges (not shipped on main).
-(require 'termlisp-graph-types)
-
 ;; The Makefile's `test' target loads only this one file, so every other
 ;; suite registers itself from here instead of being named on the command
 ;; line.  `LOAD_PATH' already carries `-L test'.
@@ -916,50 +913,27 @@ builtin operator mapping."
     (tl-unify-types a l nil)
     (should (string-match-p "!" (format "%S" (tl-type-to-datum l))))))
 
-;;; Graph-backed HM types
-
-(ert-deftest tl-gtype-basics ()
-  "Surface types convert to nodes and unify in place."
+(ert-deftest tl-instantiate-scheme-yields-fresh-variables ()
+  "Instantiating a scheme yields fresh variables each time.
+This is the property `tl-fresh-instance-var' provides: a quantified
+variable is copied, never shared, so one binding may be read at as many
+types as it is used at.  It used to be asserted through
+`tl-instantiate'; it is asserted through the production entry
+point now, which is where the copying actually happens."
   (let* ((a (tl-fresh-tvar))
-         (na (tl-gtype-from-tcon (tl-tcon 'List (list a))))
-         (nn (tl-gtype-from-tcon (tl-tcon 'List (list (tl-tint))))))
-    (should (tl-gtype-unify na nn))
-    (should (equal (tl-gtype-to-tcon na)
-                   (tl-tcon 'List (list (tl-tint)))))))
-
-(ert-deftest tl-gtype-mismatch-rolls-back ()
-  "A mismatched constructor fails and unbinds."
-  (let* ((a (tl-fresh-tvar))
-         (na (tl-gtype-from-tcon (tl-tcon 'List (list a))))
-         (nn (tl-gtype-from-tcon (tl-tcon 'Vector (list (tl-tint))))))
-    (should-not (tl-gtype-unify na nn))
-    (should (tl-node-var-p (tl-gnode-deref (car (tl-node-children na)))))))
-
-(ert-deftest tl-gtype-recursive-unify ()
-  "The occurs check is off by default: equirecursive types are allowed."
-  (let* ((a (tl-fresh-tvar))
-         (na (tl-gtype-from-tcon a))
-         (nl (tl-gtype-from-tcon (tl-tcon 'List (list a)))))
-    (should (tl-gtype-unify na nl))
-    (should (eq (tl-gnode-deref na) (tl-gnode-deref nl)))))
-
-(ert-deftest tl-gtype-instantiate-fresh ()
-  "Instantiating a scheme yields fresh variables each time."
-  (let* ((a (tl-fresh-tvar))
-         (na (tl-gtype-from-tcon (tl-tcon 'List (list a))))
-         (q (tl-gtype-quantify na)))
-    (let ((i1 (tl-gtype-instantiate (car q) (cdr q)))
-          (i2 (tl-gtype-instantiate (car q) (cdr q))))
+         (ty (tl-tcon 'List (list a)))
+         (scheme (tl-tscheme (tl-free-tvars ty) ty)))
+    (let ((i1 (tl-instantiate scheme))
+          (i2 (tl-instantiate scheme)))
       (should-not (eq (car (tl-node-children i1))
                       (car (tl-node-children i2))))
-      (should-not (eq (tl-gnode-deref (car (tl-node-children i1)))
-                      (car q))))))
+      (should-not (eq (tl-gnode-deref (car (tl-node-children i1))) a)))))
 
 ;;; Unification-driven overload resolution
 
 (ert-deftest tl-resolve-overload ()
   "The overload whose parameter unifies with the operand type wins."
-  (let* ((list-int (tl-gtype-from-tcon (tl-tcon 'List (list (tl-tint)))))
+  (let* ((list-int (tl-tcon 'List (list (tl-tint))))
          (prog (tl-tscheme nil (tl-tarrow (tl-tcon '% nil) (tl-tbool))))
          (lst (let ((a (tl-fresh-tvar)))
                 (tl-tscheme (list a)

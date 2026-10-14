@@ -22,6 +22,7 @@
 (require 'ert)
 (require 'termlisp-graph)
 (require 'termlisp-case)
+(require 'termlisp-dpo)
 
 (defun tl-tgr--sexp (node)
   "Render NODE back to an s-expression, for readable assertions."
@@ -159,6 +160,96 @@ evaluation error."
   "A term that reduces once and stops must not exhaust a small fuel."
   (let ((rule (tl-make-grule 'r :normalize 0 '(f $x) '(g $x))))
     (should (equal (tl-graph-rewrite-sexp '(f a) (list rule) 2) '(g a)))))
+
+;;; Double-Pushout rewriting
+
+(ert-deftest tl-dpo-match-records-every-reached-node ()
+  "A morphism keeps the whole correspondence, not just the bindings.
+The gluing condition is a statement about the set m(L), so that set has
+to be recorded before the question can be asked."
+  (let* ((graph (tl-graph-build '(f (g a) b)))
+         (m (tl-dpo-match '(f $x $y) (tl-graph-root graph))))
+    (should (tl-dpo-match-p m))
+    (should (eq (tl-dpo-match-root m) (tl-graph-root graph)))
+    ;; f, (g a), b -- three positions.  `$x' holds `(g a)' without
+    ;; descending into it, so m(L) is what the pattern itself reached.
+    (should (= (length (tl-dpo-match-image m)) 3))))
+
+(ert-deftest tl-dpo-match-requires-a-repeat-to-agree ()
+  "Two positions naming one variable must reach one node by `eq'.
+That is what makes the identification condition decidable."
+  (should-not (tl-dpo-match '(f $x $x)
+                            (tl-graph-root (tl-graph-build '(f a b)))))
+  (should (tl-dpo-match '(f $x $x)
+                        (tl-graph-root (tl-graph-build '(f a a))))))
+
+(ert-deftest tl-dpo-interface-keeps-what-the-template-names ()
+  "A variable the template never mentions is not in K.
+Such a node lies in the zone the step is entitled to cut."
+  (let* ((graph (tl-graph-build '(f a b)))
+         (m (tl-dpo-interface (tl-dpo-match '(f $x $y) (tl-graph-root graph))
+                              '(g $y))))
+    (should (= (length (tl-dpo-match-interface m)) 1))
+    (should (eq (car (tl-dpo-match-interface m))
+                (cadr (tl-node-children (tl-graph-root graph)))))))
+
+(ert-deftest tl-dpo-gluing-names-a-redex-that-is-shared ()
+  "A redex reachable from a holder outside the match is not local.
+SPO cuts the edge anyway; DPO says which one it was."
+  (let* ((graph (tl-graph-build '(w (f a) (f a))))
+         (redex (car (tl-node-children (tl-graph-root graph))))
+         (m (tl-dpo-interface (tl-dpo-match '(f $x) redex) '(g $x))))
+    (should (eq (car (tl-dpo-gluing m (tl-dpo-parents graph))) 'dangling))))
+
+(ert-deftest tl-dpo-gluing-holds-at-the-root-of-a-lonely-graph ()
+  (let* ((graph (tl-graph-build '(f a)))
+         (m (tl-dpo-interface (tl-dpo-match '(f $x) (tl-graph-root graph))
+                              '(g $x))))
+    (should-not (tl-dpo-gluing m (tl-dpo-parents graph)))))
+
+(ert-deftest tl-dpo-gluing-reports-two-positions-reaching-one-node ()
+  "Two positions of L reaching one host node is what non-injective means.
+A complement would have to cut one of them and keep the other, so SPO
+folds them; DPO names the node instead."
+  (let* ((graph (tl-graph-build '(f a a)))
+         (m (tl-dpo-interface (tl-dpo-match '(f $x $y) (tl-graph-root graph))
+                              '(g $x $y))))
+    (should (eq (car (tl-dpo-gluing m (tl-dpo-parents graph)))
+                'identification))))
+
+(ert-deftest tl-spo-apply-leaves-the-host-graph-as-it-was ()
+  "The cut is an indirection, not a deletion.
+The redex node still reads back as it was written, and the reduct is
+what MEMO now holds for it."
+  (let* ((graph (tl-graph-build '(f a)))
+         (rule (tl-make-grule 'r :normalize 0 '(f $x) '(g $x)))
+         (m (tl-dpo-interface (tl-dpo-match '(f $x) (tl-graph-root graph))
+                              (tl-grule-template rule)))
+         (reduct (tl-spo-apply m (tl-grule-template rule))))
+    (should (equal (tl-node->sexp reduct) '(g a)))
+    (should (eq (tl-node-head (tl-graph-root graph)) 'f))
+    (should (eq (cdr (tl-node-memo (tl-graph-root graph))) reduct))))
+
+(ert-deftest tl-dpo-apply-returns-the-reduct-and-its-diagnosis ()
+  (let* ((graph (tl-graph-build '(w (f a) (f a))))
+         (rule (tl-make-grule 'r :normalize 0 '(f $x) '(g $x)))
+         (redex (car (tl-node-children (tl-graph-root graph))))
+         (res (tl-dpo-apply rule redex graph)))
+    (should (equal (tl-node->sexp (car res)) '(g a)))
+    ;; The redex is shared, so the cut was not local.
+    (should (eq (cadr res) 'dangling))))
+
+(ert-deftest tl-dpo-apply-is-clean-at-the-root ()
+  (let* ((graph (tl-graph-build '(f a)))
+         (rule (tl-make-grule 'r :normalize 0 '(f $x) '(g $x)))
+         (res (tl-dpo-apply rule (tl-graph-root graph) graph)))
+    (should (equal (tl-node->sexp (car res)) '(g a)))
+    (should-not (cdr res))))
+
+(ert-deftest tl-dpo-apply-returns-nil-when-the-rule-does-not-fit ()
+  (let* ((graph (tl-graph-build '(h a)))
+         (rule (tl-make-grule 'r :normalize 0 '(f $x) '(g $x))))
+    (should-not (car (tl-dpo-apply rule (tl-graph-root graph) graph)))))
 
 (provide 'graph-rewrite-test)
 ;;; graph-rewrite-test.el ends here

@@ -116,7 +116,7 @@ default is what makes the variable generalizable by every enclosing
   "When non-nil, unification performs the occurs check.
 A cyclic (infinite) type is then rejected with a `termlisp-type-error'
 naming it.  Off by default: equirecursive types (as in Coalton) are
-allowed, matching `tl-gtype--default-occurs-check'.")
+allowed.")
 
 (defun tl-type-to-datum (type)
   "Render TYPE as a readable, cycle-safe s-expression datum.

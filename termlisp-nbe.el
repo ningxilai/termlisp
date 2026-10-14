@@ -42,6 +42,7 @@
 
 (require 'cl-lib)
 (require 'termlisp-base)
+(require 'termlisp-dpo)
 (require 'termlisp-graph)
 (require 'termlisp-graph-unify)
 (require 'termlisp-types)
@@ -335,9 +336,7 @@ to see which constructor it has must do."
         (tl-graph-whnf (lambda (arg) (tl-nbe-whnf arg nbe))))
     (if (null rules)
         node
-      (tl-graph-root
-       (tl-graph-rewrite (tl-make-graph node nil) rules
-                         tl-nbe-fuel 'termlisp-type-error)))))
+      (tl-dpo-normalize node rules tl-nbe-fuel 'termlisp-type-error))))
 
 (defun tl-nbe-equal (a b nbe)
   "Return non-nil when A and B reduce to the same normal form under NBE.

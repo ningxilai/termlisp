@@ -394,6 +394,33 @@ it, with GENERIC merged in so a single lookup yields every rule to try."
                specific)
       (cons generic table))))
 
+(defvar tl-graph--memo-generation 0
+  "Generation counter stamping MEMO records.
+One `tl-graph-rewrite' call is one generation.  A record written under
+another generation is invisible to `tl-graph-memo-reduct', which is what
+keeps two normalisations that happen to share a node from reading each
+other's answers -- a node in a type is reachable from every type that
+mentions it, and a reduct computed for one of them in one environment is
+no answer at all to a question about another.")
+
+(defun tl-graph-memo-record (node reduct)
+  "Record REDUCT as NODE's reduct for the current generation.  Return REDUCT.
+This writes MEMO and marks STATE done; it never touches CHILDREN, so every
+holder of NODE reaches REDUCT through one indirection and NODE itself still
+reads back exactly as it was written."
+  (setf (tl-node-memo node) (cons tl-graph--memo-generation reduct))
+  (setf (tl-node-state node) :done)
+  reduct)
+
+(defun tl-graph-memo-reduct (node)
+  "Return NODE's reduct from the current generation, or nil.
+A MEMO written by another generation reads as nil, so a node rewritten by
+one normalisation is not silently reused by the next."
+  (let ((m (tl-node-memo node)))
+    (and (consp m)
+         (eq (car m) tl-graph--memo-generation)
+         (cdr m))))
+
 (defun tl-graph--rebuild (node children)
   "Return a copy of NODE carrying CHILDREN, leaving NODE itself untouched.
 Copying rather than mutating is what lets `tl-graph--step' rewrite a term
@@ -402,6 +429,9 @@ survive the copy, while HEAD, APPLICATION and CHILDREN are the parts a rule
 is allowed to replace."
   (let ((new (copy-tl-node node)))
     (setf (tl-node-children new) children)
+    ;; A MEMO record describes the node's children, so a copy carrying
+    ;; new children must not carry the old answer with it.
+    (setf (tl-node-memo new) nil)
     new))
 
 (defun tl-graph--step (graph dispatch)
@@ -411,34 +441,47 @@ the rules indexed under a node's head (plus the generic ones) are tried.
 The graph is walked in pre-order with early exit, so no full node list is
 built and the scan stops at the first applicable rule.
 
-Rewriting is copy-on-write: `tl-graph-reduce' never modifies the node it is
-handed, and only the path back to the root is rebuilt.  A type node is
-shared by every type that mentions it, so mutating one in place would
-rewrite a signature while comparing two other types."
+A node is rewritten at most once per step and its reduct is recorded in its
+MEMO slot, so the walk reads the same answer back when it reaches the node
+again: a term hash-consing made one node is reduced once and every holder
+sees it, instead of the second holder keeping the old spelling.  CHILDREN is
+never edited -- only the path back to the root is rebuilt -- so a type node,
+which every type that mentions it shares, is still never rewritten behind
+the caller's back.  STATE marks the nodes the walk is inside, which is how a
+cyclic graph terminates."
   (let ((generic (car dispatch))
         (table (cdr dispatch))
+        (active (make-hash-table :test #'eq))
         (seen (make-hash-table :test #'eq)))
     (cl-labels ((walk (node)
-                  (unless (gethash node seen)
+                  (cond
+                   ((gethash node active) nil)
+                   ((tl-graph-memo-reduct node))
+                   ((gethash node seen) nil)
+                   (t
                     (puthash node t seen)
-                    (catch 'step
-                      (dolist (rule (or (gethash (tl-node-head node) table)
-                                        generic))
-                        (let ((new (tl-graph-reduce node rule)))
-                          (when new (throw 'step new))))
-                      (unless (memq (tl-node-head node) tl-graph-opaque-heads)
-                        (let ((children (tl-node-children node))
-                              (out nil)
-                              (moved nil))
-                          (dolist (child children)
-                            (let ((re (walk child)))
-                              (if re
-                                  (progn (push re out) (setq moved t))
-                                (push child out))))
-                          (when moved
-                            (throw 'step
-                                   (tl-graph--rebuild node (nreverse out))))))
-                      nil))))
+                    (puthash node t active)
+                    (unwind-protect
+                        (catch 'step
+                          (dolist (rule (or (gethash (tl-node-head node) table)
+                                            generic))
+                            (let ((new (tl-graph-reduce node rule)))
+                              (when new
+                                (throw 'step (tl-graph-memo-record node new)))))
+                          (unless (memq (tl-node-head node) tl-graph-opaque-heads)
+                            (let ((children (tl-node-children node))
+                                  (out nil)
+                                  (moved nil))
+                              (dolist (child children)
+                                (let ((re (walk child)))
+                                  (if re
+                                      (progn (push re out) (setq moved t))
+                                    (push child out))))
+                              (when moved
+                                (throw 'step
+                                       (tl-graph--rebuild node (nreverse out))))))
+                          nil)
+                      (remhash node active))))))
       (let ((new (walk (tl-graph-root graph))))
         (when new
           (setf (tl-graph-root graph) new)
@@ -451,6 +494,7 @@ Signals FUEL-SIGNAL (default `termlisp-eval-error') when FUEL (default
 error; a host normalising a *type* passes its own class instead, because a
 type-level function that will not stop is a type error and has no business
 being reported as one about evaluation."
+  (setq tl-graph--memo-generation (1+ tl-graph--memo-generation))
   (let ((remaining (or fuel 10000))
         (condition (or fuel-signal 'termlisp-eval-error)))
     (dolist (phase tl-graph-phases graph)

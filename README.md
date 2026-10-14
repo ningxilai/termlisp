@@ -85,6 +85,13 @@ the graph instead of translating between two copies of it. The reducer was
 already written on nodes before the decision was made, so taking it cost no
 second implementation.
 
+`memo` is where a reduction is recorded rather than installed. A reduct is
+written to the redex root's `memo`, and every holder reaches it through
+that one indirection, so a node hash-consing made one is reduced once and
+stays one node instead of splitting into two spellings of the same term.
+`state` marks the nodes a walk is inside, which is how a cyclic graph
+terminates.
+
 The structural invariant that follows is worth knowing when reading the
 code: a type constructor's head has exactly one spelling, so head lookups
 always go through `tl-gnode--head` rather than reading the slot directly.
@@ -1145,7 +1152,7 @@ termlisp-eval.el        ; lazy TCO evaluator, `do', top-level forms
 termlisp-load.el        ; load .tls files as elisp
 termlisp-graph.el       ; term-graph rewriting core
 termlisp-graph-unify.el ; graph unification (union-find)
-termlisp-graph-types.el ; graph <-> surface bridges (dev branch only)
+termlisp-dpo.el         ; Double-Pushout rewriting, simulated via SPO
 termlisp-case.el        ; compiled-pattern dispatch
 termlisp-nbe.el         ; normalization by evaluation
 termlisp-abn.el         ; Aldor ABN reader
@@ -1160,8 +1167,7 @@ termlisp-prelude.tls    ; the standard prelude
 ### Branches
 
 - `main` — the library only; no tests, no test-only support.
-- `dev` — `main` plus the ERT test suite (`test/aldor-test.el`) and the
-  graph <-> surface bridges it exercises (`termlisp-graph-types.el`).
+- `dev` — `main` plus the ERT test suite (`test/aldor-test.el`).
 
 This document is shared by both, and it cites `test/…` throughout as
 evidence — a quoted message means a test asserts it, which is the
