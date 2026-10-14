@@ -107,18 +107,47 @@ values and of no others."
        (null (tl-node-children k))
        (not (eq (tl-node-head k) '*))))
 
-(defun tl-kind->sexp (k)
-  "Render kind K as an s-expression, for error messages.
-Kinds have no surface syntax of their own to fall back on -- they are
-inferred -- so a message that has to show one renders the shape it has
-in the graph: `*', `Nat', `(karr a b)', `(kpi x a b)', `(univ T)'."
+(defun tl-kind->string (k)
+  "Render kind K as text, for an error message.
+The two kinds with a surface spelling get it back: a binder reads
+`Π(a : *).  BODY' and a universe reads `univ(a)', which is how they are
+written wherever kinds are written at all.  Everything else is the shape
+it has in the graph -- `*', `Nat', `(karr a b)' -- because that much is
+already as much as the reader will recognise.
+
+A binder that a declaration gave a name to renders as that name, so `Eq'
+reads `Π(a : *).' instead of three binders all looking alike; one with
+no name of its own renders as `kind-variable', which is honest about
+what it is.  Two binders that share a name are told apart by
+`tl-node-display', which primes the second rather than letting one
+message show two variables that cannot be told apart."
+  (tl-with-display-names (tl-kind--string k)))
+
+(defun tl-kind--string (k)
+  "Render kind K as text, recursing through the caller's name table.
+See `tl-kind->string', which is what callers want; this is the piece it
+hands the table to."
   (let ((k (tl-kind-deref k)))
     (cond
-     ((not (tl-node-p k)) k)
-     ((tl-node-var k) 'kind-variable)           ; an undecided kind
-     ((not (tl-node-application k)) (tl-node-head k))
-     (t (cons (tl-node-head k) (mapcar #'tl-kind->sexp
-                                       (tl-node-children k)))))))
+     ((not (tl-node-p k)) (format "%s" k))
+     ((tl-node-var k) "kind-variable")
+     ((eq (tl-node-head k) 'kpi)
+      (let ((cs (tl-node-children k)))
+        (format "Π(%s : %s). %s"
+                (tl-node->sexp (nth 0 cs))
+                (tl-kind--string (nth 1 cs))
+                (tl-kind--string (nth 2 cs)))))
+     ((eq (tl-node-head k) 'karr)
+      (let ((cs (tl-node-children k)))
+        (format "(%s -> %s)" (tl-kind--string (car cs))
+                (tl-kind--string (cadr cs)))))
+     ((eq (tl-node-head k) 'univ)
+      (format "univ(%s)" (tl-node->sexp (car (tl-node-children k)))))
+     ((not (tl-node-application k)) (format "%s" (tl-node-head k)))
+     (t (format "(%s %s)" (tl-node-head k)
+                (mapconcat #'tl-kind--string
+                           (mapcar #'tl-kind-deref (tl-node-children k))
+                           " "))))))
 
 (defun tl-kind-parse (sexp &optional vars)
   "Parse surface kind SEXP into a kind node.
@@ -196,13 +225,21 @@ when the two appearances are a binder and the body that speaks of it.
 Rigid variables are left alone: they are fixed by a binder elsewhere
 and copying one would make two spellings of one thing compare unequal.
 The kind slots inside TY are not touched; they belong to whatever
-application put them there."
+application put them there.
+
+The copy keeps the original's *name* and takes only its node.  That is
+the trade `tl-node-display' exists to make possible: what decides where
+a variable stands is the node, which the copy has just changed, so the
+name it was called can be carried along and the kind it belongs to still
+reads `Π(a : *).' where `Eq' declared it.  Nothing may compare the two
+by name and call them the same variable, and nothing does."
   (tl-map-type
    (lambda (tv)
      (if (tl-node-rigid tv)
          tv
        (or (gethash tv memo)
            (let ((v (tl-fresh-tvar)))
+             (setf (tl-node-head v) (tl-node-head tv))
              (puthash tv v memo)
              v))))
    ty))
@@ -245,6 +282,12 @@ the body still points at it, is what makes a scheme a scheme."
                           b
                         (or (gethash b memo)
                             (let ((v (tl-fresh-tvar)))
+                              ;; The binder keeps its name and takes a
+                              ;; new node, exactly as `tl-kind-freshen-term'
+                              ;; does: the node is what says which binder
+                              ;; this is, and the name is what a reader
+                              ;; calls it by.
+                              (setf (tl-node-head v) (tl-node-head b))
                               (puthash b v memo)
                               v)))))
              (tl-kpi nb
@@ -541,12 +584,12 @@ repeated inference consistent; unknown heads get a fresh kind variable."
                      (offered (tl-kind-whnf (car ks))))
                 (if (not (tl-kind-unify dom offered))
                     (setq err (list (format
-                                     (concat "Kind error: %S argument %d is a %S"
-                                             " where a %S is required")
+                                     (concat "Kind error: %S argument %d is a %s"
+                                             " where a %s is required")
                                      (if (symbolp head) head "type variable")
                                      n
-                                     (tl-kind->sexp offered)
-                                     (tl-kind->sexp dom))))
+                                     (tl-kind->string offered)
+                                     (tl-kind->string dom))))
                   (setq hk (if dependent
                                (tl-gnode-subst (tl-kpi-body hk)
                                                (tl-kpi-binder hk)
@@ -583,8 +626,17 @@ repeated inference consistent; unknown heads get a fresh kind variable."
   "Check that TY is a well-kinded proper type in ENV.  Return TY."
   (let ((k (tl-kind-infer env ty)))
     (unless (tl-kind-unify k tl-kind-star)
+      ;; Both halves are rendered rather than printed raw.  A type is a
+      ;; graph node, and `%S' on one spells out its struct -- bind slots,
+      ;; phase, level and all -- which is a wall of text naming nothing
+      ;; the reader can act on.  The datum form says `(Eq Nat)', and the
+      ;; kind it was offered says what it was taken for instead:
+      ;; `univ(Nat) -> univ(Nat) -> *', a constructor still waiting for
+      ;; its remaining arguments.
       (signal 'termlisp-type-error
-              (list (format "Kind error: %S is not a proper type" ty)))))
+              (list (format "Kind error: %s is not a proper type; it has kind %s"
+                            (tl-type-to-datum ty)
+                            (tl-kind->string k))))))
   ty)
 
 (defun tl-kind-check-scheme (env scheme)

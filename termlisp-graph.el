@@ -86,13 +86,71 @@ nor rebuilt."
                         node))))
       (tl-make-graph (build sexp) table))))
 
+(defvar tl--display-names nil
+  "Display-name table for one rendering, or nil when no rendering is in force.
+The value is a cons cell whose CDR is an alist of (NODE . NAME), grown
+by `tl-node-display'.  It is the cell rather than the alist that is
+tested, because an empty alist and no alist are both nil -- and a
+rendering has to register the first name it hands out against a table
+that is still empty, or nothing after it can ever be told apart.
+
+Identity here is `eq' on the node, so two distinct variables that share
+a print name come out differently in one message -- exactly as Common
+Lisp qualifies a symbol with its package when that is not the package
+on `*package*'.
+
+This exists so that nothing has to read a name to decide what a variable
+*is*.  A name is what a variable is called and nothing more; the
+substitution that decides what it is compares nodes.  Where that
+distinction is kept, a name may be copied freely -- a freshened binder
+keeps its name and takes a new node -- and the messages that read kinds
+back say `Π(a : *).' instead of `Π(t897 : *).', without the copy being
+mistaken for the original anywhere.")
+
+(defun tl-node-display (node)
+  "Return NODE's display name within the current rendering.
+Only a variable is ever qualified: two variables that share a name may
+be two different variables, while two constructor names that share one
+are one constructor, and marking the second `Nat' as `Nat'' would say
+something untrue about the type.  The first variable seen with a given
+name keeps it; a later distinct one is primed -- `a', then `a'', then
+`a''' -- and only within the rendering that asked.  With no table in
+force the node's own name comes back unchanged, which is all that
+happens outside a message."
+  (let ((name (tl-node-head node)))
+    (if (or (null tl--display-names) (not (tl-node-var node)))
+        name
+      (or (cdr (assq node (cdr tl--display-names)))
+          (let ((taken (mapcar #'cdr (cdr tl--display-names)))
+                (candidate name)
+                (n 0))
+            (while (member candidate taken)
+              (setq n (1+ n)
+                    candidate (intern (format "%s%s" name (make-string n ?')))))
+            (setcdr tl--display-names
+                    (cons (cons node candidate) (cdr tl--display-names)))
+            candidate)))))
+
+(defmacro tl-with-display-names (&rest body)
+  "Evaluate BODY with a fresh display-name table in force.
+One table per rendering: a message shows one kind or one type, and two
+variables with the same name inside that one rendering are two different
+variables worth telling apart.  Across renderings nothing is carried, so
+no name is ever qualified on a stability the table cannot promise."
+  (declare (indent 0) (debug t))
+  ;; `(cons nil nil)' rather than nil: an empty table, which is to say
+  ;; a table that is already present and not yet populated.
+  `(let ((tl--display-names (cons nil nil)))
+     ,@body))
+
 (defun tl-node->sexp (node)
   "Render NODE (and its children) back to an s-expression.
 An application node renders as `(HEAD ...)', including nullary `(HEAD)';
-a non-application node renders as its atom HEAD."
+a non-application node renders as its atom HEAD, qualified by
+`tl-node-display' when a display-name table is in force."
   (if (tl-node-application node)
       (cons (tl-node-head node) (mapcar #'tl-node->sexp (tl-node-children node)))
-    (tl-node-head node)))
+    (tl-node-display node)))
 
 (cl-defstruct (tl-grule (:constructor tl-make-grule (name phase priority pattern template &optional guard clauses)))
   "A term-graph rewrite rule.
