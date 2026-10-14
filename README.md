@@ -1023,33 +1023,39 @@ Self tail calls are optimized: a `defun` whose body calls itself in tail
 position is rewritten as a loop that rebinds its parameters from an
 argument vector, so tail recursion runs in constant stack.
 
-One limit, and it bites in a way worth spelling out. `tl-emit-program`
-does not handle pattern parameters uniformly:
+`tl-emit-program` has no pattern-matching equivalent, so it **refuses
+pattern parameters outright** rather than emitting something that merely
+resembles elisp:
 
 | source | result |
 |---|---|
-| one clause, pattern params | clean `termlisp-emit-error`: `Pattern parameters not yet supported in f` |
+| one clause, pattern params | `termlisp-emit-error`: `Pattern parameters not yet supported in f` |
 | several clauses, plain params, differing arities | emits — arity dispatch via `pcase` |
-| several clauses, pattern params, one arity | **emits malformed elisp and reports no error** |
+| several clauses, plain params, one arity | emits — dispatch on the lowering's `%guard` tests |
+| any clause with pattern params, in an overload | `termlisp-emit-error`, same message |
 
-The last row is the one to watch. These two clauses
+The check covers the definition as a whole: one patterned clause
+rejects the overload it belongs to. So
 
 ```lisp
 (define (f (Cons x xs)) 1)
 (define (f Nil) 2)
 ```
 
-emit
+reports `Pattern parameters not yet supported in f` **at emit time**.
+
+It did not always. The single-clause path always checked; the overload
+path did not, and `tl-emit--var-name` renames only `t` — so a pattern
+was emitted straight into the arglist as
 
 ```elisp
 (apply (lambda ((Cons x xs)) 1) tl-args)
 ```
 
-which is not valid elisp. It reads without complaint and fails at call
-time, not at emit time, so nothing downstream will tell you the emit
-went wrong. If you drive this path from generated Aldor code, keep the
-single-clause error in view — it is the only case that reports the truth
-about pattern parameters.
+which parses as valid elisp and fails when the function is *called*,
+with nothing downstream reporting that the emit went wrong. That is the
+class of failure to suspect if emitted Aldor code blows up in elisp
+rather than in the emitter.
 
 ### The Aldor front end
 

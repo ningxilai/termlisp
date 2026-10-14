@@ -133,13 +133,22 @@ Aldor allows identifiers such as `t', which Emacs Lisp will not let
   "Return BODY without its %guard marker, if any."
   (if (eq (car-safe body) '%guard) (nth 2 body) body))
 
+(defun tl-emit--check-params (name params)
+  "Signal a `termlisp-emit-error' unless PARAMS of NAME are plain symbols.
+A pattern parameter has no Emacs Lisp equivalent, and the failure it
+causes is quiet: `tl-emit--var-name' renames only the identifiers that
+collide with an Emacs Lisp constant and passes everything else
+through, so a pattern would be emitted straight into a `lambda'
+arglist.  That reads as valid elisp and is only rejected at call time."
+  (unless (cl-every #'symbolp params)
+    (signal 'termlisp-emit-error
+            (list (format "Pattern parameters not yet supported in %s"
+                          name)))))
+
 (defun tl-emit--define (name clauses ctx)
   (pcase clauses
     (`((define (,name . ,params) ,body))
-     (unless (cl-every #'symbolp params)
-       (signal 'termlisp-emit-error
-               (list (format "Pattern parameters not yet supported in %s"
-                             name))))
+     (tl-emit--check-params name params)
      (let ((rparams (mapcar #'tl-emit--var-name params)))
        (tl-emit--tco-defun
         `(defun ,name ,rparams
@@ -168,6 +177,8 @@ Aldor allows identifiers such as `t', which Emacs Lisp will not let
   "Emit an arity-dispatching defun for overloaded CLAUSES.
 Clauses may carry a %guard marker from the lowering; clauses sharing
 an arity dispatch on those runtime type tests, in source order."
+  (dolist (clause clauses)
+    (tl-emit--check-params name (cdr (nth 1 clause))))
   (let ((by-arity (make-hash-table))
         (order nil))
     (dolist (clause clauses)
