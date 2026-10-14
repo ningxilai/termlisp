@@ -1157,6 +1157,12 @@ termlisp-prelude.tls    ; the standard prelude
 - `dev` — `main` plus the ERT test suite (`test/aldor-test.el`) and the
   graph <-> surface bridges it exercises (`termlisp-graph-types.el`).
 
+This document is shared by both, and it cites `test/…` throughout as
+evidence — a quoted message means a test asserts it, which is the
+strongest form of claim here. Those paths do not exist on `main`. To
+follow a citation, check out `dev`, or browse
+<https://github.com/ningxilai/termlisp/tree/dev/test>.
+
 ### Dependencies
 
 The only external dependency is
