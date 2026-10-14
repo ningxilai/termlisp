@@ -9,9 +9,9 @@
 ;; `(load "file.tls")' works like loading an elisp file.
 ;;
 ;; WARNING: this file defines global elisp macros named `datatype', `define',
-;; `class' and `instance'.  `termlisp-load' must be required before loading
-;; `.tls' files; while it is loaded those names are reserved and must not be
-;; used for ordinary elisp definitions.
+;; `class', `instance' and `:'.  `termlisp-load' must be required before
+;; loading `.tls' files; while it is loaded those names are reserved and
+;; must not be used for ordinary elisp definitions.
 ;;
 ;; A `.tls' file starts with a magic string (see
 ;; `termlisp--magic-string') that opens it in `emacs-lisp-mode' with
@@ -46,6 +46,20 @@
 (defmacro instance (&rest args)
   "Declare a term-lisp type class instance."
   `(termlisp--load-eval '(instance ,@args)))
+
+(defmacro : (name type)
+  "Declare term-lisp NAME's type as TYPE.
+Inference cannot produce every type a definition deserves.  `sym' and
+`trans' are the reason: each matches its proof against `Refl', and
+without something to check against the refinement the pattern performs
+is read back into the inferred type, so `sym' would come out with the
+reflexive type `Eq a x x -> Eq a x x' instead of the general one.  The
+signature is what says how much is being claimed.
+
+The `:' inside a `datatype' -- `(VNil : (Vec a Zero))' -- is data, not a
+call: the `datatype' macro quotes its arguments, so nothing here sees
+it."
+  `(termlisp--load-eval '(: ,name ,type)))
 
 (provide 'termlisp-load)
 ;;; termlisp-load.el ends here

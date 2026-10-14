@@ -104,8 +104,10 @@ Aldor allows identifiers such as `t', which Emacs Lisp will not let
            (when (tl-emit--lambda-p (nth 2 form))
              (puthash target t (tl-emit-ctx-functions ctx))))))
       ('datatype
+       ;; The arity is the number of *fields*: a constructor that declares
+       ;; its own result type after `:' does not count that as an argument.
        (dolist (ctor (cddr form))
-         (puthash (car ctor) (length (cdr ctor))
+         (puthash (car ctor) (length (car (tl-split-ctor ctor)))
                   (tl-emit-ctx-constructors ctx))))
       (_ nil))))
 

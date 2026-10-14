@@ -32,6 +32,7 @@
 (require 'termlisp-types)
 
 (declare-function tl-desugar-do "termlisp-eval" (form))
+(declare-function tl-desugar-let "termlisp-eval" (form))
 
 (defun tl-instance-dict-term (env inst sub)
   "Return the dictionary term for INST given the matching substitution SUB.
@@ -150,10 +151,22 @@ constraints.  Return the transformed define."
                                          (caddr form) given))))))
 
 (defun tl-desugar-do-tree (form)
-  "Return FORM with every `(do ...)' subterm replaced by its desugaring."
+  "Return FORM with every `do' subterm replaced by its desugaring.
+Rewritten before inference so that the elaborator walks the same shape
+the type checker saw, and so that a recorded call site inside one lines
+up with something the elaborator can find in the source.
+
+`let' used to come this way for the same reason and no longer does.  A
+`let' is now read as `tl-infer-ir-Let', which is where its bindings are
+quantified; rewriting it into a lambda application here would hand the
+elaborator a shape inference would never see again, and would make one
+program polymorphic under `:type-check' and monomorphic under
+`:elaborate' -- two answers, chosen by a flag that has nothing to do
+with the program."
   (cond
    ((atom form) form)
-   ((eq (car form) 'do) (tl-desugar-do-tree (tl-desugar-do form)))
+   ((and (consp form) (eq (car form) 'do))
+    (tl-desugar-do-tree (tl-desugar-do form)))
    (t (cons (tl-desugar-do-tree (car form))
             (tl-desugar-do-tree (cdr form))))))
 

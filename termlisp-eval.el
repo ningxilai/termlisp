@@ -17,6 +17,18 @@
 (require 'termlisp-builtins)
 (require 'termlisp-types)
 (require 'termlisp-elaborate)
+;; The unifier reduces types through this module's `tl-nbe-reduce'
+;; whenever two types match nothing structurally.  Requiring it here (and
+;; not from `termlisp-graph-unify', which it depends on) is what keeps the
+;; dependency pointing the right way: the unifier declares a hook, the
+;; layer that owns an evaluator fills it in.
+(require 'termlisp-nbe)
+
+(define-error 'termlisp-hole "Unsolved goal")
+;; Inheriting from `error' and not from `termlisp-type-error' is
+;; deliberate: a hole is not a mistake in the program, it is the program
+;; asking a question, and a caller that handles type errors should not
+;; find goals arriving inside that handling.
 
 (defvar termlisp--current-env nil
   "Dynamically bound evaluation context during `tl-run'.")
@@ -144,22 +156,39 @@ effects.  A single form is returned unchanged."
         (setq acc (list 'seq f acc)))
       acc)))
 
-(defun tl-desugar-let (form)
-  "Desugar FORM `(let ((NAME EXPR)...) BODY...)' into an inline-lambda application.
-Bindings are sequential, so each EXPR is evaluated in the enclosing scope and
-the names are bound together, matching Scheme's `let'.  The body is an
-implicit `begin', returning its last expression."
-  (let ((bindings (cadr form)) (body (cddr form)) (names nil) (exprs nil))
+(defun tl-let-check-form (form)
+  "Signal unless FORM is a well-shaped `(let ((NAME EXPR)...) BODY...)'.
+The evaluator reaches a `let' through `tl-desugar-let'; inference no
+longer does, because it hands the bindings to `tl-infer-ir-Let' instead
+of wrapping them in a lambda.  Both ask the same questions of the same
+form, so the questions live here once -- otherwise a malformed binding
+reaches inference as an elisp `wrong-type-argument' where the evaluator
+used to raise a termlisp error."
+  (let ((bindings (cadr form)) (body (cddr form)))
     (when (and bindings (not (listp bindings)))
       (signal 'termlisp-eval-error '("let requires a binding list")))
     (dolist (b bindings)
       (unless (and (consp b) (consp (cdr b)) (null (cddr b)))
         (signal 'termlisp-eval-error
-                (list (format "Invalid let binding: %S" b))))
+                (list (format "Invalid let binding: %S" b)))))
+    (unless body
+      (signal 'termlisp-eval-error '("let requires a body")))))
+
+(defun tl-desugar-let (form)
+  "Desugar FORM `(let ((NAME EXPR)...) BODY...)' into an inline-lambda application.
+Bindings are sequential, so each EXPR is evaluated in the enclosing scope and
+the names are bound together, matching Scheme's `let'.  The body is an
+implicit `begin', returning its last expression.
+
+This is the *evaluator's* lowering.  Inference does not come this way:
+it keeps the bindings as bindings so that `tl-infer-ir-Let' can quantify
+the ones worth quantifying, where a lambda application admits no
+generalization at all."
+  (tl-let-check-form form)
+  (let ((bindings (cadr form)) (body (cddr form)) (names nil) (exprs nil))
+    (dolist (b bindings)
       (push (car b) names)
       (push (cadr b) exprs))
-    (unless body
-      (signal 'termlisp-eval-error '("let requires a body")))
     (cons (list 'lambda (nreverse names) (tl-seq-begin body))
           (nreverse exprs))))
 
@@ -401,20 +430,60 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
         value))))
 
 (defun tl-eval-datatype (env form)
-  "Handle `(datatype [open] NAME (CON ARGTYPE...) ...)' in ENV.
+  "Handle `(datatype [open] HEAD (CON ARGTYPE...) ...)' in ENV.
+HEAD is either the datatype's name or `(NAME PARAM...)', which declares
+the type parameters explicitly instead of inferring them from the
+constructors.  A constructor may end in `: RESULT' to declare its own
+result type, see `tl-split-ctor'; that is what makes an indexed (GADT)
+datatype possible.
 Datatype declarations are type-checked even when `:type-check' is nil:
 constructor argument types are parsed and their schemes registered."
   (let* ((rest (cdr form))
          (open (eq (car rest) 'open))
          (rest (if open (cdr rest) rest))
-         (name (car rest))
+         (head (car rest))
+         ;; `(datatype (Vec a n) ...)' declares its parameter list
+         ;; explicitly, which fixes both their order and their scope;
+         ;; `(datatype Vec ...)' still infers them from the constructors.
+         ;; Only the spelling differs, and declaring them lets an index
+         ;; variable be mentioned before any constructor that uses it.
+         (declared-p (consp head))
+         (name (if declared-p (car head) head))
+         ;; A declared parameter may carry its kind: `(a : *)' or
+         ;; `(x : (univ a))'.  The names still go where they always
+         ;; went, and the annotations ride along beside them, because
+         ;; only a kind can say that one parameter's values come out of
+         ;; another's -- which is the whole content of `Eq a x y'.  A
+         ;; bare symbol keeps meaning what it always meant: a parameter
+         ;; whose kind nothing has pinned, left for each use to decide.
+         (declared (and declared-p (cdr head)))
+         (pnames (and declared
+                      (mapcar (lambda (p) (if (consp p) (car p) p)) declared)))
+         (pkind-sexps
+          (and declared
+               (let ((acc nil))
+                 (dolist (p declared)
+                   (cond
+                    ((and (consp p) (eq (cadr p) ':) (= (length p) 3))
+                     (push (cons (car p) (caddr p)) acc))
+                    ((consp p)
+                     (signal 'termlisp-error
+                             (list (format "Malformed parameter %S in datatype %S; write it as (NAME : KIND)"
+                                           p name))))))
+                 (nreverse acc))))
          (ctors (cdr rest))
          (old (gethash name (tl-env-datatypes env))))
     (when old
       (dolist (c (plist-get old :constructors))
         (remhash c (tl-env-constructors env))
         (remhash c (tl-env-type-env env))))
-    (let ((syms (tl-register-datatype-types env name ctors)))
+    ;; `cl-defun' distinguishes an omitted optional argument from one
+    ;; supplied as nil, and only the latter means "these are declared
+    ;; parameters", so the argument must genuinely be left off for the
+    ;; inferred spelling.
+    (let ((syms (if declared-p
+                    (tl-register-datatype-types env name ctors pnames pkind-sexps)
+                  (tl-register-datatype-types env name ctors))))
       (puthash name (list :open open :constructors (mapcar #'car ctors) :params syms)
                (tl-env-datatypes env)))
     (dolist (ctor ctors)
@@ -456,6 +525,13 @@ Handles top-level `do' desugaring like `termlisp-eval', and honors the
 `:type-check' and `:elaborate' options of ENV."
   (let* ((env (or env (termlisp-make-env)))
          (termlisp--current-env env)
+         ;; Type-level reduction runs against this env, so that a
+         ;; signature's `plus n m' can unfold while its type is being
+         ;; compared with another.  Left unbound, unification is purely
+         ;; structural -- which is exactly what ordinary Hindley-Milner
+         ;; checking, with nothing to unfold, wants.
+         (tl-nbe-reduce-env env)
+         (tl-infer-holes nil)
          (form (if (and (consp form) (eq (car form) 'do))
                    (tl-desugar-do form)
                  form)))
@@ -465,6 +541,14 @@ Handles top-level `do' desugaring like `termlisp-eval', and honors the
                  (not (and (consp form)
                            (memq (car form) '(datatype datatype-extension)))))
         (tl-typecheck-form env form)))
+    ;; A form left with holes is not something to run: the program
+    ;; declined to say what belongs in those positions, so there is no
+    ;; value to produce.  Evaluating it anyway would only answer `got _'
+    ;; about a variable that was never meant to have one.  Report the
+    ;; goals instead -- which is what the REPL is for -- and let a
+    ;; batch caller see the same thing as a condition.
+    (when tl-infer-holes
+      (signal 'termlisp-hole (list (tl-goal-lines tl-infer-holes))))
     (tl-eval-top env form)))
 
 (defun termlisp-eval (string &optional env)
@@ -476,9 +560,13 @@ the elaborator.  A `do' nested inside a larger expression is instead
 desugared at evaluation time by `tl-run' and is therefore not elaborated:
 nested type-directed `do' (without an explicit monad operand) remains a
 known limitation."
-  (let ((env (or env (termlisp-make-env)))
-        (result nil))
-    (dolist (form (termlisp-parse string) result)
+  (let* ((env (or env (termlisp-make-env)))
+         (forms (termlisp-parse string))
+         ;; One input is one unit: a name declared by a later form in
+         ;; STRING is knowable here even though it is not yet in ENV.
+         (tl-infer-forward-names (termlisp-collect-forward-names forms))
+         (result nil))
+    (dolist (form forms result)
       (setq result (termlisp-eval-form form env)))))
 
 (defun termlisp--ensure-magic-string (file)
@@ -505,8 +593,15 @@ Writes the file back only when the magic string is missing."
   "Load a `.tls' FILE into ENV (or a fresh env), ensuring its magic string.
 Returns ENV."
   (termlisp--ensure-magic-string file)
-  (let ((termlisp--load-env (or env (termlisp-make-env))))
+  (let* ((termlisp--load-env (or env (termlisp-make-env)))
+         ;; The whole file is one unit, so a `define' may mention a name
+         ;; a later `define' declares.
+         (tl-infer-forward-names (termlisp-collect-file-forward-names file)))
     (load (expand-file-name file) nil t)
+    ;; A file is one batch, so this is the first moment every definition
+    ;; in it has all of its clauses and a coverage check can mean
+    ;; anything.
+    (tl-run-post-batch)
     termlisp--load-env))
 
 (defconst termlisp--directory
@@ -518,9 +613,17 @@ Returns ENV."
 Loading goes through `load', so `termlisp-load' must be required for the
 `datatype'/`define'/`class'/`instance' macros to be defined."
   (let ((termlisp--load-env (or env (termlisp-make-env)))
-        (file (expand-file-name "termlisp-prelude.tls" termlisp--directory)))
+        (file (expand-file-name "termlisp-prelude.tls" termlisp--directory))
+        ;; The prelude is a fixed library whose partial functions are
+        ;; deliberate -- `head' and `tail' match only `Cons', and `if' is
+        ;; written clause by clause -- so announcing into a throwaway
+        ;; queue drops them instead of reporting them.  Nothing here
+        ;; flushes, so the queue goes with this binding.
+        (tl-coverage-announcements nil))
     (termlisp--ensure-magic-string file)
-    (load file nil t)
+    (let ((tl-infer-forward-names
+           (termlisp-collect-file-forward-names file)))
+      (load file nil t))
     termlisp--load-env))
 
 (provide 'termlisp-eval)

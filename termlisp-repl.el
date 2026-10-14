@@ -167,14 +167,31 @@ to send."
 
 (defun termlisp-repl--eval-string (input)
   "Evaluate INPUT in the REPL environment and return its printed value.
-Return nil when INPUT holds no top-level forms."
-  (let ((env termlisp-repl--env)
-        (value nil)
-        (forms (termlisp-parse input)))
+A form with holes never reaches here: the checker signals `termlisp-hole'
+with its goals before anything is run, and `termlisp-repl--send' shows
+them.  Return nil when INPUT holds no top-level forms."
+  (let* ((env termlisp-repl--env)
+         (value nil)
+         (forms (termlisp-parse input))
+         ;; One REPL submission is one unit, so a line may declare a
+         ;; name it uses earlier in that same line.
+         (tl-infer-forward-names (termlisp-collect-forward-names forms)))
     (when forms
-      (dolist (form forms value)
-        (setq value (termlisp-eval-form form env)))
-      (termlisp-value->string value))))
+      (unwind-protect
+          (prog1
+              (progn
+                (dolist (form forms value)
+                  (setq value (termlisp-eval-form form env)))
+                (termlisp-value->string value))
+            ;; A submission is this driver's batch, so this is the first
+            ;; moment every clause of a function typed in on this line is
+            ;; present and a coverage check can mean anything.
+            (tl-run-post-batch))
+        ;; A submission that failed partway left a function holding only
+        ;; some of its clauses.  Reporting it now would name a clause the
+        ;; user has not typed yet, so the queue is dropped instead -- the
+        ;; same half-written state `tl-run-post-batch' refuses to report.
+        (setq tl-coverage-announcements nil)))))
 
 (defun termlisp-repl--error-message (err)
   "Return a short display string for condition ERR."
@@ -201,6 +218,12 @@ INPUT and advanced the process mark."
               (when result
                 (termlisp-repl--write (concat result "\n"))))
           (quit (termlisp-repl--write "Quit\n"))
+          ;; Goals are not an error: they are the answer to what the
+          ;; program left open, and saying so plainly is the whole point
+          ;; of writing `_' in the first place.
+          (termlisp-hole
+           (termlisp-repl--write
+            (concat (mapconcat #'identity (cadr err) "\n") "\n")))
           (error (termlisp-repl--write
                   (concat "error: " (termlisp-repl--error-message err) "\n"))))
       (termlisp-repl--write termlisp-repl-prompt))))

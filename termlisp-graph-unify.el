@@ -29,6 +29,45 @@
     (setf (tl-node-var node) t)
     node))
 
+(defun tl-make-rigid-var (name)
+  "Return a *bound* variable node named NAME.
+A `Pi' binder fixes its variable before anything is unified, so this
+node is a unification variable for traversal and substitution (`var' is
+set) but may not be bound: unification meets it only when it is already
+the same node, never when it must be equated with something new.  Without
+the distinction, unifying two `Pi's would let a caller rewrite the
+binder's own type -- `((n : Nat) -> Vec a n)' would happily unify with
+`((n : Nat) -> Vec Int Zero)'."
+  (let ((node (tl-make-var-node name)))
+    (setf (tl-node-rigid node) t)
+    node))
+
+(defun tl-gnode-subst (node from to)
+  "Return NODE with the rigid variable FROM replaced by TO.
+Subtrees are shared, so a variable reached through the result is still
+the node it was in NODE: unification through the copy binds the
+original, which is what lets two `Pi's be compared without losing the
+bindings either side discovers.  A nested `Pi' that rebinds FROM's own
+name shadows it, and substitution stops there."
+  (let ((memo (make-hash-table :test #'eq)))
+    (cl-labels ((go (n)
+                  (cond
+                   ((eq n from) to)
+                   ((not (tl-node-application n)) n)
+                   ((and (eq (tl-node-head n) 'Pi)
+                         (= (length (tl-node-children n)) 3)
+                         (let ((b (car (tl-node-children n))))
+                           (and (tl-node-var-p b)
+                                (eq (tl-node-head b) (tl-node-head from)))))
+                    n)
+                   (t (or (gethash n memo)
+                          (let ((new (tl-make-node (tl-node-head n)
+                                                   (mapcar #'go (tl-node-children n))
+                                                   t)))
+                            (puthash n new memo)
+                            new))))))
+      (go node))))
+
 (defun tl-gnode-deref (node)
   "Follow NODE's BIND links to its representative, compressing the path."
   (let ((root node))
@@ -134,6 +173,35 @@ symbol, is returned unchanged."
           (if (tl-node-p hh) (tl-gnode--head hh) hh))
       r)))
 
+(defvar tl-unify-reduce nil
+  "Function of one node returning its weak head normal form, or nil.
+Set by the layer that owns an evaluation environment (see
+`tl-nbe-reduce'); the unifier itself knows nothing of what a
+type-level function *is*, only that two types may be equal after being
+reduced.  With it nil, unification compares structurally and nothing is
+ever reduced, which keeps ordinary Hindley-Milner checking clear of any
+evaluator.")
+
+(defvar tl-unify-reduce-fuel 64
+  "How many reduction steps one unification pair may take.
+Reducing is only ever a second look at a pair nothing else matched, so
+the fuel is there to bound the case where it does not help: a type the
+unifier is about to reject anyway, whose reduction runs on forever.")
+
+(defun tl-gnode--moves (x y fuel)
+  "Non-nil when reducing X or Y would take either one any further.
+Called before a variable in head position is bound, where the decision
+is irreversible: `f X' against `lenV (vapp xs ys)' would fix `f' to
+`lenV', when what it has to become is the `Succ' that side reduces to.
+Checking here costs a reduction that the comparison may not need, which
+is why it is guarded on `tl-unify-reduce' and FUEL -- with no evaluator
+hooked in, nothing ever moves and the binding stands as before."
+  (and tl-unify-reduce (> fuel 0)
+       (or (and (tl-node-application x)
+                (not (eq (funcall tl-unify-reduce x) x)))
+           (and (tl-node-application y)
+                (not (eq (funcall tl-unify-reduce y) y))))))
+
 (defun tl-gnode-unify (a b &optional occurs-check)
   "Unify nodes A and B, mutating BIND slots.  Return t, or nil (rolled back).
 With OCCURS-CHECK, reject cyclic bindings (plain Hindley-Milner); without it
@@ -144,6 +212,7 @@ rejected a cyclic binding."
   (let ((trail nil)
         (pending (list (cons a b)))
         (seen (make-hash-table :test #'eq))
+        (fuel tl-unify-reduce-fuel)
         (ok t))
     (catch 'tl-gnode-fail
       (while pending
@@ -158,6 +227,29 @@ rejected a cyclic binding."
                               (puthash x (make-hash-table :test #'eq) seen))))
                    (prog1 (gethash y h) (puthash y t h)))))
            ((eq x y))
+           ;; A rigid (Pi-bound) variable is fixed by its binder, so it
+           ;; may only ever be equated with itself -- which the `eq'
+           ;; case above already discharged.  Reaching here means
+           ;; something is trying to unify the binder's variable with a
+           ;; *new* term, which would let a caller rewrite the very type
+           ;; the binder was declared over.
+           ((or (and (tl-node-var-p x) (tl-node-rigid x))
+                (and (tl-node-var-p y) (tl-node-rigid y)))
+            (setq ok nil) (throw 'tl-gnode-fail nil))
+           ;; Two dependent function types are equal up to what their
+           ;; binders are *called*.  Binders are rigid and so cannot be
+           ;; unified away; re-spell the second type's binder as the
+           ;; first's and the comparison proceeds structurally.
+           ((and (tl-node-application x) (tl-node-application y)
+                 (eq (tl-node-head x) 'Pi) (eq (tl-node-head y) 'Pi)
+                 (= (length (tl-node-children x)) 3)
+                 (= (length (tl-node-children y)) 3))
+            (let ((xa (tl-node-children x))
+                  (ya (tl-node-children y)))
+              (push (cons (nth 1 xa) (nth 1 ya)) pending)
+              (push (cons (tl-gnode-subst (nth 2 ya) (nth 0 ya) (nth 0 xa))
+                          (nth 2 xa))
+                    pending)))
            ((tl-node-var-p x)
             (when (and occurs-check (tl-gnode-occurs x y))
               (setq ok nil tl-gnode--fail-reason 'infinite-type)
@@ -184,8 +276,33 @@ rejected a cyclic binding."
                    ;; Heads are compared with `eq': two distinct unbound
                    ;; variable nodes are `equal' structurally but must
                    ;; still be unified.
-                   (or (eq hx hy)
-                       (tl-node-var-p hx) (tl-node-var-p hy))))
+                   (and (or (eq hx hy)
+                            ;; A head that is neither a symbol nor a node
+                            ;; has no `eq' to offer: a `lambda' written
+                            ;; straight into a type is a list, and its two
+                            ;; occurrences in one signature are two
+                            ;; different lists spelling one term.  Compare
+                            ;; by value, but only where neither side is a
+                            ;; node -- two distinct unbound variables are
+                            ;; `equal' structurally and must still be
+                            ;; unified, which is the whole reason `eq' is
+                            ;; here in the first place.
+                            (and (not (tl-node-p hx)) (not (tl-node-p hy))
+                                 (equal hx hy))
+                            (or (tl-node-var-p hx) (tl-node-var-p hy)))
+                        ;; Matching heads are not by themselves a licence
+                        ;; to decompose: `plus Zero (plus m k)' and `plus
+                        ;; (plus Zero m) k' share the head `plus' and are
+                        ;; one and the same number, yet their first
+                        ;; arguments are `Zero' and a stuck `plus', so
+                        ;; decomposing compares those and fails where
+                        ;; reducing would say they agree.  A head that is
+                        ;; not a function never moves, so this costs
+                        ;; nothing where nothing can reduce -- and with no
+                        ;; evaluator hooked in `tl-gnode--moves' answers
+                        ;; nil for everything, which is the ordinary
+                        ;; Hindley-Milner case exactly as before.
+                        (not (tl-gnode--moves x y fuel)))))
             (let ((hx (tl-gnode--head (tl-node-head x)))
                    (hy (tl-gnode--head (tl-node-head y))))
               ;; Higher-kinded: a variable in head position unifies with
@@ -194,11 +311,43 @@ rejected a cyclic binding."
                 (push (cons (if (tl-node-p hx) hx (tl-make-node hx))
                             (if (tl-node-p hy) hy (tl-make-node hy)))
                       pending))
-              (let ((cx (tl-node-children x)) (cy (tl-node-children y)))
+              (let ((cx (reverse (tl-node-children x)))
+                    (cy (reverse (tl-node-children y))))
+                ;; Left to right: `push' reverses, so the children are
+                ;; walked backwards to come off `pending' in the order
+                ;; they were written.  That order is not a matter of
+                ;; taste here -- a later argument may mention an earlier
+                ;; one, and a type-level function cannot reduce until the
+                ;; argument it matches on is known, so comparing `Vec a
+                ;; (plus n m)' before `Vec a n' has fixed `n' asks the
+                ;; unifier to prove something it has not yet been told.
                 (while cx
                   (push (cons (car cx) (car cy)) pending)
                   (setq cx (cdr cx) cy (cdr cy))))))
            ((equal x y))
+           ;; Two types can be equal without looking alike: `plus Zero n'
+           ;; and `n' are one and the same type, yet one is an
+           ;; application and the other is a variable, and nothing above
+           ;; was willing to match them.  Reduce both to weak head
+           ;; normal form and take another look.
+           ;;
+           ;; Neither having moved means they are simply different: the
+           ;; pair must fail here rather than be dropped, or the `seen'
+           ;; guard further up would take the repeat for a recursive type
+           ;; equating itself and pass -- which is how a two-domain
+           ;; definition once satisfied a four-domain signature.  Fuel
+           ;; bounds the other side, a reduction that keeps handing back
+           ;; a fresh node for types about to be rejected anyway.
+           ((and tl-unify-reduce (> fuel 0)
+                 (or (tl-node-application x) (tl-node-application y)))
+            (let ((rx (if (tl-node-application x)
+                          (funcall tl-unify-reduce x) x))
+                  (ry (if (tl-node-application y)
+                          (funcall tl-unify-reduce y) y)))
+              (if (and (eq rx x) (eq ry y))
+                  (progn (setq ok nil) (throw 'tl-gnode-fail nil))
+                (setq fuel (1- fuel))
+                (push (cons rx ry) pending))))
            (t (setq ok nil) (throw 'tl-gnode-fail nil)))))
       t)
     (if ok

@@ -63,10 +63,11 @@ Return the extended bindings."
   (tl-ir-infer-seq env (cdr expr) nil))
 
 (defun tl-infer-ir-Let (env expr)
-  "Infer `(Let ((NAME EXPR) ...) BODY...)'.  Bindings are monomorphic,
-except during dictionary-passing elaboration, where a binding whose type
-generalizes with class constraints is recorded in `tl-elab-let-dicts' and
-bound polymorphically so its dictionary can be abstracted."
+  "Infer `(Let ((NAME EXPR) ...) BODY...)'.
+During dictionary-passing elaboration a binding whose type generalizes
+with class constraints is recorded in `tl-elab-let-dicts' and bound
+polymorphically so its dictionary can be abstracted.  Everywhere else the
+value restriction decides, via `tl-ir-bind-let-binding'."
   (let ((b nil) (env2 env))
     (dolist (binding (nth 1 expr))
       (let* ((name (car binding))
@@ -78,35 +79,102 @@ bound polymorphically so its dictionary can be abstracted."
               (tl-tenv-extend
                env2
                (list (cons name
-                           (if tl-elab-active
-                               (tl-ir-generalize-binding env binding ty)
-                             ty)))))))
+                           (tl-ir-bind-let-binding env binding ty b)))))))
     (tl-ir-infer-seq env2 (cddr expr) b)))
 
-(defun tl-ir-generalize-binding (env binding ty)
+(defun tl-ir-bind-let-binding (env binding ty bindings)
+  "Choose the type-environment entry for `Let' BINDING, inferred as TY.
+The value restriction decides, and it decides the same way under
+elaboration as under plain checking -- that is the point of asking it
+here rather than inside either branch.  A syntactic value, an atom or a
+lambda, has not run anything yet, so nothing but its type can still
+change and the variables it introduced inside this scope are safe to
+quantify over.  Anything else is an application, and an application is
+where an effect would already have happened, so it stays monomorphic and
+every use of it agrees.  Generalizing unconditionally while elaborating
+would make one program polymorphic under `:elaborate' and monomorphic
+under `:type-check', decided by a flag with nothing to do with the
+program -- the same fault that made the elaborator rewrite `let' into a
+lambda application.  During elaboration a binding that does generalize is
+recorded in `tl-elab-let-dicts', so its dictionary can be abstracted.
+
+BINDINGS, the constraints accumulated so far, go to
+`tl-ir-generalize-binding' so what the binding's own constraints imply is
+solved against the bindings that produced them -- the same way
+`tl-infer-constant' closes a definition.  STRICT drops while elaborating,
+which has always swallowed an unsolved constraint there; letting it
+signal is the behavior `tl-infer-constant' shows for a definition."
+  (if (tl-syntactic-value-p (cadr binding))
+      (tl-ir-generalize-binding env binding ty bindings (not tl-elab-active))
+    ty))
+
+(defun tl-ir-generalize-binding (env binding ty &optional bindings strict)
   "Generalize a `Let' BINDING of type TY; record its dictionary parameters.
-Return a scheme (or TY unchanged when it does not generalize)."
+Return a scheme, or TY unchanged when it does not generalize -- a
+binding with nothing to quantify and nothing to retain keeps the type it
+already had.  A closed scheme would say nothing, and would only make the
+binding opaque to `tl-infer-ir-Setq', which has to be able to tell a
+genuinely polymorphic accumulator from an ordinary loop variable.
+
+BINDINGS, the constraints accumulated so far, close against what the
+binding's own constraints imply; nil is what the elaborating caller has
+always passed.  With STRICT, an unsolved ground constraint signals
+instead of being swallowed -- a constraint with no instance is a claim
+the program never proved, and dropping it would let the binding keep a
+type whose evidence does not exist."
   (let* ((base (tl-tenv-base env))
-         (env-tvars (if base (tl-env-free-tvars base) nil))
-         (gen-vars (tl-generalized-vars ty env-tvars))
-         (kept (condition-case nil
-                   (tl-close-constraints base gen-vars tl-infer-constraints nil)
-                 (error nil))))
+         ;; Which variables are generalizable here is a question about
+         ;; *time*, not about the environment: one asked of the levels
+         ;; the variables carry.  It used to be asked of the environment
+         ;; instead, and that was unsound -- the environment consulted
+         ;; was the type environment, which does not mention a lambda's
+         ;; own parameters, so `y''s type variable looked like something
+         ;; no one else could be using and `z' was quantified over it:
+         ;;
+         ;;   (define (h y) (Let ((z y)) (let ((u (z 1))) (z "s"))))
+         ;;
+         ;; came out accepted, `z' having become `forall a. a' inside a
+         ;; scope where `y' is still an ordinary parameter.  A variable
+         ;; created before this scope opened cannot be generalized here,
+         ;; whatever the environment does or does not say about it.
+         (gen-vars (tl-generalized-vars ty))
+         (kept (condition-case err
+                   (tl-close-constraints base gen-vars tl-infer-constraints
+                                         bindings)
+                 (error (when strict (signal (car err) (cdr err)))))))
     (when kept
       (let ((dicts (cl-loop for c in kept for i from 0
                             collect (intern (format "$d%s%d"
                                                     (tl-constraint-class c) i)))))
         (push (cons binding (cons kept dicts)) tl-elab-let-dicts)))
-    (tl-generalize ty env-tvars kept)))
+    ;; A binding with nothing to quantify and nothing to retain keeps the
+    ;; type it already had.  Returning a closed scheme instead would say
+    ;; nothing -- a scheme with no quantifiers is a monomorphic type
+    ;; wearing a hat -- and would only make it opaque to
+    ;; `tl-infer-ir-Setq', which has to be able to tell a genuinely
+    ;; polymorphic accumulator from an ordinary loop variable.
+    (if (or gen-vars kept)
+        (tl-generalize ty kept)
+      ty)))
 
 (defun tl-infer-ir-Setq (env expr)
+  "Infer `(setq NAME EXPR)'.
+A `let' may have put a *scheme* in NAME's cell, in which case the name
+stands for one value read at as many types as it was instantiated at.
+Assigning would swap the value under all of them at once, which is the
+one thing generalization must not allow, so the reassignment is refused
+rather than unified: unify would have to pick a single type for a
+variable that is deliberately being used at several."
   (let* ((name (nth 1 expr))
          (r (tl-infer env (nth 2 expr)))
          (ty (car r))
          (b (cdr r))
          (cell (assq name (tl-tenv-locals env))))
     (when cell
-      (setq b (tl-ir-unify (cdr cell) ty b)))
+      (if (tl-tscheme-p (cdr cell))
+          (signal 'termlisp-type-error
+                  (list (format "Cannot reassign %S: it is bound polymorphically" name)))
+        (setq b (tl-ir-unify (cdr cell) ty b))))
     (cons (tl-apply-bindings ty b) b)))
 
 ;;; Control flow.

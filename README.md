@@ -2,6 +2,27 @@
 
 # term-lisp
 
+<!--toc:start-->
+- [term-lisp](#term-lisp)
+  - [Overview](#overview)
+    - [Term rewriting](#term-rewriting)
+    - [Data types and open terms](#data-types-and-open-terms)
+    - [First-class pattern matching](#first-class-pattern-matching)
+    - [Lazy evaluation and TCO](#lazy-evaluation-and-tco)
+    - [Static types and type classes](#static-types-and-type-classes)
+    - [Propositional types](#propositional-types)
+    - [Indexed families](#indexed-families)
+    - [Monads and `do`](#monads-and-do)
+  - [Using the library](#using-the-library)
+  - [The REPL](#the-repl)
+  - [Project layout](#project-layout)
+    - [Branches](#branches)
+    - [Dependencies](#dependencies)
+  - [Development](#development)
+  - [Scope](#scope)
+  - [License](#license)
+<!--toc:end-->
+
 term-lisp is a language for *term* *lis*t *p*rocessing with first-class pattern
 matching, lazy evaluation, tail-call optimization, static types, type classes,
 and monads. It is implemented in Emacs Lisp as an embedded library.
@@ -100,14 +121,14 @@ Types are propositions and programs are proofs, so the prelude carries the
 constructive connectives.  The Curry–Howard reading holds outright for
 intuitionistic propositional logic:
 
-| Proposition | Type |
-|---|---|
-| truth `⊤` | `Unit` |
+| Proposition   | Type                              |
+|---------------|-----------------------------------|
+| truth `⊤`     | `Unit`                            |
 | falsehood `⊥` | `Void` — declares no constructors |
-| conjunction | `(Pair a b)` |
-| disjunction | `(Either a b)` — `Left`, `Right` |
-| implication | `a -> b` |
-| negation `¬a` | `a -> Void` |
+| conjunction   | `(Pair a b)`                      |
+| disjunction   | `(Either a b)` — `Left`, `Right`  |
+| implication   | `a -> b`                          |
+| negation `¬a` | `a -> Void`                       |
 
 ```lisp
 (define (and-implies-or (Pair a b)) (Left a))   ; A ∧ B → A ∨ B
@@ -118,6 +139,54 @@ intuitionistic propositional logic:
 `absurd : ∀a. Void -> a` is `⊥`-elimination.  It can never run, because
 `Void` has no constructors; reaching it at all means `:type-check` was off,
 and it signals rather than answering a value.
+
+### Indexed families
+
+A constructor may declare its own result type after `:`, so the index
+becomes part of the type rather than something the caller keeps straight.
+The prelude ships the two families every dependent type language starts
+with:
+
+```lisp
+(datatype (Vec a n)
+  (VNil : (Vec a Zero))
+  (VCons a (Vec a n) : (Vec a (Succ n))))
+
+(datatype (Fin n)
+  (FZ : (Fin (Succ n)))
+  (FS (Fin n) : (Fin (Succ n))))
+```
+
+`Vec : * -> Nat -> *` and `Fin : Nat -> *`.  The indices are kinded
+against `Nat` because each datatype lifts its own constructors into a
+universe: `Zero : Nat`, `Succ : Nat -> Nat`, `True : Bool`.  So `Nat`
+does the double duty it does in Haskell's `DataKinds` — as a type it has
+kind `*`, as a universe it is the kind of its own constructors.
+
+That is what makes `Vec Int String` a kind error at the declaration
+instead of a case somebody forgot to rule out:
+
+```lisp
+(: v (Vec Int String))            ; rejected: Kind error
+(: v (Vec Int (Succ Zero)))
+(define v (VCons 1 VNil))         ; => (VCons 1 VNil)
+
+(define (vhd (VCons x xs)) x)     ; the index unifies with the scrutinee
+(vhd (VCons 7 VNil))              ; => 7
+(vhd VNil)                        ; rejected: its index is Zero
+```
+
+Constructor names avoid `Nil` and `Cons`, which `List` already owns —
+constructors share one namespace.
+
+`(datatype (Eq a) (Refl : (Eq a)))` carries the same idea into the
+propositional layer, and is where this stage stops.  `Refl`'s index is a
+*type* rather than a value, so it witnesses equality between types only;
+equality between values needs dependent elimination, which is not built.
+
+Ordinary datatypes are untouched by any of this.  `(datatype Maybe
+(Nothing) (Just a))` still infers its parameters and leaves
+`Just : ∀a. a -> Maybe a` exactly as before.
 
 ### Monads and `do`
 
@@ -242,6 +311,14 @@ The ERT suite lives on `dev` (`make test` there runs it).  `cats` is
 expected on the load path; the Makefile defaults to the elpaca sources
 directory and honours `CATS_DIR`, e.g.
 `make test CATS_DIR=$HOME/src/emacs-cats`.
+
+## Scope
+
+Two things this project has decided not to do. They are recorded here because they are decisions rather than gaps, and because no other file in the repository says them.
+
+Quantitative type theory — a multiplicity on every binder plus a separate linearity pass — along with universe levels, totality  hecking and general proof search would amount to rewriting the type layer, and on elisp the NbE performance it leans on has never been established.  QTT is in any case orthogonal to the Curry–Howard reading this project is about: adding linearity moves it no closer, while costing the whole type layer.
+
+`subst` and `rewrite` stay out of the core. Both already hold as inference rules over `Eq`, `Refl`, `sym` and `trans`, so they need no universe, no new code and no library function — promoting them to primitives would buy nothing the checker does not already do.
 
 ## License
 
