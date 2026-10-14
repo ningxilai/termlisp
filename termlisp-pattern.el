@@ -6,8 +6,8 @@
 ;; A compiled pattern is a list whose car is a tag:
 ;;   (wild)            match anything, bind nothing
 ;;   (var . NAME)      bind NAME
-;;   (lit . EXPR)      compare with value of EXPR
-;;   (dot . EXPR)      compare with value of EXPR, and say what it means
+;;   (lit EXPR)        compare with value of EXPR
+;;   (dot EXPR)        compare with value of EXPR, and say what it means
 ;;   (con . (NAME . SUBPATTERNS))
 ;;   (rest . NAME)     bind remaining sequence elements
 ;;   (lam . NAME)      bind a function value
@@ -29,9 +29,9 @@
 ;; constructor pattern could not name -- a variable that must already be
 ;; *that* value, or an expression that has been reduced to one:
 ;;
-;;   (define (f (dot (plus n m))) ...)    ; only when the argument is
+;;   (define (f (:dot (plus n m))) ...)   ; only when the argument is
 ;;                                        ; already `plus n m' reduced
-;;   (define (g (dot k)) ...)             ; only when the argument is
+;;   (define (g (:dot k))) ...)           ; only when the argument is
 ;;                                        ; the value of `k', which is
 ;;                                        ; not a pattern otherwise --
 ;;                                        ; a bare `k' would bind it
