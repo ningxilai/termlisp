@@ -31,7 +31,7 @@
 ;;
 ;;   (define (f (:dot (plus n m))) ...)   ; only when the argument is
 ;;                                        ; already `plus n m' reduced
-;;   (define (g (:dot k))) ...)           ; only when the argument is
+;;   (define (g (:dot k)) ...)           ; only when the argument is
 ;;                                        ; the value of `k', which is
 ;;                                        ; not a pattern otherwise --
 ;;                                        ; a bare `k' would bind it

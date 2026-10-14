@@ -12,6 +12,8 @@
   - [Syntax](#syntax)
     - [Literals and the reader](#literals-and-the-reader)
     - [Top-level forms](#top-level-forms)
+    - [Expressions](#expressions)
+    - [One caveat about .tls files](#one-caveat-about-tls-files)
     - [Patterns](#patterns)
     - [Types](#types)
     - [Kinds](#kinds)
@@ -137,11 +139,17 @@ reader**, so elisp literal syntax carries over: integers, floats, strings,
 character literals such as `?a` and `?\n`, and symbols. Comments run from
 `;` to end of line.
 
-The reader accepts the full elisp reader grammar — vectors, records, `#1=`
-labels and so on. It is intended for **trusted** term-lisp source, not
-arbitrary untrusted input. Circular `#1=` structures are rejected by
-binding `read-circle` to nil, and read-time evaluation is disabled on
-Emacsen where `read-eval` is bound.
+The reader accepts the elisp reader grammar — vectors, records, quoted
+forms, radix prefixes — with two things switched off. Binding
+`read-circle` to nil rejects **every** `#1=` label, not just circular
+ones: a finite `#1=(a b)` fails exactly as a self-referential one would.
+Read-time evaluation is likewise off, so `#.` is not readable either.
+That is deliberate: this reader is for **trusted** term-lisp source, not
+arbitrary untrusted input.
+
+(The commentary in `termlisp-reader.el` says "`#1=` labels and so on" and
+then says they are rejected. The second half is the true one; the first
+is an artifact of the same sentence.)
 
 One consequence is worth stating plainly: `?0` is a character literal, not
 a symbol. You cannot write a type variable called `?N`, and the test suite
@@ -155,17 +163,48 @@ The evaluator dispatches top-level forms in `tl-eval-top`
 | form | meaning |
 |---|---|
 | `(define x VALUE)` | define a value |
-| `(define (f PATTERN...) BODY...)` | define a function as a list of patterns and a body |
+| `(define (f PATTERN...) BODY)` | define a function: patterns plus **one** body form |
 | `(datatype open NAME (Ctor TYPE...) ...)` | declare a datatype |
 | `(datatype (NAME PARAM...) (Ctor TYPE...) ...)` | declare a parameterised datatype |
 | `(datatype-extension NAME (Ctor TYPE...) ...)` | add constructors to an open datatype |
-| `(: name TYPE)` | declare a signature for the next `define` |
-| `(do ...)` | desugared to `bind`/`return` before anything else runs |
+| `(: name TYPE)` | declare a signature for `name` |
+| `(do ...)` | desugar to `bind`/`return` before anything else runs |
+| `(class ...)` / `(instance ...)` | declare a type class and an instance |
 | anything else | evaluated as an expression |
 
-`class` and `instance` are handled one layer up, in `tl-elaborate-form`
-(`termlisp-elaborate.el:186-187`), and so are constrained `define`s. They
-are the forms that need `:elaborate` on.
+Three details that the table alone will not tell you.
+
+**A body is a single form.** Everything after it is read and then thrown
+away. `(define (g x) (+ x 1) (+ x 2)) (g 9)` returns `10`, not `3` — the
+second expression is never seen. Wrap extra expressions in `do`.
+
+**`(: name TYPE)` is keyed by name, not by position.** The signature
+belongs to whatever `define` uses that name, wherever each appears in the
+input; `(: h Int)` before or after `(define (h y) y)` refers to the same
+`h`, and `(: h Int)` alongside `(define (k x) x)` is simply unused. It is
+also only *consulted* when `:type-check` or `:elaborate` is on — with
+neither, `:` evaluates to `nil` and nothing is checked.
+
+**`class` and `instance` are not exclusive to `:elaborate`.**
+`tl-elaborate-form` (`termlisp-elaborate.el:186-187`) does handle them,
+and so are constrained `define`s — `:elaborate` is what turns a method
+call site into a dictionary lookup. But `tl-typecheck-form`
+(`termlisp-types.el:2028-2029`) handles them too, so `:type-check` alone
+will parse and register them. With *neither* flag set they do not fail;
+they fall through to the expression branch and come back as an inert
+list, silently.
+
+One more thing happens before all of this: a form containing a hole never
+reaches the evaluator at all. It signals `termlisp-hole` first, whatever
+the options (see [Holes](#holes)).
+
+Finally, **one input is one unit.** A `define` may mention a name
+declared by a *later* form in the same string, file or REPL submission —
+`termlisp-eval` collects the forward names first
+(`termlisp-eval.el:564`), and so does the checker
+(`termlisp-types.el:1163`). Order within a file therefore does not have
+to be topological, and a signature may follow the definition it
+describes.
 
 A definition is *a list of patterns plus a body*, not a lambda applied to
 patterns. There is no separate `match` form:
@@ -177,18 +216,89 @@ patterns. There is no separate `match` form:
 ```
 
 A datatype may declare `open`, in which case constructors can be added
-later and pattern matches are never considered exhaustive — a failed match
-is a runtime error:
+later, and a failed match is a runtime error:
 
 ```lisp
 (datatype open Expr (Lit Int))
 (datatype-extension Expr (Add Expr Expr))
 ```
 
+Under `:coverage` an open datatype's constructor column **cannot be
+enumerated**, so a match on it cannot be *proved* complete by listing
+constructors — though a catch-all row still completes it, which makes it
+the only way to do so. What `open` rules out is completeness by
+exhaustion, not completeness.
+
 A constructor may declare its own result type after `:`, which is how the
 indices above become part of the type rather than something the caller
 keeps straight. Ordinary datatypes are untouched by any of this:
 `(datatype Maybe (Nothing) (Just a))` still infers `Just : ∀a. a -> Maybe a`.
+
+### Expressions
+
+Application is the ordinary `(f a b)`. Beyond it there are five forms,
+all handled by `tl-run` (`termlisp-eval.el:295`):
+
+| form | meaning |
+|---|---|
+| `(lambda (x y) BODY)` | a function |
+| `(let ((x V) (y V)) BODY)` | **parallel** bindings, then `BODY` |
+| `(do (x <- EXPR) ... (return EXPR))` | monadic sequencing |
+| `(list a b c)` | sugar for `(Cons a (Cons b (Cons c Nil)))` |
+| `(if COND A B)` | not a form — `if` is an ordinary multi-clause function |
+
+**`let` bindings do not see each other.** They are all evaluated outside
+the new scope, so the second binding cannot use the first:
+
+```lisp
+(let ((x 1) (y (+ x 1))) y)   ; Unknown symbol: x
+(let ((x 1) (y 2)) (+ x y))   ; 3
+```
+
+Write a `let` per step if you need sequencing, or use `do`. `BODY` may
+contain several expressions; the last one is the value.
+
+**`do` needs the checker.** Every step is `(NAME <- EXPR)`, the block must
+end with `(return EXPR)`, and it runs under `:elaborate` so the monad
+dictionary can be inferred from the steps:
+
+```lisp
+(do (x <- (Just 1)) (y <- (Just 2)) (return (+ x y)))   ; (Just 3)
+(do (x <- (Just 1)) (y <- Nothing)   (return (+ x y)))  ; Nothing
+```
+
+A `do` that does not end in `(return …)` signals
+`do block must end with (return e)`, and steps drawn from two different
+monads report `Cannot apply …`. Only a **top-level** `do` is desugared
+before checking (`termlisp-eval.el:535`); a nested `do` is desugared at
+evaluation time and is explicitly not elaborated — a known limitation
+recorded at `termlisp-eval.el:557`.
+
+**There is no `quote`.** `'foo` reads as `(quote foo)` and comes back as
+that two-element list, not as the symbol `foo`:
+
+```
+'foo    => (quote foo)
+'(a b)  => (quote (a b))
+```
+
+### One caveat about `.tls` files
+
+`termlisp-load` — the path `termlisp-load-prelude` and the library use —
+reads a file and evaluates each top-level form as **elisp**. That works
+for the forms it defines macros for: `datatype`, `define`, `class`,
+`instance` and `:` (`termlisp-load.el:34`). The two it does not define a
+macro for will fail in a `.tls` file with `Symbol's function definition
+is void`:
+
+```lisp
+(datatype-extension Expr (Add Expr Expr))   ; void: datatype-extension
+(do (x <- (Just 1)) (return x))             ; void: do
+```
+
+They are fine everywhere else — the REPL, `termlisp-eval-file` and
+`termlisp-eval` all go through the reader instead. If you need either at
+the top level of a file, evaluate it through `termlisp-eval-file`.
 
 ### Patterns
 
@@ -212,6 +322,11 @@ constructor position, in which case it is that constructor. Repeating a
 variable inside one pattern is a *constraint*, not a shadow: both
 occurrences must bind equal values.
 
+`(:list NAME)` must be the **last** pattern in its list; anything after
+it signals `` `:list' pattern must be last ``. A `guard` also needs its
+test to reduce to the literal `True` — anything else counts as a failed
+match rather than an error.
+
 ```lisp
 (define (car (Pair a b)) a)          ; destructuring
 (define (is-zero (:literal 0)) True) ; value matching
@@ -229,7 +344,7 @@ checker what stands at a position a constructor pattern could not name:
 ```lisp
 (define (f (:dot (plus n m))) ...)  ; only when the argument is already
                                     ; `plus n m' reduced
-(define (g (:dot k))) ...)          ; only when the argument is the value
+(define (g (:dot k)) ...)          ; only when the argument is the value
                                     ; of `k' -- a bare `k' would bind it
 ```
 
@@ -279,9 +394,13 @@ constructive connectives:
 | implication   | `a -> b`                          |
 | negation `¬a` | `a -> Void`                       |
 
-`absurd : ∀a. Void -> a` is `⊥`-elimination. It can never run, because
-`Void` has no constructors; reaching it at all means `:type-check` was off,
-and it signals rather than answering a value.
+`absurd : ∀a. Void -> a` is `⊥`-elimination. `Void` has no constructors,
+so there is no value to hand it. The checker does not stop you writing
+`(absurd Void)`, though — a declared datatype name in term position *is*
+a value, whose type is itself. Whether it runs is a runtime decision, not
+a flag: it signals `absurd: Void has no values, so this call is
+unreachable` with checking on or off (`test/prelude-test.el` asserts it
+with both `:type-check` and `:elaborate` set).
 
 ### Kinds
 
@@ -292,20 +411,42 @@ graph unifier. `*` is the kind of proper types and arrows are written
 - `univ(T)` is the kind of the *values* of `T`. `Zero : Nat` because it is
   a `Nat`, and the universe leaf is what says which datatype a value came
   from. This is the level shift `DataKinds` needs and a plain `*` cannot say.
-- `Π(x : k1).  k2` binds a parameter so that `k2` may mention it: `(x : (univ a))`
+- `Π(x : k1). k2` binds a parameter so that `k2` may mention it: `(x : (univ a))`
   states that `x` comes out of `a`, which is the dependency `Eq` needs and
   three independent kind variables cannot say.
 
-A datatype parameter's kind is written in the declaration's own scope:
+`tl-kind-parse` accepts exactly five shapes — `*`, a bare datatype name,
+`(univ T)`, `K1 -> K2` and `(karr K1 K2)` — and nothing else. So a
+parameter annotation can be written like this:
+
+```lisp
+(datatype (Vec (a : *) (n : Nat)) ...)     ; * and Nat
+(datatype (T (a : * -> *)) ...)            ; an arrow kind
+(datatype (T (a : (karr * *))) ...)        ; the same arrow, cons-spelled
+```
+
+**`Π` is not one of them.** `(Π (x : *) *)` reports `Bad kind`, in either
+spelling. The `Π` binders are *built* by the checker from the annotated
+parameters of the declaration — you write the parameters, and the
+dependent kind falls out. A datatype parameter's kind is therefore
+written in the declaration's own scope:
 
 ```lisp
 (datatype (Eq (a : *) (x : (univ a)) (y : (univ a))) (Refl : (Eq a x x)))
 ```
 
 So `Int : *`, `List : * -> *`, `Vec : * -> Nat -> *`, `Fin : Nat -> *`, and
-`Eq : Π(a : *).  univ(a) -> univ(a) -> *`. A lifted constructor's argument
-kind is `univ` of its field's type: `Succ : Nat -> Nat` as before, but
-`VCons : univ(a) -> univ((Vec a n)) -> Vec`.
+
+```text
+Eq : Π(a : *). Π(x : univ(a)). Π(y : univ(a)). *
+```
+
+Every annotated parameter gets its own `Π` binder, so the arrow-looking
+spelling `Π(a : *).  univ(a) -> univ(a) -> *` (which the commentary in
+`termlisp-kinds.el` uses as prose) is **not** what the checker builds —
+`test/curry-howard-test.el:173` asserts the form above. A lifted
+constructor's argument kind is `univ` of its field's type: `Succ : Nat ->
+Nat` as before, but `VCons : univ(a) -> univ((Vec a n)) -> Vec`.
 
 That is what makes `Vec Int String` a kind error at the declaration instead
 of a case somebody forgot to rule out.
@@ -327,16 +468,35 @@ of a case somebody forgot to rule out.
 
 | option | default | effect |
 |---|---|---|
-| `:type-check` | `nil` | typecheck each top-level form before evaluating it (`datatype` forms are exempt) |
+| `:type-check` | `nil` | typecheck each top-level form before evaluating it; `datatype`/`datatype-extension` are skipped here but still parsed and kind-checked |
 | `:elaborate` | `nil` | type-directed elaboration; inserts class dictionaries and handles `class`/`instance` |
-| `:coverage` | unset | check exhaustiveness after a batch of definitions |
-| `:occurs-check` | `nil` | occurs check during elaboration |
+| `:coverage` | unset | queue exhaustiveness questions, checked after a batch — see [Diagnostic knobs](#diagnostic-knobs) |
+| `:occurs-check` | `nil` | occurs check during unification, in **both** checkers |
 | `:fuel` | `100000` | evaluator fuel; exhaustion signals `fuel exhausted` |
-| `:phase` | `B` | which rewrite-rule phase to apply |
+| `:phase` | `B` | **unused — nothing reads it** |
 
 `:type-check` and `:elaborate` are the two that change behaviour for
 ordinary programs. `:elaborate` subsumes typechecking — when it is on, it
 runs instead of the plain checker.
+
+Two rows deserve more than the table gives them.
+
+**`:occurs-check` is off by default, everywhere.** It is read by the plain
+typechecker (`termlisp-types.el:1910`, `:2009`) as well as the elaborator
+(`termlisp-elaborate.el:177`), so it is not something elaboration does —
+it gates `Infinite type: %S unifies with %S` for whatever checker is
+running. Turn it on when you suspect a type is looping back on itself;
+leave it off when a program that should be fine is failing with that
+message.
+
+**`:phase` has no effect.** It appears in `termlisp-default-options` and
+nowhere else — no code in the repository reads it. Rewrite rules do have
+phases, but they are keywords (`:surface`, `:normalize`, `:desugar`, …)
+and `tl-graph--applies` runs **all of them, in one fixed order**
+(`termlisp-graph.el:319`, `:456`), narrowing the rule set by priority
+within each phase rather than selecting one phase to apply. The `B` in
+the default is inert. Treat the option as reserved and do not expect it
+to select anything.
 
 Numeric literals are inferred `Int` regardless of their runtime
 representation, so `sin`/`cos`/`tan`/`exp`/`log`/`sqrt` are typed
@@ -397,28 +557,54 @@ Example:
 evaluated in the running Emacs, so definitions made at the prompt stay for
 the rest of the session. The environment starts from
 `termlisp-repl-options` (`:type-check` on by default) and, unless
-`termlisp-repl-load-prelude` is nil, the prelude is loaded into it.
+`termlisp-repl-load-prelude` is nil, the prelude is loaded into it. It
+greets you with `Welcome to term-lisp (prelude loaded).` followed by the
+options in force.
 
 - `RET` sends the input when it reads as a sequence of complete top-level
   forms; an unfinished form moves to the next line and is indented, so a
   form can be typed across several lines without an escape character.
-- `C-j` inserts a newline without evaluating.
-- `C-c C-t` toggles `:type-check` for the current environment.
-- `C-c C-k` discards every definition and loads a fresh environment.
-- `M-p`, `M-n`, `M-r` and `C-c C-o` are comint's usual history and
-  clear-buffer bindings.
-- An input of `exit` (or `quit`) closes the REPL.
+- `C-j` is `newline-and-indent` — a new line, without evaluating.
+- `C-c C-t` toggles `:type-check` for the current environment and echoes
+  `term-lisp :type-check on/off` in the echo area. The new value survives
+  a restart.
+- `C-c C-k` discards every definition, loads a fresh environment and
+  prints `Fresh environment loaded.` Buffer, history, output and options
+  are kept.
+- `M-p`, `M-n`, `M-r` are comint's usual history bindings, and `C-c C-o`
+  is `comint-delete-output` (delete the last result; `C-c M-o` clears the
+  whole buffer).
+- An input of `exit` (or `quit`) closes the REPL, after printing `Bye.`
 
 Errors are printed in the buffer as `error: ...` and the REPL keeps
 running, so the session survives a bad form. Four defcustoms shape it:
 `termlisp-repl-buffer-name`, `termlisp-repl-prompt`,
-`termlisp-repl-options` and `termlisp-repl-load-prelude`.
+`termlisp-repl-options` and `termlisp-repl-load-prelude`. Every action is
+also an `M-x` command (`termlisp-repl-return`, `-newline`, `-exit`,
+`-restart`, `-toggle-type-check`), and `termlisp-repl` takes an optional
+buffer name, so two live REPLs can be open at once.
+
+Three things about the REPL's execution model are worth knowing before
+you debug in it:
+
+- **One submission is one batch.** Forward references are resolved across
+  the whole submission, and `:coverage` is flushed *after every
+  submission* — so a coverage complaint can appear one prompt later than
+  the define that caused it.
+- **A submission that fails partway is dropped.** Definitions that were
+  already accepted stand; the rest of the queue is discarded.
+- **Holes print without the `error:` prefix.** The REPL prints the goal
+  lines themselves:
+
+  ```
+  λ> hole 1 : Int
+  ```
 
 ### The error model
 
-Every error the package signals is documented as deriving from
-`termlisp-error`, so a caller can catch the whole family with one
-`condition-case`, or just the phase it cares about:
+Most of what the package signals derives from `termlisp-error`, so a
+caller can catch the whole family with one `condition-case`, or just the
+phase it cares about:
 
 ```
 error
@@ -426,18 +612,22 @@ error
      ├─ termlisp-parse-error           termlisp-reader
      ├─ termlisp-type-error            termlisp-types, termlisp-kinds,
      │                                 termlisp-ir-types, termlisp-exhaust,
-     │                                 termlisp-io, termlisp-builtins
+     │                                 termlisp-io, termlisp-builtins,
+     │                                 termlisp-base, termlisp-nbe
      ├─ termlisp-eval-error            termlisp-eval, termlisp-numeric,
-     │                                 termlisp-graph
+     │                                 termlisp-graph, termlisp-builtins
      ├─ termlisp-abn-error             termlisp-abn
      ├─ termlisp-aldor-error           termlisp-aldor
      └─ termlisp-emit-error            termlisp-emit
 ```
 
-There is one exception, and it is the one you will hit first:
-`termlisp-hole` is defined with no parent, so it derives from `error`
-directly and **a `(termlisp-error …)` handler will not catch it**. Catch
-it separately:
+The base `termlisp-error` is itself signalled directly, not only as a
+parent — you will see it from the pattern and case machinery.
+
+**Two things escape this family.** The first is the one you will hit
+first: `termlisp-hole` is defined with no parent, so it derives from
+`error` directly and a `(termlisp-error …)` handler will **not** catch
+it. Catch it separately:
 
 ```elisp
 (condition-case err
@@ -446,32 +636,56 @@ it separately:
   (termlisp-hole  (message "unsolved goals: %S" (cadr err))))
 ```
 
-Errors are signalled with a one-element list holding the message, so the
-message of a caught condition is its `cadr`. Anything that carries
-structured data puts it in the remaining list elements — a hole carries
-its goal lines there.
+The second is ordinary elisp's own `error` and `user-error`, raised from
+a handful of places the language does not own: `Bad handle: %S`
+(`termlisp-io.el:55`), `No applicable method (guard failed)`
+(`termlisp-builtins.el:296`), the `Wrong number of arguments to %s` and
+`No applicable overload of %s` that **emitted** code raises at runtime
+(`termlisp-emit.el:188`, `:216`), and `Not in a term-lisp REPL buffer`
+outside a REPL. A `(termlisp-error …)` handler misses all of those too.
+
+Messages are signalled as `(signal 'SYM (list "…"))`, so the message of a
+caught condition is its `cadr` — true for every `termlisp-*` error. Two
+caveats, both of which cost real debugging time:
+
+- **A hole's `cadr` is not a message.** `(signal 'termlisp-hole (list
+  (tl-goal-lines tl-infer-holes)))` passes the goal lines *as* the single
+  data element, so `cadr` is `("hole 1 : Int")` — a list of lines, with
+  the string `Unsolved goal` coming from the symbol's `error-message`
+  property, not from the data.
+- **For anything not signalled by this package, `cadr` may not be a
+  string at all.** `wrong-type-argument` carries a list of two. The REPL
+  and `test/test-support.el` both fall back to `error-message-string`
+  for that reason, and so should your handler.
 
 ### What the messages look like
 
 Every message below was produced by running the form in the third column
-— either live, or by the test suite that asserts it. They are the whole
-debugging surface, so it is worth knowing what they look like before one
-appears.
+— either live, or by the test suite that asserts it. They are the
+messages you are most likely to meet first; they are **not** the whole
+surface. This table has no `parse` row, and leaves out the Aldor, ABN,
+emit and graph families, most of the builtin arity messages, and the
+plain-elisp ones above — read it as a field guide to the common cases,
+not a complete index.
+
+The `phase` column is a label, not a handler selector: `kinds` and
+`builtins` rows are `termlisp-type-error`, exactly like the `types`
+rows, and the `eval` rows are `termlisp-eval-error`.
 
 | phase | message | what you typed |
 |---|---|---|
 | types | `Cannot apply + to True` | `(+ 1 True)` |
-| types | `Cannot apply Cons to (Cons True Nil)` | `(list 1 True)` |
+| types | `Cannot apply Cons to (Cons True Nil)` | `(list 1 True)` — note the second half is the *argument expression*, not a type |
 | types | `Cannot apply vhd to VNil` | `(define (vhd (VCons x xs)) x)` then `(vhd VNil)` |
-| types | `Cannot apply absurd` | `(absurd 1)` |
+| types | `Cannot apply absurd to 1` | `(absurd 1)` |
 | types | `Unknown symbol: nosuch` | `(nosuch 1)` |
 | types | `Unknown constructor in pattern: Nope` | `(define (f (Nope x)) x)` |
 | types | `Guard expression is not Bool` | `(define (f (guard x 1)) x)` |
 | types | `Clause of f does not match its signature` | `(: f (Nat -> Nat))` then `(define (f x) True)` |
-| types | `Definition of g does not match its signature` | `(: g (Either Int String))` then `(define (g) (Just 1))` |
+| types | `Definition of g does not match its signature` | `(: g (Either Int String))` then `(define g (Just 1))` — the constant form; the function form gives `Clause of g …` |
 | types | `inconsistent type` | two clauses of one function returning different types |
 | types | `Malformed arrow type: (-> Int)` | an arrow with nothing to its right |
-| types | `is not a proper type` | `(: r (Eq Int))` — `Eq` wants three arguments |
+| types | `is not a proper type` | `(: r (Eq Int))` — tail of `Kind error: (Eq Int) is not a proper type; it has kind …` |
 | kinds | `Kind error: Vec argument 2 is a * where a Nat is required` | `(: v (Vec Int String))` |
 | kinds | `Bad kind: ...` | a malformed kind annotation |
 | eval | `fuel exhausted` | a looping rewrite, or `:fuel` set too low |
@@ -479,7 +693,7 @@ appears.
 | eval | `Division by zero` | `(/ 1 0)` |
 | eval | `do block must end with (return e)` | a `do` whose last step is not `(return …)` |
 | eval | `<<loop>> detected while forcing a thunk` | a thunk that forces itself |
-| builtins | `+ expects 2 arguments, got 3` | wrong arity on a primitive |
+| builtins | `+ expects 2 arguments, got 3` | wrong arity on a primitive — `termlisp-type-error`, raised at *runtime* |
 
 Some messages carry more than one line. A signature mismatch prints the
 two types it could not reconcile:
@@ -491,14 +705,24 @@ Clause of f does not match its signature
 ```
 
 Coverage messages name the case that is missing, which is the useful
-part — `no case for VNil`, `no case for (Cons _ Nil)`,
-`no case for (PProgram (DGlobal _) _)` — alongside `clause 3 is
-unreachable` and `coverage undecidable here`. If the coverage checker
-runs out of budget it says so rather than lying: `Coverage: fuel
-exhausted after 10 steps`, with the budget in `tl-exh-fuel`.
+part. Each is prefixed with the function name and they join with `"; "`
+into a **single** `termlisp-type-error`:
+
+```
+f: match is not exhaustive; no case for (Succ _)
+g: clause 3 is unreachable
+f: coverage undecidable here (the checker could not enumerate this type)
+```
+
+If the coverage checker runs out of budget it says so rather than lying:
+`Coverage: fuel exhausted after 10 steps`, with the budget in
+`tl-exh-fuel` (a global, default 8192 — not an option).
 
 Kind *rendering* uses the same spellings as the source: `univ(a)`,
-`Π(a : *).  univ(a) -> univ(a) -> *`, `(k1 -> k2)`.
+`(k1 -> k2)`, and `Π(x : k). k` for a binder, with **one** space after
+the period. `Eq` prints as
+`Π(a : *). Π(x : univ(a)). Π(y : univ(a)). *` — matching the kind the
+declaration actually builds, not the arrow form used in prose.
 
 ### Diagnostic knobs
 
@@ -507,7 +731,15 @@ Kind *rendering* uses the same spellings as the source: `univ(a)`,
 - `:coverage` — checks exhaustiveness *after* a batch of definitions,
   because a function's clauses may be spread over several `define` forms.
   The bundled `if` is written that way, and checking after each clause
-  would report a half-written function as incomplete.
+  would report a half-written function as incomplete. Four things gate
+  it, and missing any one of them gives you silence rather than a report:
+  the checker must be on (the questions are announced from inside
+  `tl-typecheck-define`), `termlisp-exhaust` must be loaded (its post-batch
+  hook is a `setq`, a single global slot, not `add-hook`), and
+  **something must call `tl-run-post-batch`** — `termlisp-repl`,
+  `termlisp-load`, `tl-typecheck-def` and the tests all do;
+  `termlisp-eval` does not, so a plain caller with `:coverage t` waits
+  forever for a check that never comes.
 - `:fuel` (default `100000`) — bounds evaluation. Exhaustion is
   `fuel exhausted`, which usually means a rewrite rule loops rather than
   that the number is too small.
@@ -516,6 +748,11 @@ Kind *rendering* uses the same spellings as the source: `univ(a)`,
 - `tl-coverage-announcements` — the queue of definitions waiting to be
   checked. `termlisp-load-prelude` binds it to nil, so the bundled library's
   deliberate partial functions are never reported.
+- `:occurs-check` — gates `Infinite type: %S unifies with %S`. Off by
+  default, in both checkers.
+- `tl-type-lenient` / `tl-type-lenient-clauses` — an oracle mode that
+  *suppresses* clause-mismatch errors instead of raising them, for
+  running a known-questionable definition through the checker.
 
 There is no stepper or trace for the evaluator or the rewriter. The
 diagnostics are the type checker, the coverage checker, and fuel.
@@ -523,24 +760,36 @@ diagnostics are the type checker, the coverage checker, and fuel.
 ### Holes
 
 `_` in expression position is a hole, and it is the most useful debugging
-tool the language has. A hole types as a fresh variable, but the context
-still constrains it, so asking for the goal tells you what the compiler
-already decided:
+tool the language has — but only while the checker is running. Without
+`:type-check` or `:elaborate`, `_` is just an unknown symbol:
+`(+ 1 _)` reports `+ expects numbers, got _` rather than leaving anything
+to inspect. With the checker on, a hole types as a fresh variable, and the
+context still constrains it, so asking for the goal tells you what the
+compiler already decided:
 
 ```lisp
 (+ 1 _)      ; leaves a hole the context has decided is a number
 ```
 
-What comes back is exactly that decision:
+What comes back is exactly that decision. In the REPL, printed bare:
+
+```
+λ> hole 1 : Int
+```
+
+The same condition, rendered by `error-message-string` or by the test
+harness, looks different — the `Unsolved goal` prefix comes from the
+symbol's `error-message` property, and the goal lines are the entire
+`cadr`:
 
 ```
 Unsolved goal: ("hole 1 : Int")
 ```
 
 A form left with holes is not something to run: there is no value to
-produce. Instead the goals are reported — which is what the REPL is for —
-and a batch caller sees the same thing as a `termlisp-hole` condition
-carrying one display line per hole.
+produce. It signals `termlisp-hole` before the evaluator sees it, whatever
+the options, and a batch caller catches it as described above — one
+display line per hole in the `cadr`.
 
 ### Inspecting values and types
 
@@ -556,7 +805,9 @@ Note that the two printers disagree, deliberately. The same list renders
 as `(Cons Zero (Cons (Succ Zero) Nil))` from `termlisp-value->string` and
 as `[Zero,(Succ Zero)]` from `(format "~a" …)` — the first is elisp-shaped
 and shows the runtime representation, the second is Aldor-shaped and
-shows the language's own view of a list.
+shows the language's own view of a list. That `format` is the **termlisp**
+builtin, not elisp's: it takes exactly two arguments and accepts `"~a"`
+as its only format string (`termlisp-io.el:280`).
 
 ### A working order
 
@@ -564,8 +815,10 @@ Given a program that does not do what you want:
 
 1. Turn `:type-check` on if it is off. A surprising share of "wrong answer"
    reports are ill-typed programs that were allowed to run.
-2. Turn `:coverage` on if the program pattern-matches. An unaccounted case
-   is named explicitly, e.g. `no case for PEnd`.
+2. Turn `:coverage` on if the program pattern-matches — together with the
+   checker, which is what announces the definitions. An unaccounted case
+   is named in full, e.g.
+   `f: match is not exhaustive; no case for PEnd`.
 3. Put a `_` where you are unsure and read the goal.
 4. If it typechecks and still misbehaves, check whether a rewrite loops —
    `fuel exhausted` or `<<loop>> detected` are the signatures of that.
@@ -582,13 +835,25 @@ shape a report should take (`test/test-support.el`):
               '(:elaborate t))
 (tl-test-reject tl-other-name "(list 1 True)" "Cannot apply"
                 '(:type-check t :elaborate t))
-(tl-test-covers tl-third-name "(define (f (Zero)) True)" '(:coverage t))
+(tl-test-covers tl-third-name "(define (f (Zero)) True)"
+                '(:type-check t :elaborate t :coverage t))
 ```
 
-Each runs in a **fresh** prelude environment built from the given options,
-so nothing leaks between cases. That isolation is exactly what makes a
-minimal repro minimal: if you can name the option plist and the form, you
-have a report.
+Each of the three builds a **fresh** prelude environment from the given
+options, so nothing leaks between cases. That isolation is exactly what
+makes a minimal repro minimal: if you can name the option plist and the
+form, you have a report.
+
+Two of those signatures are worth copying exactly:
+
+- The coverage macro needs the checker **as well as** `:coverage`.
+  `'(:coverage t)` alone is silent — coverage questions are announced
+  from inside `tl-typecheck-define`, so without a checker the macro
+  receives nothing and the test *passes on a non-exhaustive function*.
+  Every coverage test in the suite passes `:type-check t :elaborate t`.
+- `tl-test-type` is the one macro that does **not** build an
+  environment: it renders a type straight through the reader and the
+  printer, which is why it cannot be used for a program-level repro.
 
 ## Extending termlisp from Emacs Lisp
 
@@ -758,9 +1023,33 @@ Self tail calls are optimized: a `defun` whose body calls itself in tail
 position is rewritten as a loop that rebinds its parameters from an
 argument vector, so tail recursion runs in constant stack.
 
-One limit, stated plainly because it will bite: **multi-clause pattern
-dispatch is not yet emitted.** A `define` with several pattern clauses
-does not compile through this path.
+One limit, and it bites in a way worth spelling out. `tl-emit-program`
+does not handle pattern parameters uniformly:
+
+| source | result |
+|---|---|
+| one clause, pattern params | clean `termlisp-emit-error`: `Pattern parameters not yet supported in f` |
+| several clauses, plain params, differing arities | emits — arity dispatch via `pcase` |
+| several clauses, pattern params, one arity | **emits malformed elisp and reports no error** |
+
+The last row is the one to watch. These two clauses
+
+```lisp
+(define (f (Cons x xs)) 1)
+(define (f Nil) 2)
+```
+
+emit
+
+```elisp
+(apply (lambda ((Cons x xs)) 1) tl-args)
+```
+
+which is not valid elisp. It reads without complaint and fails at call
+time, not at emit time, so nothing downstream will tell you the emit
+went wrong. If you drive this path from generated Aldor code, keep the
+single-clause error in view — it is the only case that reports the truth
+about pattern parameters.
 
 ### The Aldor front end
 
