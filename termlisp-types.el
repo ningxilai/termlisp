@@ -74,9 +74,15 @@
     (and (tl-node-p d) (not (tl-node-var d)))))
 
 (defun tl-tcon-name (x)
+  "Return the head symbol of the compound type X.
+X is dereferenced first, so a variable bound to a compound type reads
+off that type's head."
   (tl-node-head (tl-type-deref x)))
 
 (defun tl-tcon-args (x)
+  "Return the argument types of the compound type X, or nil for a leaf.
+X is dereferenced first, so a variable bound to a compound type reads
+off that type's arguments."
   (tl-node-children (tl-type-deref x)))
 
 (defun tl-tvar-p (x)
@@ -103,10 +109,18 @@ default is what makes the variable generalizable by every enclosing
     (setf (tl-node-level node) (or level tl-current-level))
     node))
 
-(defun tl-tarrow (a b) (tl-tcon '-> (list a b)))
-(defun tl-tint () (tl-tcon 'Int nil))
-(defun tl-tstring () (tl-tcon 'String nil))
-(defun tl-tbool () (tl-tcon 'Bool nil))
+(defun tl-tarrow (a b)
+  "Return the function type from A to B."
+  (tl-tcon '-> (list a b)))
+(defun tl-tint ()
+  "Return the type of integers."
+  (tl-tcon 'Int nil))
+(defun tl-tstring ()
+  "Return the type of strings."
+  (tl-tcon 'String nil))
+(defun tl-tbool ()
+  "Return the type of booleans."
+  (tl-tcon 'Bool nil))
 
 (defun tl-tfun-args (ty)
   "If TY is `(-> a b)', return (a b), else nil."
@@ -999,7 +1013,12 @@ parameters, exactly as every ordinary datatype always has."
                    (tl-env-type-env env))))
       syms)))
 
-(defun tl-tenv-locals (env) (if (consp env) (car env) nil))
+(defun tl-tenv-locals (env)
+  "Return the local bindings ENV carries in front of its base env.
+During inference an environment is a pair `(LOCALS . BASE)' of the
+bindings introduced by enclosing binders and the `tl-env' they were
+introduced over; a bare `tl-env' has no locals, so this is nil for it."
+  (if (consp env) (car env) nil))
 
 (defun tl-tenv-base (env)
   "Return the underlying `tl-env' of ENV (nil if none)."

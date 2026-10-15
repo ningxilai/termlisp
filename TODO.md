@@ -36,8 +36,13 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   and no same-shaped lies remain.
   - [x] Regression test pins the return value even when the post-batch
     hook returns something else (`tl-ch-batch-driver-returns-the-env-it-checked-into').
-- [ ] **P2-3 Undocumented accessors** — types.el:76, :79, :106-109, :1002.  Add
-  docstrings; consider `--` internal naming where they are not API.
+- [x] **P2-3 Undocumented accessors** — types.el:76, :79, :106-109, :1002.
+  Docstrings added: `tl-tcon-name'/`tl-tcon-args' (dereference first, leaf
+  yields no arguments), `tl-tarrow'/`tl-tint'/`tl-tstring'/`tl-tbool', and
+  `tl-tenv-locals' (the locals half of the inference-time pair).  All five
+  are cross-file API -- kept their names rather than `--' internal ones.  A
+  mechanical sweep of every defun in types.el for a missing docstring is now
+  clean (the one apparent holdout was `tl-type-parse*', which has one).
 - [ ] **P1-4 `termlisp-ir-types` layering** — only the umbrella `termlisp.el`
   requires it; requiring submodules directly misses builtin-type registrations
   (`seq` unknown → `tl-canonical-key` crashes).  Add the require to the real
