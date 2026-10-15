@@ -977,6 +977,16 @@ still matches, still binds nothing, and leaves no goal behind."
        (define (appd (VCons x xs) ys) (VCons x (appd xs ys)))")
      :type 'termlisp-type-error)))
 
+;; The batch driver's docstring promised ENV and its last form was the
+;; coverage hook, whose return value is the hook's to choose.  Callers
+;; that believed the promise -- `termlisp-typecheck' passes it straight
+;; through as its own result -- were taking leftovers.
+(ert-deftest tl-ch-batch-driver-returns-the-env-it-checked-into ()
+  "`termlisp-typecheck-def' returns ENV, hook leftovers or not."
+  (let* ((env (termlisp-make-env '(:type-check t :elaborate t)))
+         (tl-post-batch-hook (lambda (_) 'leftovers)))
+    (should (eq env (termlisp-typecheck-def env "(define (id x) x)")))))
+
 ;;; Propositional equality
 
 ;; `Eq a x y' is inhabited exactly when `x' and `y' are the same value of

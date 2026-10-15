@@ -26,9 +26,16 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
     self-application cycle, no nesting crash.
   - [x] Full suite green (463/463), compile 0 warnings, checkdoc 0 new,
     parsecheck OK.
-- [ ] **P1-2 `termlisp-typecheck-def` docstring lies** — types.el:2181 says
-  "Return ENV." but returns nil.  Decide truth: actually return env, or fix the
-  docstring; sweep same file for same-shaped lies.
+- [x] **P1-2 `termlisp-typecheck-def` docstring lies** — types.el:2181 said
+  "Return ENV." but the last form was `(tl-run-post-batch)', so the return
+  value belonged to the coverage hook.  Decided truth: the driver really
+  returns ENV (which makes `termlisp-typecheck''s own "Return ENV" promise
+  true as well), with a comment saying why the value cannot be the hook's
+  leftovers.  Swept every "Return" promise in types.el: the one other
+  "Return ENV" (`tl-typecheck-ir') is true -- `dolist''s third argument --
+  and no same-shaped lies remain.
+  - [x] Regression test pins the return value even when the post-batch
+    hook returns something else (`tl-ch-batch-driver-returns-the-env-it-checked-into').
 - [ ] **P2-3 Undocumented accessors** — types.el:76, :79, :106-109, :1002.  Add
   docstrings; consider `--` internal naming where they are not API.
 - [ ] **P1-4 `termlisp-ir-types` layering** — only the umbrella `termlisp.el`

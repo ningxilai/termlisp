@@ -2204,7 +2204,13 @@ the elaborator inserts as the first argument of overloaded method calls."
     ;; in it has all of its clauses and a coverage check can mean
     ;; anything.  A form that fails leaves nothing queued: the driver
     ;; clears the queue before the check runs.
-    (tl-run-post-batch)))
+    (tl-run-post-batch)
+    ;; The driver's own verdict lives in whether it signaled; what it
+    ;; hands back is the environment it checked into, which is what
+    ;; `termlisp-typecheck' promises in turn.  The coverage hook above
+    ;; may return anything at all, so without this the batch driver
+    ;; would pass the hook's leftovers on as its result.
+    env))
 
 (defun termlisp-typecheck (string &optional env)
   "Typecheck STRING in ENV (fresh if nil).  Return ENV; signal on error."
