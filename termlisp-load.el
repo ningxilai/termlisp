@@ -4,14 +4,15 @@
 
 ;;; Commentary:
 ;; A `.tls' file is an Emacs Lisp file whose top-level forms are term-lisp
-;; declarations (`datatype', `define', `class', `instance').  These macros
-;; evaluate their quoted form in the current term-lisp environment, so
-;; `(load "file.tls")' works like loading an elisp file.
+;; declarations (`datatype', `define', `class', `instance', `rewrite') or
+;; term-lisp expressions (`reduce').  These macros evaluate their quoted
+;; form in the current term-lisp environment, so `(load "file.tls")' works
+;; like loading an elisp file.
 ;;
 ;; WARNING: this file defines global elisp macros named `datatype', `define',
-;; `class', `instance' and `:'.  `termlisp-load' must be required before
-;; loading `.tls' files; while it is loaded those names are reserved and
-;; must not be used for ordinary elisp definitions.
+;; `class', `instance', `rewrite', `reduce' and `:'.  `termlisp-load' must
+;; be required before loading `.tls' files; while it is loaded those names
+;; are reserved and must not be used for ordinary elisp definitions.
 ;;
 ;; A `.tls' file starts with a magic string (see
 ;; `termlisp--magic-string') that opens it in `emacs-lisp-mode' with
@@ -38,6 +39,16 @@
 (defmacro define (&rest args)
   "Define a term-lisp function or constant."
   `(termlisp--load-eval '(define ,@args)))
+
+(defmacro rewrite (&rest args)
+  "Extend a term-lisp function with a preservation-checked clause.
+ARGS is the `(NAME PATTERN...) BODY' extension to append to it."
+  `(termlisp--load-eval '(rewrite ,@args)))
+
+(defmacro reduce (&rest args)
+  "Reduce a term-lisp TERM to normal form in the load environment.
+ARGS is the one term to reduce."
+  `(termlisp--load-eval '(reduce ,@args)))
 
 (defmacro class (&rest args)
   "Declare a term-lisp type class."

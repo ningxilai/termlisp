@@ -177,7 +177,7 @@ different names, so this renames and nothing more."
   (pcase (car pat)
     ('wild '(pwild))
     ('var (list 'pvar (cdr pat)))
-    ('lit (list 'lit (cadr pat)))
+    ('lit (list 'plit (cadr pat)))
     ('con (cons 'pcon (cons (cadr pat)
                             (mapcar #'tl-nbe--case-pattern (cddr pat)))))
     (_ (signal 'termlisp-error

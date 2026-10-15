@@ -65,6 +65,20 @@ whose argument is not yet in constructor form would otherwise be missed and
 the type reported as unequal.  Nil means no reduction, which keeps a plain
 syntactic rewrite purely structural.")
 
+(defvar tl-graph-step-hook nil
+  "Function called when a step has rewritten a node, or nil for none.
+Called from `tl-graph--step' as (FUNCALL HOOK GRAPH NODE RULE REDUCT)
+after RULE has reduced NODE to REDUCT and before REDUCT is recorded in
+NODE's MEMO slot, so the graph handed to the hook is still the graph the
+step is about to take: CHILDREN are unedited and the path back to the
+root has not been rebuilt.  That is the state a question about the step
+has to be asked in -- `termlisp-dpo' asks whether the cut was local --
+and rebuilding first would answer it about a graph the step already
+happened to.
+
+Nil, the default, costs one `when' per successful step.  A host that
+wants to observe reduction binds it around the walk.")
+
 (defun tl-graph-build (sexp)
   "Build a term graph from SEXP, sharing structurally identical subterms.
 A subterm whose head is in `tl-graph-opaque-heads' becomes a single opaque
@@ -467,6 +481,8 @@ cyclic graph terminates."
                                             generic))
                             (let ((new (tl-graph-reduce node rule)))
                               (when new
+                                (when tl-graph-step-hook
+                                  (funcall tl-graph-step-hook graph node rule new))
                                 (throw 'step (tl-graph-memo-record node new)))))
                           (unless (memq (tl-node-head node) tl-graph-opaque-heads)
                             (let ((children (tl-node-children node))

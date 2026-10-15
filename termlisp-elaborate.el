@@ -33,6 +33,7 @@
 
 (declare-function tl-desugar-do "termlisp-eval" (form))
 (declare-function tl-desugar-let "termlisp-eval" (form))
+(declare-function tl-rewrite-desugar "termlisp-eval" (env form))
 
 (defun tl-instance-dict-term (env inst sub)
   "Return the dictionary term for INST given the matching substitution SUB.
@@ -172,7 +173,7 @@ with the program."
 
 (defun tl-elaborate-form (env form)
   "Infer top-level FORM in ENV, then apply dictionary-passing elaboration."
-  (let ((form (tl-desugar-do-tree form))
+  (let ((form (tl-desugar-do-tree (tl-rewrite-desugar env form)))
         (tl-infer-constraints nil)
         (tl-occurrence-check (tl-env-option env :occurs-check))
         (tl-elab-active t)

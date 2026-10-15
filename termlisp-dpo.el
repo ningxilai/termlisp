@@ -39,6 +39,11 @@
 (require 'cl-lib)
 (require 'termlisp-base)
 (require 'termlisp-graph)
+;; Case patterns are what a clause-based rule matches with, and the
+;; image walker below reads them with the same reduction-under-the-subject
+;; rule the matcher does; graph cannot require case without a cycle, but
+;; nothing case requires leads back here.
+(require 'termlisp-case)
 
 (cl-defstruct (tl-dpo-match (:constructor tl-make-dpo-match))
   "A morphism from a rule's left-hand side into a host graph.
@@ -99,7 +104,16 @@ it in once the template is known."
                 (one (pat nd)
                   (when ok
                     (cond
-                     ((tl-graph--pvar-p pat) (take pat nd) (bind pat nd))
+                     ((tl-graph--pvar-p pat)
+                      ;; A repeat is one element of L appearing at two
+                      ;; positions, so the node is taken the first time
+                      ;; only: recording both would hand `tl-dpo-gluing'
+                      ;; two positions of different elements reaching one
+                      ;; node, which is not what identification means.
+                      (if (assq pat vars)
+                          (bind pat nd)
+                        (take pat nd)
+                        (bind pat nd)))
                      ((consp pat)
                       (if (and (tl-node-application nd)
                                (eq (tl-node-head nd) (car pat)))
@@ -240,30 +254,211 @@ See `tl-spo-apply' for how the step itself is performed."
               (and graph
                    (tl-dpo-gluing match (tl-dpo-parents graph))))))))
 
+(defun tl-dpo--image-match (pattern node)
+  "Match compiled PATTERN against NODE, recording the whole correspondence.
+Return a `tl-dpo-match', or nil when PATTERN does not fit NODE.  This is
+`tl-pat-match' with every position kept rather than only the bindings a
+template would read: a clause-based rule matches through the decision
+tree in `termlisp-case', which throws the correspondence away, and the
+gluing condition is a statement about that correspondence.
+
+Matching follows `tl-pat-match' exactly, reduction included -- constructor
+and literal positions reduce their node through `tl-pat-whnf' first, and
+NODE itself is bound as `tl-pat--subject' so it is never reduced -- because
+a walker that diverged from the matcher would answer about a different
+match than the step took.  INTERFACE is left nil: what the step actually
+kept of the match is read off the reduct, see `tl-dpo--step-gluing'."
+  (let ((vars nil)
+        (image nil)
+        (positions nil)
+        (ok t)
+        (tl-pat--subject node))
+    (cl-labels ((take (pat nd)
+                  (push (cons pat nd) positions)
+                  (unless (memq nd image) (push nd image)))
+                (bind (name nd)
+                  (let ((cell (assq name vars)))
+                    (cond ((null cell) (push (cons name nd) vars))
+                          ((eq (cdr cell) nd) t)
+                          (t (setq ok nil)))))
+                (bind-list (name nds)
+                  ;; `tl-pat-bind-list' compares a repeat with `equal', so
+                  ;; a rest variable's agreement is agreement of the list.
+                  (let ((cell (assq name vars)))
+                    (cond ((null cell) (push (cons name nds) vars))
+                          ((equal (cdr cell) nds) t)
+                          (t (setq ok nil)))))
+                (lseq (pat nodes)
+                  ;; `tl-pat-match-list': PAT is a cons/nil chain matched
+                  ;; against the node list NODES, element patterns taking
+                  ;; the nodes they reach.
+                  (pcase pat
+                    (`(pnil) (unless (null nodes) (setq ok nil)))
+                    (`(pcon cons (prest ,name) (pnil))
+                     (bind-list name nodes)
+                     (dolist (d nodes) (take (car pat) d)))
+                    (`(pcon cons ,head ,tail)
+                     (if (null nodes)
+                         (setq ok nil)
+                       (one head (car nodes))
+                       (when ok (lseq tail (cdr nodes)))))
+                    (`(prest ,name)
+                     (bind-list name nodes)
+                     (dolist (d nodes) (take pat d)))
+                    (`(pvar ,name)
+                     (bind-list name nodes)
+                     (dolist (d nodes) (take pat d)))
+                    (_ (setq ok nil))))
+                (seq (pats nodes)
+                  ;; `tl-pat-match-seq': positional, exact arity unless a
+                  ;; final `(prest NAME)' takes the rest.
+                  (while (and ok pats)
+                    (cond
+                     ((eq (car-safe (car pats)) 'prest)
+                      (unless (null (cdr pats)) (setq ok nil))
+                      (when ok
+                        (bind-list (cadr (car pats)) nodes)
+                        (dolist (d nodes) (take (car pats) d))
+                        (setq pats nil nodes nil)))
+                     ((null nodes) (setq ok nil))
+                     (t
+                      (one (car pats) (car nodes))
+                      (setq pats (cdr pats) nodes (cdr nodes)))))
+                  (when (and ok pats) (setq ok nil)))
+                (one (pat nd)
+                  (when ok
+                    (pcase pat
+                      (`(pvar ,name)
+                       (if (assq name vars)
+                           (bind name nd)
+                         (take pat nd)
+                         (bind name nd)))
+                      (`(pwild) (take pat nd))
+                      ((or `(plit ,value) `(lit ,value))
+                       ;; `lit' is what `tl-nbe--case-pattern' has been
+                       ;; known to emit; `tl-pat-match' would signal on
+                       ;; it, so a step matched through the tree with it
+                       ;; cannot exist -- but reading both keeps this
+                       ;; walker from being the thing that breaks.
+                       (let ((m (tl-pat-whnf nd)))
+                         (when (and (not (tl-node-application m))
+                                    (equal (tl-node-head m) value))
+                           (take pat m))))
+                      (`(pnil)
+                       (let ((m (tl-pat-whnf nd)))
+                         (when (and (not (tl-node-application m))
+                                    (eq (tl-node-head m) nil))
+                           (take pat m))))
+                      (`(pas ,name ,sub)
+                       ;; An as-pattern renames what its subpattern
+                       ;; already reached; it adds no position of its
+                       ;; own, so it is not taken.
+                       (one sub nd)
+                       (when ok (bind name nd)))
+                      (`(pcon ,head . ,pats)
+                       (let ((m (tl-pat-whnf nd)))
+                         (cond
+                          ((null pats)
+                           (when (and (not (tl-node-application m))
+                                      (eq (tl-node-head m) head))
+                             (take pat m)))
+                          ((and (null (cdr pats))
+                                (tl-pat-list-pattern-p (car pats)))
+                           (when (and (tl-node-application m)
+                                      (eq (tl-node-head m) head))
+                             (take pat m)
+                             (lseq (car pats) (tl-node-children m))))
+                          ((and (tl-node-application m)
+                                (eq (tl-node-head m) head))
+                           (take pat m)
+                           (seq pats (tl-node-children m)))
+                          (t (setq ok nil)))))
+                      (_ (setq ok nil))))))
+      (one pattern node)
+      (when ok
+        (tl-make-dpo-match :root node
+                           :image (nreverse image)
+                           :positions (nreverse positions)
+                           :vars (nreverse vars))))))
+
+(defun tl-dpo--step-gluing (graph node rule reduct)
+  "Return the gluing verdict of the step RULE took at NODE in GRAPH, or nil.
+REduct is the step's result, still unrecorded -- the graph handed in is
+the graph the cut is about to happen to, which is the only state the
+question can be asked in.
+
+The match is made again here rather than carried out of the reducer:
+`tl-graph--step' asks only whether a rule applied, and the
+correspondence the gluing condition speaks about does not survive that
+trip.  Nothing has changed yet when this runs, so it is the same match
+the step took.  A pattern/template rule is matched with `tl-dpo-match';
+a clause-based rule is matched with the case matcher to learn which
+clause won, and the image is walked from that clause's compiled pattern
+by `tl-dpo--image-match'.
+
+K -- the part of m(L) the step does not cut -- is read off REDUCT: the
+nodes of m(L) that the reduct still holds are exactly what survived.  For
+a data template that is what `tl-dpo-interface' would have found by
+reading the template, because a template rebuilds everything it does not
+name; for a closure template, which names no variable and reads its
+bindings itself, it is the only honest answer.  Return nil when the cut
+was local, or a list (CONDITION NODE) as `tl-dpo-gluing' reports it."
+  (let* ((pattern (tl-grule-pattern rule))
+         (match
+          (if pattern
+              (tl-dpo-match pattern node)
+            (let ((cm (tl-graph-crule-match node rule)))
+              (and cm
+                   (tl-dpo--image-match
+                    (car (nth (car cm) (tl-grule-clauses rule)))
+                    node))))))
+    (when match
+      (let ((kept (make-hash-table :test #'eq))
+            (keep nil))
+        (dolist (n (tl-graph--preorder reduct))
+          (puthash n t kept))
+        (dolist (n (tl-dpo-match-image match))
+          (when (gethash n kept)
+            (push n keep)))
+        (setf (tl-dpo-match-interface match) keep))
+      (tl-dpo-gluing match (tl-dpo-parents graph)))))
+
 (defvar tl-dpo-last-gluing nil
   "The gluing verdict of the most recent DPO normalisation, or nil.
-Set by `tl-dpo-normalize'.  A list `(CONDITION NODE)' as
-`tl-dpo-gluing' reports it, or nil when the walk's cuts were all local.
-This is a record rather than an error because being unreachable from
-anywhere but the redex is not a property a hash-consed term graph
-usually has.")
+Set by `tl-dpo-normalize'.  A list `(CONDITION NODE)' naming the first
+cut the walk took that was not local -- `tl-dpo-gluing' reports the
+condition -- or nil when every cut was.  This is a record rather than an
+error because being unreachable from anywhere but the redex is not a
+property a hash-consed term graph usually has.")
 
 (defun tl-dpo-normalize (node rules fuel signal)
   "Reduce NODE to normal form with RULES, under DPO discipline.
 Wrap NODE in a graph of its own -- it may be reachable from a signature
 -- reduce it, and hand back the reduct.  FUEL and SIGNAL are
 `tl-graph-rewrite''s: how many steps may be taken, and the error class
-to report when they run out.  The verdict of the gluing condition is
-left in `tl-dpo-last-gluing' rather than signalled: a redex reachable
+to report when they run out.
+
+Every step the walk takes is checked as it happens: `tl-graph-step-hook'
+is bound for the duration, each step's cut is run through
+`tl-dpo--step-gluing' against the graph it is about to happen to, and
+the first verdict that is not local is written to `tl-dpo-last-gluing'.
+The verdict is left there rather than signalled -- a redex reachable
 from more than one place is the ordinary case on a hash-consed graph,
 and a normalisation that refused there would refuse most of what it is
 asked to do.  What the verdict is for is that a caller needing the
-reduction to have been local can ask whether it was."
+reduction to have been local can ask whether it was; nil means every
+cut the walk took was."
   (setq tl-dpo-last-gluing nil)
   (if (null rules)
       node
-    (tl-graph-root
-     (tl-graph-rewrite (tl-make-graph node nil) rules fuel signal))))
+    (let ((tl-graph-step-hook
+           (lambda (graph redex rule reduct)
+             (unless tl-dpo-last-gluing
+               (let ((verdict (tl-dpo--step-gluing graph redex rule reduct)))
+                 (when verdict
+                   (setq tl-dpo-last-gluing verdict)))))))
+      (tl-graph-root
+       (tl-graph-rewrite (tl-make-graph node nil) rules fuel signal)))))
 
 (provide 'termlisp-dpo)
 ;;; termlisp-dpo.el ends here

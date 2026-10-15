@@ -200,5 +200,23 @@ that can name it."
                     "(define bad (state-ap (lambda (n) n) 0)) bad"))
       (should-error (termlisp-eval prog env) :type 'termlisp-type-error))))
 
+(ert-deftest tl-preserve-check-reads-a-literal-clause ()
+  "A literal pattern types as the literal it names.
+The clause arrives compiled the way `termlisp-case' writes patterns,
+and a literal is one of the tags the type side can read: it is the
+term itself, so the rule is decidable like any other.  No prelude rule
+matches a literal, so the oracle never exercises this path -- this
+test is what keeps the reading honest, and it is the case the old
+spelling of the conversion turned into a gap."
+  (let ((env (preserve-test--env)))
+    (termlisp-eval "(: litf (-> Int Int))
+(define (litf (:literal 1)) 0)
+(define (litf x) 1)" env)
+    (let* ((rule (cl-find 'litf (tl-nbe--rules (tl-nbe env nil))
+                          :key #'tl-grule-name))
+           (v (and rule (tl-preserve-check env rule))))
+      (should rule)
+      (should (eq (car v) 'preserved)))))
+
 (provide 'preserve-test)
 ;;; preserve-test.el ends here

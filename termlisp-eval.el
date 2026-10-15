@@ -246,6 +246,49 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
         acc)
     (tl-desugar-do-method form)))
 
+(defun tl-reduce--term (term)
+  "Rewrite the `list' and `do' forms in TERM the way inference reads them.
+Both are forms inference expands before it types them -- `list' into
+constructor applications, `do' into its `bind'/`return' calls -- and a
+reduction whose type side sees one spelling while the graph is built
+from another would be answering about two different terms.  `let' and
+`lambda' are left alone: inference keeps `let' as a binding, and
+neither it nor a lambda is an application any rewrite rule of this
+environment speaks about, so they stand in the term as written."
+  (cl-labels ((walk (x)
+                (cond
+                 ((atom x) x)
+                 ((eq (car x) 'list) (walk (tl-desugar-list x)))
+                 ((eq (car x) 'do) (walk (tl-desugar-do x)))
+                 (t (cons (walk (car x)) (walk (cdr x)))))))
+    (walk term)))
+
+(defun tl-reduce-term (term env)
+  "Return the normal form of TERM under ENV's rewrite rules, as a term.
+TERM is read as a term, not evaluated: it goes into a graph the way it
+is written, every function of ENV that the type layer can read unfolds
+through `tl-dpo-normalize' -- the same unfolding `tl-nbe-nf' performs,
+the same `tl-graph-whnf' hooked to the same `tl-nbe-whnf' -- and the
+graph is rendered back.  A name nothing unfolds stays as itself, so an
+open term comes back open and a free variable is not mistaken for
+anything it might be bound to later.  This is what a rewrite rule is
+asked of at the value level: not `is this argument already a value',
+which forcing answers, but what the rules do with the term underneath
+the values.
+
+The walk is bounded by the environment's `:fuel', and exhaustion
+signals `termlisp-eval-error' -- a rewrite that will not stop is what
+that error class is for.  The verdict of the DPO gluing condition, if
+any cut along the way was not local, is left in `tl-dpo-last-gluing'."
+  (let* ((nbe (tl-nbe env nil))
+         (rules (tl-nbe--rules nbe))
+         (tl-graph-whnf (lambda (arg) (tl-nbe-whnf arg nbe))))
+    (tl-node->sexp
+     (tl-dpo-normalize (tl-graph-root (tl-graph-build (tl-reduce--term term)))
+                       rules
+                       (or (tl-env-option env :fuel) 100000)
+                       'termlisp-eval-error))))
+
 ;;; Driver ---------------------------------------------------------------
 
 ;; Known limitations (not addressed here):
@@ -301,6 +344,12 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
                 (setq control (tl-desugar-let control)))
                ((eq head 'list)
                 (setq control (tl-desugar-list control)))
+               ((eq head 'reduce)
+                (unless (and (consp args) (null (cdr args)))
+                  (signal 'termlisp-eval-error
+                          '("reduce takes exactly one term")))
+                (setq value (tl-reduce-term (car args) termlisp--current-env)
+                      mode 'ret))
                ((symbolp head)
                 (let ((cell (assq head cenv))
                       (global (assq head (tl-env-globals termlisp--current-env)))
@@ -429,6 +478,66 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
               (cons (cons target value) (tl-env-globals env)))
         value))))
 
+(defun tl-rewrite-desugar (env form)
+  "Return FORM as the `define' form it means, having checked the rewrite.
+FORM that is not a `rewrite' comes back untouched, so every dispatcher
+may apply this to the forms it handles.
+
+A `rewrite' is `define' with its obligation paid up front.  The form
+spells itself `(rewrite (NAME PATTERN...) BODY)': it extends the clause
+list of an existing NAME, and the clause goes through only when the
+rule it adds preserves the types of the terms it would rewrite.
+`tl-preserve-check' decides that against ENV, and `preserved' is the
+only verdict that lets the clause in -- `violated' names what broke,
+`cannot-check' what ENV could not see, so an environment without
+`:type-check' refuses as surely as one that watched the rule fail.
+Every refusal is a `termlisp-type-error'
+raised before any dispatcher has appended anything, so a refused rewrite
+leaves the environment exactly as it was.
+
+What gets through is handed to `define''s own handler as the equivalent
+`define' form, so the clause reaches the type side and the evaluation
+side exactly as a `define' would -- coverage announcements,
+forward-name registration and signature checking included."
+  (if (not (and (consp form) (eq (car form) 'rewrite)))
+      form
+    (let* ((target (cadr form))
+           (name (and (consp target) (car target)))
+           (body (caddr form)))
+      (unless (and (consp target) (symbolp (car target)))
+        (signal 'termlisp-type-error
+                '("rewrite extends a function: (rewrite (NAME pattern...) body)")))
+      (when (gethash name (tl-env-method-env env))
+        (signal 'termlisp-type-error
+                (list (format "rewrite of %s: a class method's clauses come from its instances"
+                              name))))
+      (unless (or (gethash name (tl-env-functions env))
+                  (gethash name (tl-env-clauses env)))
+        (signal 'termlisp-type-error
+                (list (format "rewrite of %s: no such function to extend" name))))
+      (let* ((params (mapcar (lambda (p)
+                               (tl-pattern-parse
+                                p (lambda (s) (gethash s (tl-env-constructors env)))))
+                             (cdr target)))
+             ;; The rule a single clause is: NAME applied to the pattern,
+             ;; rewriting to the body.  `tl-nbe--make-rule' returns nil
+             ;; for a clause the type layer could never choose -- guard,
+             ;; or, and, dot, rest -- and such a clause has no
+             ;; preservation question to ask, which is the same as no
+             ;; answer.
+             (rule (tl-nbe--make-rule
+                    name (list (tl-make-clause name params body)))))
+        (unless rule
+          (signal 'termlisp-type-error
+                  (list (format "rewrite of %s: the pattern is not one the type layer can read"
+                                name))))
+        (let ((verdict (tl-preserve-check env rule)))
+          (unless (eq (car verdict) 'preserved)
+            (signal 'termlisp-type-error
+                    (list (format "rewrite of %s refused: %s"
+                                  name (cdr verdict))))))
+        (cons 'define (cdr form))))))
+
 (defun tl-eval-datatype (env form)
   "Handle `(datatype [open] HEAD (CON ARGTYPE...) ...)' in ENV.
 HEAD is either the datatype's name or `(NAME PARAM...)', which declares
@@ -511,6 +620,8 @@ constructor argument types are parsed and their schemes registered."
 (defun tl-eval-top (env form)
   "Evaluate one top-level FORM in ENV."
   (cond
+   ((and (consp form) (eq (car form) 'rewrite))
+    (tl-eval-define env (tl-rewrite-desugar env form)))
    ((and (consp form) (eq (car form) 'define)) (tl-eval-define env form))
    ((and (consp form) (eq (car form) 'datatype)) (tl-eval-datatype env form))
    ((and (consp form) (eq (car form) 'datatype-extension))

@@ -129,5 +129,18 @@ failure says what it is -- a type error, not an evaluation error."
     (should-not (tl-nbe-equal (tl-type-parse '(Vec a Zero))
                               (tl-type-parse '(Vec a (Succ Zero))) nbe))))
 
+;;; Compiled patterns
+
+(ert-deftest tl-nbe-case-pattern-renames-a-literal-the-way-case-spells-it ()
+  "The conversion between the two pattern languages is a rename.
+Every shape the function-clause parser accepts must come out with the
+tag `termlisp-case' matches on.  A literal spelled any other way
+would leave the case tree a branch nothing can take, and the type
+side -- which reads the compiled pattern -- would see a pattern it
+cannot interpret."
+  (should (equal (tl-nbe--case-pattern '(lit 5)) '(plit 5)))
+  (should (equal (tl-nbe--case-pattern '(var . $x)) '(pvar $x)))
+  (should (equal (tl-nbe--case-pattern '(con True)) '(pcon True))))
+
 (provide 'nbe-test)
 ;;; nbe-test.el ends here

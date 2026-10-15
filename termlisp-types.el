@@ -42,6 +42,7 @@
 (declare-function tl-desugar-let "termlisp-eval" (form))
 (declare-function tl-let-check-form "termlisp-eval" (form))
 (declare-function tl-desugar-list "termlisp-eval" (form))
+(declare-function tl-rewrite-desugar "termlisp-eval" (env form))
 
 ;;; Representation: a type is a `tl-node' from `termlisp-graph'.
 ;;; A constructor application `(C a b)' is a compound node, a bare
@@ -1063,6 +1064,16 @@ statement and data forms the Aldor lowering emits.")
    ;; call site and enforces element homogeneity.
    ((and (consp expr) (eq (car expr) 'list))
     (tl-infer env (tl-desugar-list expr)))
+   ;; `reduce TERM' evaluates to TERM's normal form, and a normal form
+   ;; has the type TERM had: that is preservation, which `rewrite' is
+   ;; the form that has to prove for a rule it adds.  The argument is
+   ;; inferred as written -- typechecking reads the term, the reduction
+   ;; happens at evaluation -- and its arity is checked here because an
+   ;; expression form has no pattern of its own to be checked against.
+   ((and (consp expr) (eq (car expr) 'reduce))
+    (unless (and (consp (cdr expr)) (null (cddr expr)))
+      (signal 'termlisp-type-error '("reduce takes exactly one term")))
+    (tl-infer env (cadr expr)))
    ((and (consp expr) (gethash (car-safe expr) tl-infer-ir-heads))
     (funcall (gethash (car-safe expr) tl-infer-ir-heads) env expr))
    ((consp expr) (tl-infer-application env expr))
@@ -2149,6 +2160,12 @@ the elaborator inserts as the first argument of overloaded method calls."
         (tl-type-lenient nil)
         (tl-type-lenient-clauses nil))
     (cond
+     ;; A rewrite is checked first and only then read as the `define' it
+     ;; means, so a refusal leaves `tl-env-clauses' untouched: the
+     ;; checker must not be the half of the system that believes a
+     ;; clause the evaluator refused to add.
+     ((and (consp form) (eq (car form) 'rewrite))
+      (tl-typecheck-define env (tl-rewrite-desugar env form)))
      ((and (consp form) (eq (car form) 'datatype)) (tl-eval-datatype env form))
      ((and (consp form) (eq (car form) 'datatype-extension))
       (tl-eval-datatype-extension env form))

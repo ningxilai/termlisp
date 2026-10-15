@@ -251,5 +251,77 @@ what MEMO now holds for it."
          (rule (tl-make-grule 'r :normalize 0 '(f $x) '(g $x))))
     (should-not (car (tl-dpo-apply rule (tl-graph-root graph) graph)))))
 
+;;; The normaliser and the step hook
+
+(ert-deftest tl-dpo-normalize-takes-a-node-and-gives-back-a-node ()
+  "`tl-dpo-normalize' wraps its subject in a graph itself.
+The contract at both ends is a node: a graph passed in would be
+wrapped a second time and the walk would read the first graph as a
+node, so the shape of the call is part of what this pins."
+  (let* ((rules (list (tl-make-grule 'r :normalize 0 '(f $x) '(g $x))))
+         (res (tl-dpo-normalize (tl-graph-root (tl-graph-build '(f a)))
+                                rules 10 'termlisp-eval-error)))
+    (should (tl-node-p res))
+    (should (equal (tl-tgr--sexp res) '(g a)))))
+
+(ert-deftest tl-dpo-normalize-leaves-no-verdict-when-every-cut-is-local ()
+  "A redex at the root has no holder outside the match, so every cut was.
+nil in `tl-dpo-last-gluing' is the claim; the sentinel shows the walk
+really ran and wrote the slot."
+  (let ((rule (tl-make-grule 'r :normalize 0 '(f $x) '(g $x))))
+    (setq tl-dpo-last-gluing 'unset)
+    (tl-dpo-normalize (tl-graph-root (tl-graph-build '(f a)))
+                      (list rule) 10 'termlisp-eval-error)
+    (should-not tl-dpo-last-gluing)))
+
+(ert-deftest tl-dpo-normalize-names-a-cut-that-was-not-local ()
+  "The same cut under a holder: the match had a parent it did not own.
+The verdict is left in the slot rather than signalled -- a shared
+redex is the ordinary case on a hash-consed graph -- but it is
+recorded, and this is the recording."
+  (let ((rule (tl-make-grule 'r :normalize 0 '(f $x) '(g $x))))
+    (setq tl-dpo-last-gluing 'unset)
+    (tl-dpo-normalize (tl-graph-root (tl-graph-build '(w (f a) (f a))))
+                      (list rule) 10 'termlisp-eval-error)
+    (should (eq (car tl-dpo-last-gluing) 'dangling))))
+
+(ert-deftest tl-dpo-normalize-checks-clause-rule-cuts-the-same-way ()
+  "A clause rule's cut is read from the clause that won, not from a template.
+The image of a clause match is walked from its compiled pattern, so
+the verdicts must agree with the pattern-rule ones: nil alone at the
+root, dangling under a holder."
+  (let ((rule (tl-make-crule 'r :normalize 0
+                             (list (cons (tl-pat-parse '(pcon f (pvar $x)))
+                                         '(g $x))))))
+    (setq tl-dpo-last-gluing 'unset)
+    (tl-dpo-normalize (tl-graph-root (tl-graph-build '(f a)))
+                      (list rule) 10 'termlisp-eval-error)
+    (should-not tl-dpo-last-gluing)
+    (setq tl-dpo-last-gluing 'unset)
+    (tl-dpo-normalize (tl-graph-root (tl-graph-build '(w (f a) (f a))))
+                      (list rule) 10 'termlisp-eval-error)
+    (should (eq (car tl-dpo-last-gluing) 'dangling))))
+
+(ert-deftest tl-tgr-step-hook-sees-each-cut ()
+  "Each step calls `tl-graph-step-hook' between the reduce and its memo record.
+The window is the one the gluing check asks for: the graph still holds
+the redex, the reduct is in hand, and nothing is written yet.  An
+unbound hook must cost nothing -- the default is nil and the walk is
+unchanged when it stays that way."
+  (let* ((seen nil)
+         (tl-graph-step-hook
+          (lambda (graph node rule reduct)
+            (push (list (tl-graph-p graph)
+                        (tl-node->sexp node)
+                        (tl-grule-name rule)
+                        (tl-node->sexp reduct))
+                  seen))))
+    (tl-graph-rewrite (tl-graph-build '(w (f a) (f a)))
+                      (list (tl-make-grule 'r :normalize 0 '(f $x) '(g $x)))
+                      10)
+    ;; Hash-consing makes the two (f a) one node, so one step was taken.
+    (should (= (length seen) 1))
+    (should (equal (car seen) '(t (f a) r (g a))))))
+
 (provide 'graph-rewrite-test)
 ;;; graph-rewrite-test.el ends here
