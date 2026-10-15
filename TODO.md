@@ -43,11 +43,19 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   are cross-file API -- kept their names rather than `--' internal ones.  A
   mechanical sweep of every defun in types.el for a missing docstring is now
   clean (the one apparent holdout was `tl-type-parse*', which has one).
-- [ ] **P1-4 `termlisp-ir-types` layering** — only the umbrella `termlisp.el`
-  requires it; requiring submodules directly misses builtin-type registrations
-  (`seq` unknown → `tl-canonical-key` crashes).  Add the require to the real
-  consumer module (not the umbrella), or document the umbrella-only contract.
-  - [ ] `(require 'termlisp-load)` alone loads prelude successfully.
+- [x] **P1-4 `termlisp-ir-types` layering** — only the umbrella `termlisp.el`
+  required it, so requiring submodules directly missed builtin-type
+  registrations (`seq` unknown → `Unknown symbol: seq`).  The real consumer is
+  `termlisp-eval`: its `:type-check` path reads `tl-builtin-types` and
+  `termlisp-load-prelude` walks the prelude through it, and it already required
+  the runtime table's home (`termlisp-builtins`) while the type table lagged
+  behind.  Added `(require 'termlisp-ir-types)` there with a comment saying why
+  the edge lives in this layer (load/repl inherit it; the dependency closure is
+  acyclic), and documented in `tl-builtin-types`'s docstring where the bundled
+  schemes arrive and what a host requiring `termlisp-types` alone keeps.
+  - [x] `(require 'termlisp-load)` alone loads prelude successfully — pinned by
+    a fresh-image subprocess test (`tl-load-standalone-typechecks-the-prelude`),
+    red before the require landed (dies of `Unknown symbol: seq`), green after.
 - [ ] **P3-5 `tl-dpo-normalize` production-dead** — decided by F2 below: if kind
   normalization adopts it, it gains a production caller; otherwise document it as
   the entry point for callers needing the reduction graph.  Closed by F5.

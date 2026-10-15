@@ -865,7 +865,12 @@ with the same substitution.  A non-scheme is returned as
                          (tl-tscheme-vars scheme))))
 
 (defvar tl-builtin-types (make-hash-table :test #'eq)
-  "Type schemes for builtin functions.")
+  "Type schemes for builtin functions.
+`termlisp-types' registers the arithmetic core at its own load; the
+rest of the bundled primitives arrive with `termlisp-ir-types', which
+`termlisp-eval' requires, so every evaluator and loader sees them
+while a host requiring `termlisp-types' alone keeps the core and
+registers whatever else it has.  See `tl-register-builtin-type'.")
 
 (defun tl-register-builtin-type (name scheme)
   "Register type SCHEME for builtin NAME."

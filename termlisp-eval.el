@@ -17,6 +17,14 @@
 (require 'termlisp-builtins)
 (require 'termlisp-types)
 (require 'termlisp-elaborate)
+;; The builtin type schemes (`seq', `first', ...) register themselves
+;; when `termlisp-ir-types' loads, and this is the layer that needs
+;; them: `tl-typecheck-form' falls back to that table for any global the
+;; environment does not define, and `termlisp-load-prelude' walks the
+;; prelude -- which calls `seq' -- through this module's `:type-check'
+;; path.  Requiring it from the umbrella alone is what let a fresh image
+;; with `termlisp-load' alone die of "Unknown symbol: seq".
+(require 'termlisp-ir-types)
 ;; The unifier reduces types through this module's `tl-nbe-reduce'
 ;; whenever two types match nothing structurally.  Requiring it here (and
 ;; not from `termlisp-graph-unify', which it depends on) is what keeps the

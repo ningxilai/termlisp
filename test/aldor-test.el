@@ -1262,5 +1262,35 @@ well-kinded and has to run."
                                    env))
                    "(Succ Zero)"))))
 
+;; Standalone requires
+
+;; The bundled type schemes (`seq', `first', ...) register themselves
+;; when `termlisp-ir-types' loads, and `termlisp-eval' -- the layer
+;; whose `:type-check' path reads that table and whose
+;; `termlisp-load-prelude' walks the prelude through the same path --
+;; must require it.  The umbrella used to be the only module that did,
+;; so a fresh image loading `termlisp-load' alone died of "Unknown
+;; symbol: seq" the moment the prelude was checked.  Pin it in a fresh
+;; image: this one has the umbrella loaded, which is exactly the
+;; condition the defect hides behind.
+(ert-deftest tl-load-standalone-typechecks-the-prelude ()
+  "A fresh image with only `termlisp-load' checked the prelude."
+  (let ((emacs (or (and invocation-directory
+                        (expand-file-name (invocation-name) invocation-directory))
+                   (executable-find (invocation-name)))))
+    (skip-unless (and emacs (file-executable-p emacs)))
+    (with-temp-buffer
+      (let ((status
+             (call-process
+              emacs nil t nil "-Q" "--batch"
+              "-L" (directory-file-name termlisp--directory)
+              "--eval"
+              (concat "(progn (require 'termlisp-load)"
+                      " (termlisp-load-prelude"
+                      "  (termlisp-make-env '(:type-check t)))"
+                      " (princ \"prelude-ok\"))"))))
+        (should (eq status 0))
+        (should (string-match-p "prelude-ok" (buffer-string)))))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here
