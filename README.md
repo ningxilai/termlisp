@@ -196,7 +196,7 @@ neither, `:` evaluates to `nil` and nothing is checked.
 `tl-elaborate-form` (`termlisp-elaborate.el:186-187`) does handle them,
 and so are constrained `define`s — `:elaborate` is what turns a method
 call site into a dictionary lookup. But `tl-typecheck-form`
-(`termlisp-types.el:2028-2029`) handles them too, so `:type-check` alone
+(`termlisp-types.el:2155-2156`) handles them too, so `:type-check` alone
 will parse and register them. With *neither* flag set they do not fail;
 they fall through to the expression branch and come back as an inert
 list, silently.
@@ -208,10 +208,15 @@ the options (see [Holes](#holes)).
 Finally, **one input is one unit.** A `define` may mention a name
 declared by a *later* form in the same string, file or REPL submission —
 `termlisp-eval` collects the forward names first
-(`termlisp-eval.el:564`), and so does the checker
-(`termlisp-types.el:1163`). Order within a file therefore does not have
+(`termlisp-eval.el:567`), and so does the checker
+(`termlisp-types.el:1198`). Order within a file therefore does not have
 to be topological, and a signature may follow the definition it
-describes.
+describes. When the unit ends, every use made of a forward name is
+linked to the definition it waited for: each use sees the scheme's real
+type, so a forward-referencing definition is as constrained as one
+written after its dependencies, and a use that does not fit its
+definition is a type error naming it. A name no form declares remains
+an error at the point it is mentioned.
 
 A definition is *a list of patterns plus a body*, not a lambda applied to
 patterns. There is no separate `match` form:
@@ -489,7 +494,7 @@ runs instead of the plain checker.
 Two rows deserve more than the table gives them.
 
 **`:occurs-check` is off by default, everywhere.** It is read by the plain
-typechecker (`termlisp-types.el:1910`, `:2009`) as well as the elaborator
+typechecker (`termlisp-types.el:2036`, `:2136`) as well as the elaborator
 (`termlisp-elaborate.el:177`), so it is not something elaboration does —
 it gates `Infinite type: %S unifies with %S` for whatever checker is
 running. Turn it on when you suspect a type is looping back on itself;

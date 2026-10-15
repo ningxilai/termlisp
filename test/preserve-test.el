@@ -18,32 +18,27 @@
 ;; other instantiation of `id'.  Freezing is what tells them apart.
 ;;
 ;; The oracle pins what the checker says about the prelude's own rules
-;; today: 64 preserved, and two families that are not, each a real
-;; finding rather than a checker gap.  Eight method implementations
-;; (num-add through fmap) have no scheme in the type environment --
-;; their dict-taking defines are checked against the dict-erased class
-;; method and register nothing, so the pattern `(num-mul dict a b)'
-;; cannot be typed at all.  And state-ap, state-ap-run are genuinely
-;; not preserving: their bodies call a forward-declared function, the
-;; forward name was typed as a throwaway fresh variable, and the
-;; registered schemes came out more general than the bodies justify.
-;; The typechecker accepts `(state-ap-run (Pair 5 0) (lambda (x) x))'
-;; at Int and evaluation then dies with "No matching clause for
-;; state-ap-run2".  When either finding is fixed this test must be
-;; updated, on purpose.
+;; today: 66 preserved, and one family that cannot be decided at all.
+;; Eight method implementations (num-add through fmap) have no scheme
+;; in the type environment -- their dict-taking defines are checked
+;; against the dict-erased class method and register nothing, so the
+;; pattern `(num-mul dict a b)' cannot be typed at all.
+;;
+;; The other finding the oracle used to pin is fixed.  state-ap and
+;; state-ap-run called forward-declared functions, the forward name
+;; was typed as a throwaway fresh variable, and their schemes came out
+;; more general than their bodies justify.  Inference now records every
+;; such use and, once the defining form has been read, tells the
+;; earlier uses what the definition really was: the state family comes
+;; out at its real State type, both rules are preserved, and
+;; `(state-ap-run (Pair 5 0) (lambda (x) x))' at Int is a type error
+;; instead of an evaluator crash.  The last test in this file pins
+;; that regression.
 
 ;;; Code:
 
 (require 'test-support)
 (require 'termlisp)
-
-(defconst preserve-test--violated
-  '(state-ap state-ap-run)
-  "Prelude rules the checker finds genuinely not preserving.
-Their schemes are more general than their bodies: both call
-state-ap-run / state-ap-run2, which the form declaring them had not
-introduced yet, and a forward name is typed as a fresh variable that
-nothing later constrains.")
 
 (defconst preserve-test--cannot
   '(num-add num-sub num-mul ap pure return bind fmap)
@@ -170,9 +165,9 @@ The graph pattern reading refuses it rather than inventing a meaning."
 
 (ert-deftest tl-preserve-oracle-matches-the-prelude ()
   "Every prelude rule gets the verdict the findings above predict.
-Anything preserved must say so with no reason attached; the two
-families that are not must appear, under their names, exactly as
-documented in `preserve-test--violated' and `preserve-test--cannot'.
+Anything preserved must say so with no reason attached; the family
+that cannot be decided must appear, under its names, exactly as
+documented in `preserve-test--cannot', and no rule may be violated.
 A change here is a finding about the prelude, not a nuisance: the
 test exists so the change has to be looked at."
   (let* ((env (termlisp-load-prelude
@@ -183,17 +178,27 @@ test exists so the change has to be looked at."
     (dolist (r rules)
       (let* ((name (tl-grule-name r))
              (v (tl-preserve-check env r))
-             (want (cond ((memq name preserve-test--violated) 'violated)
-                         ((memq name preserve-test--cannot) 'cannot-check)
+             (want (cond ((memq name preserve-test--cannot) 'cannot-check)
                          (t 'preserved))))
         (push name seen)
         (should (eq (car v) want))
         (when (eq (car v) 'preserved)
           (should-not (cdr v)))))
-    (dolist (name preserve-test--violated)
-      (should (memq name seen)))
     (dolist (name preserve-test--cannot)
       (should (memq name seen)))))
+
+(ert-deftest tl-preserve-forward-linking-rejects-the-old-violation ()
+  "The program the old state-ap finding died on is a type error now.
+state-ap-run's scheme used to admit `(Pair 5 0)' where it needed
+`Pair (a -> b) s', so the typechecker said yes and evaluation died
+with \"No matching clause for state-ap-run2\".  Linking the forward
+uses to their definitions is what moves the rejection to the place
+that can name it."
+  (let ((env (termlisp-load-prelude
+              (termlisp-make-env '(:type-check t :elaborate t)))))
+    (dolist (prog '("(define bad (state-ap-run (Pair 5 0) (lambda (x) x))) bad"
+                    "(define bad (state-ap (lambda (n) n) 0)) bad"))
+      (should-error (termlisp-eval prog env) :type 'termlisp-type-error))))
 
 (provide 'preserve-test)
 ;;; preserve-test.el ends here

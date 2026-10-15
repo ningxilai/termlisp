@@ -565,9 +565,18 @@ known limitation."
          ;; One input is one unit: a name declared by a later form in
          ;; STRING is knowable here even though it is not yet in ENV.
          (tl-infer-forward-names (termlisp-collect-forward-names forms))
+         (tl-infer-forward-vars (or tl-infer-forward-vars
+                                    (make-hash-table :test #'eq)))
+         (tl-infer-forward-order nil)
+         (tl-infer-forward-regen (or tl-infer-forward-regen
+                                     (make-hash-table :test #'eq)))
          (result nil))
-    (dolist (form forms result)
-      (setq result (termlisp-eval-form form env)))))
+    (prog1 (dolist (form forms result)
+             (setq result (termlisp-eval-form form env)))
+      ;; The whole string is one unit, so every definition it declares
+      ;; is now in ENV and the references made to a forward name before
+      ;; its definition arrived can be told what it really was.
+      (tl-forward--link))))
 
 (defun termlisp--ensure-magic-string (file)
   "Ensure FILE begins with `termlisp--magic-string', inserting it if absent.
@@ -596,8 +605,16 @@ Returns ENV."
   (let* ((termlisp--load-env (or env (termlisp-make-env)))
          ;; The whole file is one unit, so a `define' may mention a name
          ;; a later `define' declares.
-         (tl-infer-forward-names (termlisp-collect-file-forward-names file)))
+         (tl-infer-forward-names (termlisp-collect-file-forward-names file))
+         (tl-infer-forward-vars (or tl-infer-forward-vars
+                                    (make-hash-table :test #'eq)))
+         (tl-infer-forward-order nil)
+         (tl-infer-forward-regen (or tl-infer-forward-regen
+                                     (make-hash-table :test #'eq))))
     (load (expand-file-name file) nil t)
+    ;; The file is one batch, so a use made of a forward name before
+    ;; its definition was read can now be told what it really was.
+    (tl-forward--link)
     ;; A file is one batch, so this is the first moment every definition
     ;; in it has all of its clauses and a coverage check can mean
     ;; anything.
@@ -622,8 +639,18 @@ Loading goes through `load', so `termlisp-load' must be required for the
         (tl-coverage-announcements nil))
     (termlisp--ensure-magic-string file)
     (let ((tl-infer-forward-names
-           (termlisp-collect-file-forward-names file)))
-      (load file nil t))
+           (termlisp-collect-file-forward-names file))
+          (tl-infer-forward-vars (or tl-infer-forward-vars
+                                     (make-hash-table :test #'eq)))
+          (tl-infer-forward-order nil)
+          (tl-infer-forward-regen (or tl-infer-forward-regen
+                                      (make-hash-table :test #'eq))))
+      (load file nil t)
+      ;; The file is one batch: a use made of a forward name before its
+      ;; definition was read can now be told what it really was.  The
+      ;; prelude has such uses -- the State functions -- and the schemes
+      ;; they came out with depend on this.
+      (tl-forward--link))
     termlisp--load-env))
 
 (provide 'termlisp-eval)

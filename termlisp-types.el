@@ -1132,6 +1132,41 @@ rather than an unconstrained variable.  That is what made `(nosuch 1)'
 typecheck and then evaluate to a stuck form -- an unbound head
 constrains nothing, so nothing downstream was checked either.")
 
+(defvar tl-infer-forward-vars nil
+  "Pending forward references of the unit being checked, or nil.
+A hash table mapping a forward-declared name to the references made to
+it before its definition was read -- a list of (REFERRER . VAR), one
+entry per reference, REFERRER the definition that made it (nil for a
+bare top-level expression) and VAR the variable inference handed out.
+The references stay unlinked until the batch ends: only the batch's
+last form can know whether the definition they wait for was itself
+waiting for one, and a scheme is not final until every forward name it
+mentioned has been linked too.  See `tl-forward--link'.")
+
+(defvar tl-infer-forward-order nil
+  "Definitions of this batch that some earlier form referred forward to.
+A list of (ENV . NAME) in registration order, so the most recently
+registered definition is first.  That is the reverse definition order
+the linking pass wants: a scheme only says everything its own body's
+forward references had to say once those names have been linked, and
+each of those names was defined later.")
+
+(defvar tl-infer-forward-regen nil
+  "Which definitions generalized their scheme, by name.
+A hash table mapping a defined name to non-nil when the scheme just
+registered was quantified by inference rather than copied from a
+signature or fixed monomorphically.  Linking can leave a variable of
+the instantiated definition inside the referencing definition's
+scheme, and only a scheme that was generalized in the first place may
+be generalized again: re-quantifying a value-restricted constant would
+undo the restriction that made it monomorphic.")
+
+(defvar tl-infer-defining nil
+  "The name of the definition currently being inferred, or nil.
+A forward reference made while this is set belongs to that definition,
+which is the scheme linking must quantify again once the name the
+reference waited for has arrived.")
+
 (defun termlisp--declared-names (form)
   "Return the names FORM declares at the top level, or nil for none.
 Only the forms that introduce a name a later form could refer to
@@ -1186,6 +1221,85 @@ optimization, and refusing to load over it would be the wrong trade."
       (termlisp-collect-forward-names (termlisp-parse-file file))
     (error nil)))
 
+(defun tl-forward--declare (env name generalized)
+  "Record NAME's registration in ENV for the batch's linking pass.
+GENERALIZED is non-nil when the scheme just registered was quantified
+by inference, which is what decides whether linking may quantify the
+scheme of a definition that referred to NAME forward (see
+`tl-infer-forward-regen').  Nothing is unified here.  A definition that
+forward-references another is itself linked when the batch ends, in
+reverse registration order, so by the time NAME's earlier uses are
+read its scheme already carries what its own body's forward references
+had to say."
+  (when tl-infer-forward-regen
+    (puthash name generalized tl-infer-forward-regen))
+  (when (and tl-infer-forward-names
+             (gethash name tl-infer-forward-names))
+    (push (cons env name) tl-infer-forward-order)))
+
+(defun tl-forward--link ()
+  "Unify every pending forward reference with the definition it waited for.
+Walks `tl-infer-forward-order' -- newest registration first, so a
+scheme is linked only after every name its own body referred forward
+to -- and drains each name's entries from `tl-infer-forward-vars'.
+Each reference's variable is unified with a fresh instance of the
+definition's now-final scheme, and the scheme of the definition that
+made the reference is quantified again when `tl-infer-forward-regen'
+permits it, because an instance variable of this link now sits inside
+it unquantified.  Only structure is linked: the class constraints a
+definition carries were closed when the using definition was
+registered, and this pass does not revisit them.  A reference that
+does not fit its definition signals a `termlisp-type-error' naming the
+definition.  A name no form in the batch ever defines keeps its
+references unconstrained, exactly as before linking existed."
+  (dolist (entry tl-infer-forward-order)
+    (let* ((env (car entry))
+           (name (cdr entry))
+           (pending (and tl-infer-forward-vars
+                         (gethash name tl-infer-forward-vars))))
+      (when pending
+        (remhash name tl-infer-forward-vars)
+        (let ((scheme (gethash name (tl-env-type-env env)))
+              (tl-occurrence-check (tl-env-option env :occurs-check)))
+          (when (tl-tscheme-p scheme)
+            (dolist (ref pending)
+              (let* ((inst (car (tl-instantiate-scheme scheme)))
+                     (u (tl-unify-types (cdr ref) inst nil)))
+                (unless (car u)
+                  (signal 'termlisp-type-error
+                          (list (condition-case nil
+                                    (format "Definition of %S does not match its earlier use:\n  the use needs: %s\n  the definition gives: %s"
+                                            name
+                                            (tl-type-text
+                                             (tl-type-to-datum (cdr ref)))
+                                            (tl-type-text
+                                             (tl-type-to-datum inst)))
+                                  (error "Definition of %S does not match its earlier use"
+                                         name)))))
+                ;; The instance's variables the unification left open
+                ;; are now part of the referencing definition's scheme,
+                ;; quantified by nothing.  Add only variables from this
+                ;; instantiation, and only above the level the
+                ;; registration generalized at: whatever the
+                ;; registration deliberately left monomorphic stays
+                ;; that way, and a scheme copied from a signature is
+                ;; the author's quantification and is not touched.
+                (let ((rs (and (car ref)
+                               (gethash (car ref) (tl-env-type-env env)))))
+                  (when (and (tl-tscheme-p rs)
+                             (not (gethash (car ref) (tl-env-sig-env env)))
+                             tl-infer-forward-regen
+                             (gethash (car ref) tl-infer-forward-regen))
+                    (let* ((old (tl-tscheme-vars rs))
+                           (add (cl-remove-if
+                                 (lambda (v)
+                                   (or (memq v old)
+                                       (let ((l (tl-node-level v)))
+                                         (null (and l (> l 1))))))
+                                 (tl-free-tvars inst))))
+                      (when add
+                        (setf (tl-tscheme-vars rs) (append old add))))))))))))))
+
 (defun tl-infer-symbol (env sym)
   "Infer the type of a bare symbol SYM."
   (let ((cell (assq sym (tl-tenv-locals env)))
@@ -1225,8 +1339,15 @@ optimization, and refusing to load over it would be the wrong trade."
               nil)))
      ;; A name some later form in this unit declares: type it as an
      ;; unconstrained variable, because there is no scheme to read yet.
+     ;; The variable is also remembered, so that when the definition
+     ;; finally arrives every earlier use can be told what it really
+     ;; was -- see `tl-forward--link'.
      ((and tl-infer-forward-names (gethash sym tl-infer-forward-names))
-      (cons (tl-fresh-tvar) nil))
+      (let ((v (tl-fresh-tvar)))
+        (when tl-infer-forward-vars
+          (push (cons tl-infer-defining v)
+                (gethash sym tl-infer-forward-vars)))
+        (cons v nil)))
      ;; Nothing knows this name.  It used to become a fresh variable,
      ;; which is how `(nosuch 1)' typechecked and then evaluated to a
      ;; stuck form: an unbound head constrains nothing, so every
@@ -1757,12 +1878,15 @@ arity."
                 (progn
                   (setq tl-elab-bindings bindings)
                   (tl-close-constraints env nil tl-infer-constraints bindings)
-                  (puthash name sig tyenv))
+                  (puthash name sig tyenv)
+                  (tl-forward--declare env name nil))
               (setq tl-elab-bindings bindings)
               (when (fboundp 'tl-kind-check)
                 (tl-kind-check env final))
-              (let ((kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
-                (puthash name (tl-generalize final kept) tyenv)))))))))
+              (let* ((kept (tl-close-constraints env gen-vars tl-infer-constraints bindings))
+                     (sc (tl-generalize final kept)))
+                (puthash name sc tyenv)
+                (tl-forward--declare env name t)))))))))
 
 (defun tl-syntactic-value-p (expr)
   "Return non-nil if EXPR is a syntactic value (value restriction)."
@@ -1786,13 +1910,16 @@ arity."
             (setq tl-elab-bindings fb)
             (tl-close-constraints env nil tl-infer-constraints fb)
             (puthash name sig (tl-env-type-env env))
+            (tl-forward--declare env name nil)
             ty)
         (if (tl-syntactic-value-p expr)
             (let* ((gen-vars (tl-generalized-vars ty))
                    (kept (tl-close-constraints env gen-vars tl-infer-constraints bindings)))
-              (puthash name (tl-generalize ty kept) (tl-env-type-env env)))
+              (puthash name (tl-generalize ty kept) (tl-env-type-env env))
+              (tl-forward--declare env name t))
           (tl-close-constraints env nil tl-infer-constraints bindings)
-          (puthash name (tl-tscheme nil ty) (tl-env-type-env env)))
+          (puthash name (tl-tscheme nil ty) (tl-env-type-env env))
+          (tl-forward--declare env name nil))
         ty))))
 
 (defun tl-type--argument-domains (type)
@@ -1899,6 +2026,7 @@ without the caller ever passing `n' or `m'."
       (tl-kind-check-scheme env sc))
     (puthash name sc (tl-env-type-env env))
     (puthash name t (tl-env-sig-env env))
+    (tl-forward--declare env name nil)
     name))
 
 (defun tl-typecheck-define (env form)
@@ -1906,8 +2034,9 @@ without the caller ever passing `n' or `m'."
 A definition whose name is a class method is skipped: its signature
 comes from the class declaration (registered in `tl-env-method-env'),
 and instance implementations are checked against that signature."
-  (let ((target (cadr form))
-        (tl-occurrence-check (tl-env-option env :occurs-check)))
+  (let* ((target (cadr form))
+         (tl-occurrence-check (tl-env-option env :occurs-check))
+         (tl-infer-defining (if (consp target) (car target) target)))
     (cond
      ((and (consp target) (gethash (car target) (tl-env-method-env env)))
       (car target))
@@ -2035,6 +2164,11 @@ the elaborator inserts as the first argument of overloaded method calls."
   "Typecheck all top-level forms in STRING into ENV.  Return ENV."
   (let* ((forms (termlisp-parse string))
          (tl-infer-forward-names (termlisp-collect-forward-names forms))
+         (tl-infer-forward-vars (or tl-infer-forward-vars
+                                    (make-hash-table :test #'eq)))
+         (tl-infer-forward-order nil)
+         (tl-infer-forward-regen (or tl-infer-forward-regen
+                                     (make-hash-table :test #'eq)))
          ;; Type-level reduction runs against this env, so that a
          ;; signature's `plus n m' can unfold while its type is being
          ;; compared with another.  `termlisp-eval-form' has always
@@ -2045,6 +2179,10 @@ the elaborator inserts as the first argument of overloaded method calls."
          (tl-nbe-reduce-env env))
     (dolist (form forms env)
       (tl-typecheck-form env form))
+    ;; Every form has been read, so a forward name has all its clauses:
+    ;; the uses made of it before its definition arrived can be told
+    ;; what it really was.
+    (tl-forward--link)
     ;; STRING is one batch, so this is the first moment every definition
     ;; in it has all of its clauses and a coverage check can mean
     ;; anything.  A form that fails leaves nothing queued: the driver

@@ -175,13 +175,22 @@ them.  Return nil when INPUT holds no top-level forms."
          (forms (termlisp-parse input))
          ;; One REPL submission is one unit, so a line may declare a
          ;; name it uses earlier in that same line.
-         (tl-infer-forward-names (termlisp-collect-forward-names forms)))
+         (tl-infer-forward-names (termlisp-collect-forward-names forms))
+         (tl-infer-forward-vars (or tl-infer-forward-vars
+                                    (make-hash-table :test #'eq)))
+         (tl-infer-forward-order nil)
+         (tl-infer-forward-regen (or tl-infer-forward-regen
+                                     (make-hash-table :test #'eq))))
     (when forms
       (unwind-protect
           (prog1
               (progn
                 (dolist (form forms value)
                   (setq value (termlisp-eval-form form env)))
+                ;; The submission is one batch, so a use made of a
+                ;; forward name before its definition was read can now
+                ;; be told what it really was.
+                (tl-forward--link)
                 (termlisp-value->string value))
             ;; A submission is this driver's batch, so this is the first
             ;; moment every clause of a function typed in on this line is
