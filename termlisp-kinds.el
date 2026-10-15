@@ -496,131 +496,168 @@ silent success."
           (setq k (tl-karr (tl--lifted-field-kind env f) k)))
         (puthash (car ca) k (tl-env-kind-env env))))))
 
+(defun tl-kind-infer--node (env ty)
+  "Infer the kind of the non-variable type node TY in ENV.  Return a kind node.
+TY is already dereferenced; its shape picks the rule.  `Pi' and `lambda'
+are cases of their own, anything else is an application walked against
+its head's kind."
+  (cond
+   ;; `Pi' is a dependent function type, not an ordinary constructor
+   ;; application: its three children are a binder and two types, so
+   ;; the arity rule below would hand it a three-argument kind.  Both
+   ;; domain and codomain are proper types.  The binder's own kind is
+   ;; whatever its uses demand -- `Vec a n' is what pins `n' to `Nat'
+   ;; -- so infer and store it, but do not check it.
+   ((and (tl-tcon-p ty) (eq (tl-node-head ty) 'Pi)
+         (= (length (tl-tcon-args ty)) 3))
+    (let ((a (tl-tcon-args ty)))
+      (tl-kind-infer env (nth 0 a))
+      (tl-kind-check env (nth 1 a))
+      (tl-kind-check env (nth 2 a))
+      tl-kind-star))
+   ;; A type-level lambda has the kind of the function it denotes.
+   ((and (tl-tcon-p ty) (eq (tl-node-head ty) 'lambda)
+         (= (length (tl-tcon-args ty)) 2))
+    (let ((a (tl-tcon-args ty)))
+      (tl-kind-check env (nth 1 a))
+      (tl-karr (tl-kind-infer env (nth 0 a)) tl-kind-star)))
+   ((tl-tcon-p ty)
+    (let ((head (tl-type-deref (tl-tcon-name ty)))
+          (args (tl-tcon-args ty)))
+      (if (null args)
+          (if (tl-node-var-p head)
+              (or (tl-node-kind head)
+                  (let ((k (tl-kind-var))) (setf (tl-node-kind head) k) k))
+            (or (tl-kind-freshen (tl-kind-of env head))
+                (tl-kind-var)))
+        (let* ((arg-ks (mapcar (lambda (a) (tl-kind-infer env a)) args))
+               (hk (cond ((tl-node-var-p head)
+                          (or (tl-node-kind head)
+                              (let ((k (tl-kind-var)))
+                                (setf (tl-node-kind head) k) k)))
+                         ;; A registered kind is a scheme: copy it, so
+                         ;; this application decides its variables
+                         ;; without deciding them for the next one.
+                         ((tl-kind-freshen (tl-kind-of env head)))
+                         (t (tl-kind-var))))
+               (ks arg-ks)
+               (left args)
+               (n 0)
+               (err nil))
+          ;; Walk the head's kind against the arguments one at a time
+          ;; instead of building the whole expected spine and unifying
+          ;; it in one go.  The two agree whenever the head's kind is a
+          ;; plain chain of arrows, and they stop agreeing the moment
+          ;; it opens with a `kpi', because a dependent binder is not
+          ;; matched *by* an arrow -- it is applied *to* an argument.
+          ;;
+          ;; That application is the entire point.  The binder stands
+          ;; for the type this very argument turned out to be, and
+          ;; substituting it is what lets the rest of the kind mention
+          ;; it.  `Eq : Π(a:*). univ(a) -> univ(a) -> *' asked of
+          ;; `Eq Nat Zero Zero' becomes `univ(Nat) -> univ(Nat) -> *'
+          ;; right here, and every later check measures against `Nat'
+          ;; because of it.  Asked of `Eq Nat Int Zero' it becomes the
+          ;; very same kind, and `Int' arrives carrying `*' where
+          ;; `univ(Nat)' asks for `Nat' -- so that program stops, and
+          ;; stops naming the argument that did it.
+          (while (and (null err) ks (or (tl-kpi-p hk) (tl-karr-p hk)))
+            (setq n (1+ n)
+                  ;; Dereference before reading children, not just
+                  ;; before the test above.  A head's kind is read
+                  ;; straight out of its KIND slot, and a slot holds a
+                  ;; *variable* that some earlier inference has since
+                  ;; bound to a chain -- so the predicate can be true
+                  ;; of a node whose own children are empty.  Reading
+                  ;; them off the underef'd variable would hand back
+                  ;; nil for the domain, and nil then fails to unify
+                  ;; with anything, which is the kind error nobody
+                  ;; asked for.
+                  hk (tl-kind-deref hk))
+            (let* ((dependent (tl-kpi-p hk))
+                   (dom (tl-kind-whnf
+                         (if dependent (tl-kpi-domain hk)
+                           (car (tl-node-children hk)))))
+                   (offered (tl-kind-whnf (car ks))))
+              (if (not (tl-kind-unify dom offered))
+                  (setq err (list (format
+                                   (concat "Kind error: %S argument %d is a %s"
+                                           " where a %s is required")
+                                   (if (symbolp head) head "type variable")
+                                   n
+                                   (tl-kind->string offered)
+                                   (tl-kind->string dom))))
+                (setq hk (if dependent
+                             (tl-gnode-subst (tl-kpi-body hk)
+                                             (tl-kpi-binder hk)
+                                             (car left))
+                           (nth 1 (tl-node-children hk)))
+                      ks (cdr ks)
+                      left (cdr left)))))
+          ;; A head whose kind is unknown has no chain to walk, so it
+          ;; takes the whole spine at once -- the shape the old code
+          ;; always built, reached now only when the head is genuinely
+          ;; undecided.
+          (when (and (null err) ks (tl-node-var-p (tl-kind-deref hk)))
+            (let* ((res (tl-kind-var))
+                   (w res))
+              (dolist (ak (reverse ks)) (setq w (tl-karr ak w)))
+              (if (tl-kind-unify (tl-kind-deref hk) w)
+                  (setq hk res ks nil)
+                (setq err (list "Kind error: recursive kind")))))
+          ;; Arguments left over with nowhere to go: too many.
+          (when (and (null err) ks)
+            (setq err (list (format "Kind error: %S applied to %d argument(s)"
+                                    (if (symbolp head) head "type variable")
+                                    (length args)))))
+          (when err (signal 'termlisp-type-error err))
+          ;; What comes back is the head's kind with its arguments
+          ;; taken off: `*' for a fully applied type constructor, an
+          ;; arrow or a binder for a partial one -- which is exactly
+          ;; what a partial application means, and why it is not a
+          ;; proper type.
+          hk))))
+   (t tl-kind-star)))
+
 (defun tl-kind-infer (env ty)
   "Infer the kind of type TY in ENV, unifying as it goes.
 Return a kind node.  Storing the kind in each variable's KIND slot makes
-repeated inference consistent; unknown heads get a fresh kind variable."
+repeated inference consistent; unknown heads get a fresh kind variable.
+An application node carries a provisional kind variable in its KIND slot
+while its own kind is being inferred, so an equirecursive type -- one
+unification tied back into itself, which the occurs-check-free default
+admits -- is met by the assumption instead of unfolded forever; the
+assumption is unified with what the walk finds, so a cycle that would
+need two kinds at once is still a kind error."
   (let ((ty (tl-type-deref ty)))
     (cond
      ((tl-tvar-p ty)
       (or (tl-node-kind ty)
           (let ((k (tl-kind-var))) (setf (tl-node-kind ty) k) k)))
-     ;; `Pi' is a dependent function type, not an ordinary constructor
-     ;; application: its three children are a binder and two types, so
-     ;; the arity rule below would hand it a three-argument kind.  Both
-     ;; domain and codomain are proper types.  The binder's own kind is
-     ;; whatever its uses demand -- `Vec a n' is what pins `n' to `Nat'
-     ;; -- so infer and store it, but do not check it.
-     ((and (tl-tcon-p ty) (eq (tl-node-head ty) 'Pi)
-           (= (length (tl-tcon-args ty)) 3))
-      (let ((a (tl-tcon-args ty)))
-        (tl-kind-infer env (nth 0 a))
-        (tl-kind-check env (nth 1 a))
-        (tl-kind-check env (nth 2 a))
-        tl-kind-star))
-     ;; A type-level lambda has the kind of the function it denotes.
-     ((and (tl-tcon-p ty) (eq (tl-node-head ty) 'lambda)
-           (= (length (tl-tcon-args ty)) 2))
-      (let ((a (tl-tcon-args ty)))
-        (tl-kind-check env (nth 1 a))
-        (tl-karr (tl-kind-infer env (nth 0 a)) tl-kind-star)))
-     ((tl-tcon-p ty)
-      (let ((head (tl-type-deref (tl-tcon-name ty)))
-            (args (tl-tcon-args ty)))
-        (if (null args)
-            (if (tl-node-var-p head)
-                (or (tl-node-kind head)
-                    (let ((k (tl-kind-var))) (setf (tl-node-kind head) k) k))
-              (or (tl-kind-freshen (tl-kind-of env head))
-                  (tl-kind-var)))
-          (let* ((arg-ks (mapcar (lambda (a) (tl-kind-infer env a)) args))
-                 (hk (cond ((tl-node-var-p head)
-                            (or (tl-node-kind head)
-                                (let ((k (tl-kind-var)))
-                                  (setf (tl-node-kind head) k) k)))
-                           ;; A registered kind is a scheme: copy it, so
-                           ;; this application decides its variables
-                           ;; without deciding them for the next one.
-                           ((tl-kind-freshen (tl-kind-of env head)))
-                           (t (tl-kind-var))))
-                 (ks arg-ks)
-                 (left args)
-                 (n 0)
-                 (err nil))
-            ;; Walk the head's kind against the arguments one at a time
-            ;; instead of building the whole expected spine and unifying
-            ;; it in one go.  The two agree whenever the head's kind is a
-            ;; plain chain of arrows, and they stop agreeing the moment
-            ;; it opens with a `kpi', because a dependent binder is not
-            ;; matched *by* an arrow -- it is applied *to* an argument.
-            ;;
-            ;; That application is the entire point.  The binder stands
-            ;; for the type this very argument turned out to be, and
-            ;; substituting it is what lets the rest of the kind mention
-            ;; it.  `Eq : Π(a:*). univ(a) -> univ(a) -> *' asked of
-            ;; `Eq Nat Zero Zero' becomes `univ(Nat) -> univ(Nat) -> *'
-            ;; right here, and every later check measures against `Nat'
-            ;; because of it.  Asked of `Eq Nat Int Zero' it becomes the
-            ;; very same kind, and `Int' arrives carrying `*' where
-            ;; `univ(Nat)' asks for `Nat' -- so that program stops, and
-            ;; stops naming the argument that did it.
-            (while (and (null err) ks (or (tl-kpi-p hk) (tl-karr-p hk)))
-              (setq n (1+ n)
-                    ;; Dereference before reading children, not just
-                    ;; before the test above.  A head's kind is read
-                    ;; straight out of its KIND slot, and a slot holds a
-                    ;; *variable* that some earlier inference has since
-                    ;; bound to a chain -- so the predicate can be true
-                    ;; of a node whose own children are empty.  Reading
-                    ;; them off the underef'd variable would hand back
-                    ;; nil for the domain, and nil then fails to unify
-                    ;; with anything, which is the kind error nobody
-                    ;; asked for.
-                    hk (tl-kind-deref hk))
-              (let* ((dependent (tl-kpi-p hk))
-                     (dom (tl-kind-whnf
-                           (if dependent (tl-kpi-domain hk)
-                             (car (tl-node-children hk)))))
-                     (offered (tl-kind-whnf (car ks))))
-                (if (not (tl-kind-unify dom offered))
-                    (setq err (list (format
-                                     (concat "Kind error: %S argument %d is a %s"
-                                             " where a %s is required")
-                                     (if (symbolp head) head "type variable")
-                                     n
-                                     (tl-kind->string offered)
-                                     (tl-kind->string dom))))
-                  (setq hk (if dependent
-                               (tl-gnode-subst (tl-kpi-body hk)
-                                               (tl-kpi-binder hk)
-                                               (car left))
-                             (nth 1 (tl-node-children hk)))
-                        ks (cdr ks)
-                        left (cdr left)))))
-            ;; A head whose kind is unknown has no chain to walk, so it
-            ;; takes the whole spine at once -- the shape the old code
-            ;; always built, reached now only when the head is genuinely
-            ;; undecided.
-            (when (and (null err) ks (tl-node-var-p (tl-kind-deref hk)))
-              (let* ((res (tl-kind-var))
-                     (w res))
-                (dolist (ak (reverse ks)) (setq w (tl-karr ak w)))
-                (if (tl-kind-unify (tl-kind-deref hk) w)
-                    (setq hk res ks nil)
-                  (setq err (list "Kind error: recursive kind")))))
-            ;; Arguments left over with nowhere to go: too many.
-            (when (and (null err) ks)
-              (setq err (list (format "Kind error: %S applied to %d argument(s)"
-                                      (if (symbolp head) head "type variable")
-                                      (length args)))))
-            (when err (signal 'termlisp-type-error err))
-            ;; What comes back is the head's kind with its arguments
-            ;; taken off: `*' for a fully applied type constructor, an
-            ;; arrow or a binder for a partial one -- which is exactly
-            ;; what a partial application means, and why it is not a
-            ;; proper type.
-            hk))))
-     (t tl-kind-star))))
+     ;; A node already being kinded answers with the kind assumed for
+     ;; it: that is what terminates inference on a cyclic type graph.
+     ;; The slot is provisional -- cleared below -- so a later walk
+     ;; measures the node again rather than trusting a verdict reached
+     ;; under whichever assumptions were live the first time.
+     ((tl-node-application ty)
+      (or (tl-node-kind ty)
+          (let ((assumed (tl-kind-var)))
+            (setf (tl-node-kind ty) assumed)
+            (unwind-protect
+                (let ((k (tl-kind-infer--node env ty)))
+                  (unless (tl-kind-unify assumed k)
+                    (signal 'termlisp-type-error
+                            (list (format
+                                   (concat "Kind error: %S contains itself, and"
+                                           " the kind it needs inside the cycle"
+                                           " does not match the kind it has"
+                                           " outside it")
+                                   (if (symbolp (tl-node-head ty))
+                                       (tl-node-head ty)
+                                     "type")))))
+                  k)
+              (setf (tl-node-kind ty) nil)))))
+     (t (tl-kind-infer--node env ty)))))
 
 (defun tl-kind-check (env ty)
   "Check that TY is a well-kinded proper type in ENV.  Return TY."

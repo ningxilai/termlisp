@@ -1243,5 +1243,24 @@ and its call sites pass the resolved instance dictionary."
              '(Let ((f (lambda ($dNum0 x) (num-add $dNum0 x x))))
                    ((Seq (f IntNumDict 1) (f IntNumDict 2))))))))
 
+;; Equirecursive kinds
+
+(ert-deftest tl-checked-recursion-on-a-bare-environment ()
+  "A recursive `define' checks on a bare environment.
+The field name of `(Succ n)' parses as a type parameter, so the clause
+pattern asks for the pattern variable's type to be `Nat' of itself --
+the equirecursive type `mu X. Nat X', which `:occurs-check' nil admits
+by design.  Kind inference must walk that cycle coinductively instead
+of unfolding it until the evaluator runs out of stack; the program is
+well-kinded and has to run."
+  (let ((env (termlisp-make-env '(:type-check t))))
+    (should (equal (termlisp-value->string
+                    (termlisp-eval "(datatype Nat (Zero) (Succ n))
+(define (tw (Succ n)) (Succ (tw n)))
+(define (tw Zero) Zero)
+(tw (Succ Zero))"
+                                   env))
+                   "(Succ Zero)"))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here
