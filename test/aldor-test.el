@@ -14,6 +14,7 @@
 (require 'curry-howard-test)
 (require 'nbe-test)
 (require 'graph-rewrite-test)
+(require 'preserve-test)
 (require 'treematch-workload-test)
 
 ;; Generated programs redefine elisp builtins (`cons', `apply', `sort'

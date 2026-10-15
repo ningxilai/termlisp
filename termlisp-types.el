@@ -2062,5 +2062,282 @@ the elaborator inserts as the first argument of overloaded method calls."
    (with-temp-buffer (insert-file-contents file) (buffer-string))
    env))
 
+;;; Type preservation of rewrite rules.
+;;; A rule LHS -> RHS preserves types when every redex it matches at a
+;;; type T rewrites to a reduct at that same T.  Both sides are typed
+;;; as terms with the pattern variables bound -- the left side first,
+;;; then everything the left side left open is frozen into a rigid
+;;; constant before the right side is read.  Freezing is what makes the
+;;; question the right one: the rule has to hold at every instantiation
+;;; the match admits, and a variable the right side was still free to
+;;; solve would only record the one instantiation it liked.  Three
+;;; verdicts come out, `preserved', `violated', `cannot-check', and
+;;; only the first says the rule is safe: anything that cannot be read
+;;; is reported as what it is, never as silence.
+
+(defun tl-preserve-check (env rule)
+  "Decide whether RULE preserves the types of the terms it rewrites.
+ENV is a type environment -- a `tl-env', or the local/base pair
+`tl-tenv-extend' builds -- giving every name in RULE its scheme.  RULE
+is a `tl-grule', plain or clause-based.  Return (VERDICT . REASON)
+where VERDICT is one of the symbols `preserved', `violated', and
+`cannot-check', and REASON is a string saying why the verdict is what
+it is (nil when preserved).  A guard is not read: guarding only makes
+a rule apply less often, and fewer redexes cannot undo what the
+unguarded rule already preserves."
+  (let ((clauses (or (tl-grule-clauses rule)
+                     (and (tl-grule-pattern rule)
+                          (list (cons (tl-grule-pattern rule)
+                                      (tl-grule-template rule)))))))
+    (if (null clauses)
+        (cons 'cannot-check "the rule has no pattern to match with")
+      (let ((verdict 'preserved)
+            (reason nil))
+        (dolist (clause clauses)
+          (let* ((pat (car clause))
+                 (side (if (tl-grule-clauses rule)
+                           (tl-preserve--pat-side pat)
+                         (tl-preserve--graph-side pat)))
+                 (v (if (eq side :unsupported)
+                        (cons 'cannot-check
+                              (format "pattern %S has no term reading" pat))
+                      (let* ((vars (delete-dups (cdr side)))
+                             (ident (mapcar
+                                     (lambda (v)
+                                       (cons v (tl-make-node v nil nil)))
+                                     vars))
+                             (term (tl-preserve--template-term
+                                    (cdr clause) ident)))
+                        (if (eq term :unsupported)
+                            (cons 'cannot-check
+                                  (format "the template of %S cannot be read as a term"
+                                          pat))
+                          (tl-preserve--pair env (car side) term vars))))))
+            (pcase (car v)
+              ('violated
+               (unless (eq verdict 'violated)
+                 (setq verdict 'violated reason (cdr v))))
+              ('cannot-check
+               (when (eq verdict 'preserved)
+                 (setq verdict 'cannot-check reason (cdr v)))))))
+        (cons verdict reason)))))
+
+(defun tl-preserve--pat-side (pat)
+  "Read compiled pattern PAT as a term, collecting its variables.
+Return (TERM . VARS), where every pattern variable is also a term
+variable, or `:unsupported' when PAT says how to match but not what
+the matched thing is: a rest binds a sequence, an as-pattern renames
+one, a list pattern matches a spelling no term has."
+  (pcase pat
+    (`(pvar ,name) (cons name (list name)))
+    (`(pwild) (cons '_ nil))
+    (`(plit ,value) (cons value nil))
+    ;; A lone list subpattern is matched against the whole child list,
+    ;; so this is the application (HEAD) with no children, not HEAD
+    ;; applied to something spelled pnil.
+    (`(pcon ,head (pnil)) (cons (list head) nil))
+    (`(pcon ,head) (cons head nil))
+    (`(pcon ,head . ,subs)
+     (let ((terms nil) (vars nil) (ok t))
+       (dolist (s subs)
+         (let ((r (tl-preserve--pat-side s)))
+           (if (eq r :unsupported)
+               (setq ok nil)
+             (push (car r) terms)
+             (setq vars (append vars (cdr r))))))
+       (if ok
+           (cons (cons head (nreverse terms)) vars)
+         :unsupported)))
+    (_ :unsupported)))
+
+(defun tl-preserve--graph-side (pattern)
+  "Read graph PATTERN as a term, collecting its pattern variables.
+Return (PATTERN . VARS), the pattern being its own term reading, or
+`:unsupported' when PATTERN asks for something a term cannot say --
+a `:rest' element binds the remaining nodes as a sequence, and a
+sequence is not one thing a type could be the type of."
+  (let ((vars nil) (ok t))
+    (cl-labels ((walk (p)
+                  (cond
+                   ((tl-graph--pvar-p p) (push p vars))
+                   ((consp p)
+                    (if (or (tl-graph--rest-p p) (tl-graph--splice-p p))
+                        (setq ok nil)
+                      (dolist (x p) (walk x)))))))
+      (walk pattern))
+    (if ok
+        (cons pattern (nreverse vars))
+      :unsupported)))
+
+(defun tl-preserve--template-term (template ident)
+  "Render TEMPLATE as the term it instantiates to under IDENT.
+IDENT maps each pattern variable to a leaf of the same name, the
+identity substitution, so the template rebuilds itself with its
+variables left standing and reading that back gives the term to type.
+This is what lets a closure template -- the body of the clause the
+rule was compiled from -- be checked at all: substituting every name
+for itself changes nothing, and the body comes back.  Return the term,
+or `:unsupported' when the template cannot be read: a function that
+signals, a splice with no list to splice, a variable the pattern never
+bound."
+  (condition-case nil
+      (tl-node->sexp (tl-graph-instantiate template ident))
+    (error :unsupported)))
+
+(defun tl-preserve--infer (env term)
+  "Infer the type of TERM in ENV as (TYPE), or as (nil MESSAGE).
+MESSAGE carries the failure, whatever class it was: a mismatch is the
+interesting one, and an unreadable name is told apart from it by
+`tl-preserve--unknown-names', which asks the environment directly."
+  (condition-case e
+      (list (car (tl-infer env term)))
+    (termlisp-type-error
+     (list nil (if (stringp (cadr e)) (cadr e) (error-message-string e))))
+    (error (list nil (error-message-string e)))))
+
+(defun tl-preserve--skolemize (locals lhs-ty)
+  "Freeze what the left side left open in LOCALS and LHS-TY.
+Return (SKOLEM-LOCALS SKOLEM-TYPE): every free variable of the bound
+types and of LHS-TY replaced, in both, by one fresh rigid constant
+each.  What the left side left open stands for every value the match
+admits -- the pattern's own variables, the instances the head scheme
+was read at -- so the right side may read those types but must not
+solve them.  The name of each constant carries a gensym only for
+distinction; a refusal renders it as itself."
+  (let* ((zlocals (mapcar (lambda (cell)
+                            (cons (car cell)
+                                  (tl-apply-bindings (cdr cell) nil)))
+                          locals))
+         (zty (tl-apply-bindings lhs-ty nil))
+         (open nil))
+    (dolist (cell zlocals)
+      (dolist (v (tl-free-tvars (cdr cell)))
+        (setq open (cons v open))))
+    (dolist (v (tl-free-tvars zty))
+      (setq open (cons v open)))
+    (let ((seen nil) (sub nil))
+      (dolist (v open)
+        (unless (memq v seen)
+          (push v seen)
+          (push (cons v (tl-tcon (gensym "sk") nil)) sub)))
+      (list (mapcar (lambda (cell)
+                      (cons (car cell) (tl-type-subst (cdr cell) sub)))
+                    zlocals)
+            (tl-type-subst zty sub)))))
+
+(defun tl-preserve--unknown-names (env term)
+  "Names in TERM that ENV gives no type to, or nil when it knows them all.
+This is the gap half of the verdict.  A reduct that fails to type
+against a name the environment has never heard of proves nothing about
+the rule, while one that fails with every name known proves the rule
+violates preservation -- so the two failures of `tl-preserve--infer'
+are told apart by asking, not by reading the message."
+  (let ((unknown nil))
+    (cl-labels ((known-p (s)
+                  (or (eq s '_)
+                      (assq s (tl-tenv-locals env))
+                      (let ((base (tl-tenv-base env)))
+                        (and base
+                             (or (gethash s (tl-env-type-env base))
+                                 (gethash s (tl-env-method-env base))
+                                 (gethash s (tl-env-datatypes base)))))
+                      (gethash s tl-builtin-types)
+                      (and tl-infer-forward-names
+                           (gethash s tl-infer-forward-names))))
+                (walk (term bound)
+                  (cond
+                   ((or (numberp term) (stringp term)) nil)
+                   ((symbolp term)
+                    (unless (or (memq term bound) (known-p term))
+                      (push term unknown)))
+                   ((consp term)
+                    (pcase (car-safe term)
+                      ('lambda
+                       (if (and (consp (cdr term)) (consp (cadr term))
+                                (consp (cddr term)) (null (cdddr term)))
+                           (walk (caddr term) (append (cadr term) bound))
+                         (push 'malformed-lambda unknown)))
+                      ('let
+                       (if (and (consp (cdr term)) (listp (cadr term))
+                                (consp (cddr term)))
+                           (let ((names nil))
+                             (dolist (b (cadr term))
+                               (if (and (consp b) (consp (cdr b))
+                                        (null (cddr b)))
+                                   (progn
+                                     (walk (cadr b) bound)
+                                     (push (car b) names))
+                                 (push 'malformed-let unknown)))
+                             (dolist (body (cddr term))
+                               (walk body (append names bound))))
+                         (push 'malformed-let unknown)))
+                      ((or 'do 'list)
+                       (dolist (x (cdr term)) (walk x bound)))
+                      (_
+                       ;; An IR head is read by its handler, never
+                       ;; resolved as a name, so it counts as known.
+                       (unless (and (symbolp (car term))
+                                    (gethash (car term) tl-infer-ir-heads))
+                         (walk (car term) bound))
+                       (dolist (x (cdr term)) (walk x bound))))))))
+      (walk term nil))
+    (nreverse unknown)))
+
+(defun tl-preserve--pair (env lhs rhs vars)
+  "Type the terms LHS and RHS against each other in ENV.
+VARS are the rule's pattern variables: bound while the left side is
+read, frozen rigid before the right side is, so the right side is
+checked at every type the match allows rather than at the one it would
+choose.  Return (VERDICT . REASON) as `tl-preserve-check'."
+  (let* ((tl-infer-constraints nil)
+         (tl-infer-holes nil)
+         (tl-elab-active nil)
+         ;; Lenient inference would absorb the very mismatch being
+         ;; looked for, so the oracle's tolerance is turned off here.
+         (tl-type-lenient nil)
+         (locals (mapcar (lambda (v) (cons v (tl-fresh-tvar))) vars))
+         (lhs-r (tl-preserve--infer (tl-tenv-extend env locals) lhs)))
+    (cond
+     ((null (car lhs-r))
+      (cons 'cannot-check
+            (format "the pattern does not type: %s" (cadr lhs-r))))
+     (tl-infer-constraints
+      (cons 'cannot-check
+            (format "the pattern needs class dictionaries: %S"
+                    (mapcar #'tl-constraint-class tl-infer-constraints))))
+     (t
+      (pcase-let ((`(,sk-vars ,sk-ty)
+                   (tl-preserve--skolemize locals (car lhs-r))))
+        (setq tl-infer-constraints nil)
+        (let* ((env2 (tl-tenv-extend env sk-vars))
+               (rhs-r (tl-preserve--infer env2 rhs)))
+          (cond
+           ((null (car rhs-r))
+            (let ((unknown (tl-preserve--unknown-names env2 rhs)))
+              (if unknown
+                  (cons 'cannot-check
+                        (format "the reduct names what nothing has a type for: %S"
+                                unknown))
+                (cons 'violated
+                      (format "the reduct does not type: %s" (cadr rhs-r))))))
+           (tl-infer-constraints
+            (cons 'cannot-check
+                  (format "the reduct needs class dictionaries: %S"
+                          (mapcar #'tl-constraint-class tl-infer-constraints))))
+           (t
+            (let ((u (condition-case e
+                          (tl-unify-types sk-ty (car rhs-r) nil)
+                        (termlisp-type-error
+                         (cons nil (cadr e))))))
+              (if (car u)
+                  '(preserved)
+                (cons 'violated
+                      (or (cdr u)
+                          (format "the reduct is at %s, the pattern at %s"
+                                  (tl-type-text
+                                   (tl-type-to-datum (car rhs-r)))
+                                  (tl-type-text
+                                   (tl-type-to-datum sk-ty)))))))))))))))
+
 (provide 'termlisp-types)
 ;;; termlisp-types.el ends here
