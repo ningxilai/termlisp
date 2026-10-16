@@ -186,6 +186,43 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     against `0efdeb8', parsecheck OK (37 files), `loaddefs-generate' prints
     no prefix warning (25 registrations).
 
+- [x] **P1-11 The reader guarded `read-eval', which never existed** —
+  `termlisp-parse' and `termlisp-read-complete-p' both carried
+  `(when (boundp 'read-eval) ...)' with a comment claiming the variable
+  "was removed in Emacs 32 ... on older Emacsen it defaults to t", and the
+  commentary and two README passages repeated the story -- but there has
+  never been a `read-eval' variable in Emacs: `git log -S' over
+  `src/lread.c' finds the string in zero revisions, NEWS never mentions
+  it, and the only substring hits in all of Emacs are edebug's
+  `edebug-install-read-eval-functions', which advises `load-read-function'
+  and `eval-defun' and shares nothing with a reader switch.  `#.' never
+  needed one either: the dispatch on the character after the hash has no
+  `.' case, so `#.' has been invalid read syntax all along -- Emacs 32
+  signals `invalid-read-syntax', and the string `"#."' is absent from
+  lread.c's history too.  The guard was therefore dead on every version it
+  claimed to protect: it could not have fired once, and the trust boundary
+  it purported to hold is held by the grammar itself.  The guard and its
+  comment are gone from both functions, the commentary now says read-time
+  evaluation needs no switch (and no longer lists `#1=' labels among the
+  things the reader accepts, the contradiction the README had been
+  documenting in a parenthetical -- that parenthetical is gone too, with
+  the contradiction fixed at the source), and the README's trust-boundary
+  paragraph and reporting checklist are rewritten against what the reader
+  actually does.  The rest of the sweep is clean: every other `boundp' /
+  `fboundp' guard in the tree tests for something real, and the
+  `read-circle' half of the trust boundary is true as written (nil rejects
+  finite and circular `#1=' labels alike, verified).
+  - [x] `tl-reader-cannot-evaluate-at-read-time' pins the boundary the old
+    comment claimed to hold: `termlisp-parse' rejects `#.' with a parse
+    error and `termlisp-read-complete-p' sends it to evaluation like any
+    other read error.  Green before and after, as the defect was a false
+    comment and dead code, which no behavior test could see; the red was
+    in `git log', not in ERT.
+  - [x] Suite 500/500, `make compile` 0 warnings with 27 .elc, isolated
+    per-file compile clean, checkdoc 366 = 366 with an empty normalized diff
+    against `72defcc', parsecheck OK (37 files), `loaddefs-generate' prints
+    no prefix warning (25 registrations).
+
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
 - [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open

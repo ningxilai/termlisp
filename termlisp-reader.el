@@ -6,10 +6,11 @@
 ;; Top-level forms are ordinary S-expressions read with the Emacs reader.
 ;;
 ;; Trust boundary: this reader accepts the full Emacs Lisp reader grammar
-;; (vectors, records, `#1=' labels, and so on) and is intended for trusted
-;; term-lisp source, not arbitrary untrusted input.  Circular `#1='
-;; structures are rejected by binding `read-circle' to nil, and read-time
-;; evaluation is disabled on Emacsen where `read-eval' is bound.
+;; (vectors, records, and so on) and is intended for trusted term-lisp
+;; source, not arbitrary untrusted input.  Circular `#1=' structures are
+;; rejected by binding `read-circle' to nil; read-time evaluation needs
+;; no such switch, because the Emacs Lisp reader has never had any: `#.'
+;; is invalid read syntax.
 
 ;;; Code:
 
@@ -37,10 +38,6 @@ and signal a spurious `end-of-file'.")
   (with-temp-buffer
     (insert string)
     (goto-char (point-min))
-    ;; `read-eval' was removed in Emacs 32, where `#.' is invalid syntax;
-    ;; on older Emacsen it defaults to t, so turn it off buffer-locally.
-    (when (boundp 'read-eval)
-      (set (make-local-variable 'read-eval) nil))
     (let ((read-circle nil)
           (forms nil))
       (condition-case err
@@ -71,10 +68,6 @@ when the input is evaluated."
   (with-temp-buffer
     (insert string)
     (goto-char (point-min))
-    ;; `read-eval' was removed in Emacs 32, where `#.' is invalid syntax;
-    ;; on older Emacsen it defaults to t, so turn it off buffer-locally.
-    (when (boundp 'read-eval)
-      (set (make-local-variable 'read-eval) nil))
     (let ((read-circle nil))
       (condition-case nil
           (progn

@@ -148,16 +148,13 @@ character literals such as `?a` and `?\n`, and symbols. Comments run from
 `;` to end of line.
 
 The reader accepts the elisp reader grammar — vectors, records, quoted
-forms, radix prefixes — with two things switched off. Binding
+forms, radix prefixes — with one thing switched off. Binding
 `read-circle` to nil rejects **every** `#1=` label, not just circular
 ones: a finite `#1=(a b)` fails exactly as a self-referential one would.
-Read-time evaluation is likewise off, so `#.` is not readable either.
-That is deliberate: this reader is for **trusted** term-lisp source, not
-arbitrary untrusted input.
-
-(The commentary in `termlisp-reader.el` says "`#1=` labels and so on" and
-then says they are rejected. The second half is the true one; the first
-is an artifact of the same sentence.)
+Read-time evaluation is not a switch at all: the Emacs Lisp reader has
+never had it, so `#.` has always been invalid read syntax and there was
+never a `read-eval` variable to turn off. That is deliberate: this reader
+is for **trusted** term-lisp source, not arbitrary untrusted input.
 
 One consequence is worth stating plainly: `?0` is a character literal, not
 a symbol. You cannot write a type variable called `?N`, and the test suite
@@ -1229,8 +1226,7 @@ option plist:
 3. **The verbatim error message**, in full, including the
    `the signature says:` / `this clause gives:` lines if present. Message
    text is the diagnostic; paraphrasing it loses the part that matters.
-4. **`C-h v emacs-version`**, since the floor is Emacs 27.1 and the reader
-   behaves differently on Emacsen where `read-eval` is bound.
+4. **`C-h v emacs-version`**, since the floor is Emacs 27.1.
 5. **Whether `cats` is installed**, for anything touching
    `termlisp-data-reader.el`.
 

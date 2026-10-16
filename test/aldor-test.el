@@ -1417,5 +1417,18 @@ well-kinded and has to run."
   (should-not (termlisp-eval-submission ";; nothing to evaluate"))
   (should-not (termlisp-eval-submission "  \n ")))
 
+;; The trust boundary needs no read-time-evaluation switch, because the
+;; Emacs Lisp reader has never had one: the dispatch on the character
+;; following the hash has no `.' case, so `#.' is invalid read syntax and
+;; the `(boundp 'read-eval)' guard the reader used to carry could never
+;; have fired on any version.
+
+(ert-deftest tl-reader-cannot-evaluate-at-read-time ()
+  "`#.' is invalid read syntax, so reading it is a parse error."
+  (should-error (termlisp-parse "#. (1+ 2)") :type 'termlisp-parse-error)
+  ;; The completeness question sends it to evaluation like any other
+  ;; read error, rather than waiting for input that would balance it.
+  (should (termlisp-read-complete-p "#. (1+ 2)")))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here
