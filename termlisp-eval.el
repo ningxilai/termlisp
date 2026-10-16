@@ -31,6 +31,14 @@
 ;; dependency pointing the right way: the unifier declares a hook, the
 ;; layer that owns an evaluator fills it in.
 (require 'termlisp-nbe)
+;; The rewrite gate in this module is where a clause pays for the two
+;; obligations a value verdict cannot speak for: `tl-kind-preserve-check'
+;; asks whether the rule preserves the kinds of the types it could be
+;; unfolded inside, and the locality trial runs the rule through
+;; `tl-dpo-normalize'.  Both are kind-level questions, and kinds is
+;; where their checker lives; the dependency is acyclic (kinds needs
+;; only `termlisp-types').
+(require 'termlisp-kinds)
 
 (define-error 'termlisp-hole "Unsolved goal")
 ;; Inheriting from `error' and not from `termlisp-type-error' is
@@ -486,6 +494,49 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
               (cons (cons target value) (tl-env-globals env)))
         value))))
 
+(defconst tl-rewrite--trial-fuel 100
+  "How many steps a rewrite's locality trial may take.
+The subject is the rule's own pattern, which one step already
+rewrites; the rest of the budget is there for a reduct that keeps
+rewriting itself, and a rule that needs more than this at its own
+redex would not settle inside a type either.")
+
+(defun tl-rewrite--locality (rule lhs)
+  "Return why RULE's cut at its own pattern LHS is not local, or nil.
+LHS is the pattern as written -- for a clause the type layer can
+read, it is a term as well -- and it is built into a graph of its own
+and reduced with this one rule.  `tl-dpo-normalize' checks every cut
+as it happens and leaves the first verdict that is not local in
+`tl-dpo-last-gluing'; this function reads the slot back, and leaves
+the verdict there for the same callers `tl-reduce-term' documents --
+the slot says what the most recent DPO normalisation found, and the
+trial is one.  A redex at
+the root has no holder outside the match, so the first cut is always
+local; what the rest of the walk can find is the rule rewriting its
+own reduct again under a holder it does not own (dangling), or a
+pattern whose two positions would reach one node (identification).
+Both verdicts are ordinary at the value level, where they are
+recorded and the reduction goes on -- a value can be re-generalized
+after a shared cut -- and a kind cannot, which is why the record
+becomes a refusal here.  A walk that runs out of fuel is the rule not
+settling at its own redex.  Return a string naming what was found, or
+nil when every cut was local."
+  (let ((settled nil)
+        (reason nil))
+    (condition-case e
+        (progn
+          (tl-dpo-normalize (tl-graph-root (tl-graph-build lhs))
+                            (list rule)
+                            tl-rewrite--trial-fuel
+                            'termlisp-type-error)
+          (setq settled t))
+      (termlisp-type-error
+       (setq reason (format "the pattern does not settle: %s" (cadr e)))))
+    (cond (tl-dpo-last-gluing
+           (format "the cut is not local: %s" (car tl-dpo-last-gluing)))
+          ((not settled) reason)
+          (t nil))))
+
 (defun tl-rewrite-desugar (env form)
   "Return FORM as the `define' form it means, having checked the rewrite.
 FORM that is not a `rewrite' comes back untouched, so every dispatcher
@@ -499,6 +550,17 @@ rule it adds preserves the types of the terms it would rewrite.
 only verdict that lets the clause in -- `violated' names what broke,
 `cannot-check' what ENV could not see, so an environment without
 `:type-check' refuses as surely as one that watched the rule fail.
+
+Two further obligations follow from the clause being readable by the
+type layer at all: a clause the type layer can choose may be unfolded
+inside a type, so `tl-kind-preserve-check' must find the rule
+preserving the kinds of both its sides as well, and the rule is tried
+at its own pattern through `tl-dpo-normalize' so that
+`tl-rewrite--locality' can ask whether every cut it takes is local.
+A value can be re-generalized after a shared cut, which is why
+`tl-reduce-term' only records that verdict; a kind cannot, so here it
+refuses.
+
 Every refusal is a `termlisp-type-error'
 raised before any dispatcher has appended anything, so a refused rewrite
 leaves the environment exactly as it was.
@@ -544,6 +606,16 @@ forward-name registration and signature checking included."
             (signal 'termlisp-type-error
                     (list (format "rewrite of %s refused: %s"
                                   name (cdr verdict))))))
+        (let ((kverdict (tl-kind-preserve-check env rule)))
+          (unless (eq (car kverdict) 'preserved)
+            (signal 'termlisp-type-error
+                    (list (format "rewrite of %s refused: %s"
+                                  name (cdr kverdict))))))
+        (let ((escape (tl-rewrite--locality rule target)))
+          (when escape
+            (signal 'termlisp-type-error
+                    (list (format "rewrite of %s refused: %s"
+                                  name escape)))))
         (cons 'define (cdr form))))))
 
 (defun tl-eval-datatype (env form)

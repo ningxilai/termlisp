@@ -94,13 +94,40 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   (`(List $a) -> Zero') and a reduct that mistakes a type for a value
   (`(List $a) -> (Cons $a $a)').  Type-level `rewrite' is not gated here;
   F2 hangs the gate on this checker.
-- [ ] **F2 类型层 `rewrite`/`reduce` 落地，门控于 F1 + 局部性** — the
+- [x] **F2 类型层 `rewrite`/`reduce` 落地，门控于 F1 + 局部性** — the
   `tl-dpo-last-gluing` consumer: kind-level normalization runs through
   `tl-dpo-normalize` and `tl-dpo--step-gluing`; the checker reads
   `tl-dpo-last-gluing` and refuses on any non-nil verdict (dangling / cross-rule
   escape), because a kind cannot be re-generalized the way a value can.
-  - [ ] Non-nil gluing type-level rule rejected with `termlisp-type-error`.
-  - [ ] Nil gluing passes unchanged.
+  - [x] Non-nil gluing type-level rule rejected with `termlisp-type-error`.
+  - [x] Nil gluing passes unchanged.
+
+  The gate hangs in `tl-rewrite-desugar`, after the value verdict.  Every
+  clause that reaches it is already readable by the type layer
+  (`tl-nbe--make-rule` refuses the ones that are not), which means every
+  admitted rewrite can be unfolded inside a type — so F1's
+  `tl-kind-preserve-check` is asked of every `rewrite`, not only of some
+  marked type-level subset, and an ordinary value clause passes it the
+  same way the oracle's family does not.  Then the locality trial: the
+  rule's own pattern (the target as written, a term for a clause the type
+  layer can read) is built into a graph and normalized with this one rule
+  under `tl-dpo-normalize`, which runs every cut through
+  `tl-dpo--step-gluing` and writes the first non-local verdict to
+  `tl-dpo-last-gluing`.  A redex at the root has no holder outside the
+  match, so refusals come from the walk finding what a root cut alone
+  cannot: `identification` (a pattern whose two positions would reach one
+  host node) and `dangling` (the reduct rewriting itself again under a
+  holder it does not own).  Both are records at the value level —
+  `tl-reduce-term` still only records, and the slot it documents now also
+  carries the trial's verdict, nil included — and refusals here.  A walk
+  that runs out of `tl-rewrite--trial-fuel` is the rule not settling at
+  its own redex, refused with that wording.  All three refusals are
+  `termlisp-type-error` raised before the clause list is touched.
+  P3-5's question — whether kind-level normalization adopts
+  `tl-dpo-normalize` as a production caller — is answered yes here;
+  closing the checkbox stays with F5.  Pinned by four tests in
+  `rewrite-form-test` (kinds, identification, dangling, and the nil slot
+  after an accepted rewrite); suite 474/474.
 - [ ] **F3 prelude 获得类型层规则** — e.g. `Vec` arithmetic, type-level `+`,
   every rule through the F1+F2 gate.
   - [ ] Every prelude type-level rule lands in its oracle bucket.

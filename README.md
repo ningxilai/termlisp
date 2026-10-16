@@ -936,8 +936,15 @@ environment's rules, with `:fuel` as its budget; the reduct it hands
 back is a term again, ready to splice into a program or to read as
 data. `(rewrite (NAME PATTERN...) BODY)` goes the other way: it adds a
 clause to an existing function, and the clause is admitted only when
-`tl-preserve-check` returns `preserved` for the rule the pair makes.
-Every other verdict signals `termlisp-type-error` before the clause
+the rule the pair makes passes its three gates — `tl-preserve-check`
+must find it preserving the types of the terms it rewrites,
+`tl-kind-preserve-check` the kinds of the types the type layer could
+unfold it inside, and a trial through `tl-dpo-normalize` must leave
+`tl-dpo-last-gluing` nil, every cut the rule takes at its own pattern
+having been local. A value can be re-generalized after a shared cut,
+which is why `reduce` records that verdict and carries on; a kind
+cannot, so `rewrite` refuses it. Every refusal signals
+`termlisp-type-error` before the clause
 list is touched, so a refused `rewrite` leaves the environment exactly
 as it was.
 

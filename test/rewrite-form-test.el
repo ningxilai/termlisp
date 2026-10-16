@@ -116,5 +116,43 @@ r1" "(Succ Zero)" '(:type-check t :elaborate t))
   "(define (spin n) (spin (Succ n)))
 (reduce (spin Zero))" "fuel" '(:fuel 30))
 
+;; The gate also holds the two obligations a value verdict cannot
+;; speak for.  A clause the type layer can read may be unfolded inside
+;; a type, so the kinds it preserves are asked of it too, and its cut
+;; is tried at its own pattern under DPO discipline: a value can be
+;; re-generalized after a shared cut, a kind cannot, so what `reduce'
+;; merely records the gate refuses.
+
+(tl-test-reject tl-rewrite-form-refuses-a-rule-the-kinds-do-not-allow
+  "(datatype Box (MkBox (-> Nat Nat)))
+(define (h (MkBox f)) Zero)
+(rewrite (h (MkBox f)) (f Zero))" "the reduct does not kind"
+  '(:type-check t :elaborate t))
+
+(tl-test-reject tl-rewrite-form-refuses-a-pattern-that-cuts-where-it-does-not-own
+  "(define (f x y) x)
+(datatype G (MkG a))
+(rewrite (f (MkG a) (MkG a)) (MkG a))" "the cut is not local: identification"
+  '(:type-check t :elaborate t))
+
+(tl-test-reject tl-rewrite-form-refuses-a-reduct-that-escapes-its-own-cut
+  "(define (f x) x)
+(rewrite (f (Succ x)) (Succ (f (Succ x))))" "the cut is not local: dangling"
+  '(:type-check t :elaborate t))
+
+(ert-deftest tl-rewrite-form-tries-a-rule-and-finds-every-cut-local ()
+  "An accepted rewrite leaves the trial's own verdict behind: nil.
+The gate normalises the pattern with the new rule and writes what the
+walk found to `tl-dpo-last-gluing', the slot `tl-reduce-term' also
+reports through; the sentinel shows the slot was written, and `rf'
+answers at the extended type because the clause really landed."
+  (let ((env (termlisp-load-prelude
+              (termlisp-make-env '(:type-check t :elaborate t)))))
+    (termlisp-eval "(define (rf True) True)" env)
+    (setq tl-dpo-last-gluing 'unset)
+    (termlisp-eval "(rewrite (rf False) False)" env)
+    (should-not tl-dpo-last-gluing)
+    (should (equal (termlisp-eval "(rf False)" env) 'False))))
+
 (provide 'rewrite-form-test)
 ;;; rewrite-form-test.el ends here
