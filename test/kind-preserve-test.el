@@ -109,8 +109,13 @@ The oracle buckets the rule set `tl-nbe--rules' hands the type level,
 the way the value oracle buckets it: the family named in
 `kind-preserve-test--violated' comes back `violated' and no other
 rule may, nothing may go undecided, and every rule lands in exactly
-one bucket.  A change here is a finding about the prelude, not a
-nuisance: the test exists so the change has to be looked at."
+one bucket.  Rules the oracle has met since it was written are named
+too: `vappend' computes its codomain's index with the type-level
+`plus', and if its clauses ever stopped being type-readable the rule
+would leave the set and every count above would still hold, so
+presence is asked for directly.  A change here is a finding about
+the prelude, not a nuisance: the test exists so the change has to be
+looked at."
   (let* ((env (kind-preserve-test--env))
          (rules (tl-nbe--rules (tl-nbe env nil)))
          (buckets (list (cons 'preserved nil)
@@ -129,7 +134,10 @@ nuisance: the test exists so the change has to be looked at."
         (should (memq name got))))
     (should (= (length rules)
                (+ (length (cdr (assq 'preserved buckets)))
-                  (length kind-preserve-test--violated))))))
+                  (length kind-preserve-test--violated))))
+    ;; Presence, not just arithmetic: a rule that stops being
+    ;; type-readable disappears from `rules' and no count moves.
+    (should (memq 'vappend (cdr (assq 'preserved buckets))))))
 
 (provide 'kind-preserve-test)
 ;;; kind-preserve-test.el ends here

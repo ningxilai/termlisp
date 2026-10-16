@@ -10,12 +10,15 @@
 (define (if (False) a b) b)
 (define (not (True)) (False))
 (define (not (False)) (True))
-(define (and (True) (True)) (True))
-(define (and (True) (False)) (False))
+;; `and' and `or' decide one position in the pattern and pass the
+;; other through instead of spelling the truth table out.  A pattern
+;; that repeats a constructor is a cut the locality trial reports --
+;; two positions reaching one node on a hash-consed graph -- and the
+;; two clauses here answer the same table without one.
+(define (and (True) b) b)
 (define (and (False) a) (False))
 (define (or (True) a) (True))
-(define (or (False) (True)) (True))
-(define (or (False) (False)) (False))
+(define (or (False) b) b)
 
 ;; Pairs
 (datatype Pair (Pair a b))
@@ -79,6 +82,18 @@
 (datatype (Fin n)
   (FZ : (Fin (Succ n)))
   (FS (Fin n) : (Fin (Succ n))))
+
+;; Vec arithmetic over those indices.  The codomain's index is the
+;; type-level `plus' of the two argument indices, so checking a clause
+;; reduces a type: `(plus Zero m)' to `m' for the nil case,
+;; `(plus (Succ n) m)' to `(Succ (plus n m))' for the cons case.  The
+;; clauses are type-readable like `plus''s own, so the type layer can
+;; unfold `vappend' inside a type as well.
+(: vappend (-> (a : *) (n : Nat) (m : Nat)
+               (xs : (Vec a n)) (ys : (Vec a m))
+               (Vec a (plus n m))))
+(define (vappend VNil ys) ys)
+(define (vappend (VCons x xs) ys) (VCons x (vappend xs ys)))
 
 ;; Operators from the hlisp reference implementation.  Equality, exclusive
 ;; or and the null test are ordinary definitions; division (`/') and the

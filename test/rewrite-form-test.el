@@ -20,6 +20,12 @@
 ;; `reduce' in every position it can appear in as about the unfolding
 ;; itself: head position, argument position, and the honest refusal
 ;; for an open term whose free variable has no type to report.
+;;
+;; The gate is also turned on the prelude's own rules, which were
+;; written before there was a gate to run them through: every clause
+;; is rebuilt as the term it spells and given the same locality trial
+;; a new `rewrite' gets, and the one rule that cannot pass it is
+;; recorded under its reason rather than let through silently.
 
 ;;; Code:
 
@@ -153,6 +159,77 @@ answers at the extended type because the clause really landed."
     (termlisp-eval "(rewrite (rf False) False)" env)
     (should-not tl-dpo-last-gluing)
     (should (equal (termlisp-eval "(rf False)" env) 'False))))
+
+;;; The locality trial over the prelude's own rules
+
+(defconst rewrite-form-test--folded
+  '(trans)
+  "Prelude rules the locality trial reports, by name.
+`trans' spells both its arguments `Refl' because the clause needs
+them to type: each `Refl' pattern collapses one equation of the
+signature's `x y z' chain, and only then does the body `Refl' prove
+`(Eq a x z)'.  The two positions reach one node on a term graph that
+hash-conses, so what the trial reports as identification is one
+element of the pattern appearing at two places, and the reduct is
+the node those positions already share.  The verdict stays recorded
+in `tl-dpo-last-gluing' as it is for `reduce', and a user rewrite
+that repeats a subterm it does not need is refused as before: this
+is the one rule the prelude cannot spell any other way.")
+
+(defun rewrite-form-test--pattern-term (pat)
+  "Return the term the compiled pattern PAT spells.
+A variable, a literal or a wildcard reads itself, a nullary
+constructor stands as its own atom rather than a call, and a
+constructor with parameters spells the application."
+  (pcase (car-safe pat)
+    ('pvar (cadr pat))
+    ('plit (cadr pat))
+    ('pwild '_)
+    ('pcon (if (null (cddr pat))
+               (cadr pat)
+             (cons (cadr pat)
+                   (mapcar #'rewrite-form-test--pattern-term (cddr pat)))))
+    (_ (error "The type layer does not read pattern %S" pat))))
+
+(defun rewrite-form-test--lhs (name pat)
+  "Return the application of NAME that the clause PAT spells.
+A compiled pattern leads with the name and carries `(pnil)' markers
+for parameters the term does not spell, so those are dropped and the
+remaining arguments read as terms."
+  (cons name
+        (mapcar #'rewrite-form-test--pattern-term
+                (cl-remove-if (lambda (x) (eq (car-safe x) 'pnil))
+                              (cddr pat)))))
+
+(ert-deftest tl-rewrite-locality-trials-the-prelude-rules ()
+  "Every clause the prelude ships cuts locally at its own pattern.
+Each rule's clauses are rebuilt as the terms they spell and put
+through `tl-rewrite--locality', the trial the gate runs on a new
+`rewrite': nil is the answer every rule gives, except that the rules
+named in `rewrite-form-test--folded' must come back flagged, so the
+exemption can neither be passed over quietly nor outlive the reason
+written down for it.  A rule that stopped being type-readable would
+leave the rule set and never be tried at all, so the count is also
+checked to have reached past the number of rules: clauses, not
+rules, are what this pins."
+  (let* ((env (termlisp-load-prelude
+               (termlisp-make-env '(:type-check t :elaborate t))))
+         (rules (tl-nbe--rules (tl-nbe env nil)))
+         (tried 0)
+         (flagged nil))
+    (should rules)
+    (dolist (r rules)
+      (dolist (cl (tl-grule-clauses r))
+        (let* ((name (tl-grule-name r))
+               (v (tl-rewrite--locality
+                   r (rewrite-form-test--lhs name (car cl)))))
+          (setq tried (1+ tried))
+          (if (memq name rewrite-form-test--folded)
+              (when v (push name flagged))
+            (should-not v)))))
+    (should (> tried (length rules)))
+    (dolist (name rewrite-form-test--folded)
+      (should (memq name flagged)))))
 
 (provide 'rewrite-form-test)
 ;;; rewrite-form-test.el ends here

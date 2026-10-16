@@ -168,8 +168,12 @@ The graph pattern reading refuses it rather than inventing a meaning."
 Anything preserved must say so with no reason attached; the family
 that cannot be decided must appear, under its names, exactly as
 documented in `preserve-test--cannot', and no rule may be violated.
-A change here is a finding about the prelude, not a nuisance: the
-test exists so the change has to be looked at."
+Rules the oracle has met since it was written are named too:
+`vappend' computes its codomain's index with the type-level `plus',
+and if its clauses ever stopped being type-readable the rule would
+leave the set and the loop above would never see it, so presence is
+asked for directly.  A change here is a finding about the prelude,
+not a nuisance: the test exists so the change has to be looked at."
   (let* ((env (termlisp-load-prelude
                (termlisp-make-env '(:type-check t :elaborate t))))
          (rules (tl-nbe--rules (tl-nbe env nil)))
@@ -185,7 +189,10 @@ test exists so the change has to be looked at."
         (when (eq (car v) 'preserved)
           (should-not (cdr v)))))
     (dolist (name preserve-test--cannot)
-      (should (memq name seen)))))
+      (should (memq name seen)))
+    ;; Presence as well: a rule that stops being type-readable leaves
+    ;; `rules' and the loop above never runs for it.
+    (should (memq 'vappend seen))))
 
 (ert-deftest tl-preserve-forward-linking-rejects-the-old-violation ()
   "The program the old state-ap finding died on is a type error now.

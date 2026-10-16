@@ -359,6 +359,30 @@ Saying so at the declaration is the whole cost, and it is small."
 (tl-test-reject tl-ch-vec-pattern-on-the-empty-vector
   "(define (vhd (VCons x xs)) x) (vhd VNil)"
   "Cannot apply vhd to VNil" '(:type-check t :elaborate t))
+;; The prelude's own arithmetic: `vappend' appends, and its codomain's
+;; index is the type-level `plus' of the two argument indices, so the
+;; annotated cases are as much about the checker reducing inside a
+;; signature as about the vectors.
+(tl-test-eval tl-ch-vappend-appends
+  "(vappend (VCons 1 VNil) (VCons 2 (VCons 3 VNil)))"
+  "(VCons 1 (VCons 2 (VCons 3 VNil)))" '(:type-check t :elaborate t))
+(tl-test-eval tl-ch-vappend-computes-the-index-at-the-empty-head
+  "(: r (Vec Int (Succ Zero)))
+(define r (vappend VNil (VCons 1 VNil)))
+r" "(VCons 1 VNil)" '(:type-check t :elaborate t))
+(tl-test-eval tl-ch-vappend-computes-the-index-at-the-cons-head
+  "(: r (Vec Int (Succ (Succ Zero))))
+(define r (vappend (VCons 1 VNil) (VCons 2 VNil)))
+r" "(VCons 1 (VCons 2 VNil))" '(:type-check t :elaborate t))
+;; The arithmetic is checked, not decorative: a codomain that claims
+;; the first index while the second is one past its head's cannot be
+;; proved by the body the clause returns.
+(tl-test-reject tl-ch-vappend-refuses-a-codomain-that-does-not-add
+  "(: vbad (-> (a : *) (n : Nat) (m : Nat)
+               (xs : (Vec a n)) (ys : (Vec a m))
+               (Vec a n)))
+(define (vbad VNil (VCons y ys)) (VCons y ys))
+(vbad VNil (VCons 1 VNil))" "does not match its signature" '(:type-check t :elaborate t))
 (tl-test-eval tl-ch-fin-at-a-successor
   "(: f (Fin (Succ Zero))) (define f FZ) f" "FZ" '(:type-check t :elaborate t))
 (tl-test-reject tl-ch-fin-at-zero

@@ -43,6 +43,11 @@
 (declare-function tl-let-check-form "termlisp-eval" (form))
 (declare-function tl-desugar-list "termlisp-eval" (form))
 (declare-function tl-rewrite-desugar "termlisp-eval" (env form))
+;; Defined by termlisp-nbe, which loads after this file because it
+;; requires it: declared here so `tl-preserve-check' can bind it
+;; around the comparison it makes, with the same reduction a checked
+;; program's own comparisons run under.
+(defvar tl-nbe-reduce-env)
 
 ;;; Representation: a type is a `tl-node' from `termlisp-graph'.
 ;;; A constructor application `(C a b)' is a compound node, a bare
@@ -2267,7 +2272,9 @@ ENV is a type environment -- a `tl-env', or the local/base pair
 is a `tl-grule', plain or clause-based.  Return (VERDICT . REASON)
 where VERDICT is one of the symbols `preserved', `violated', and
 `cannot-check', and REASON is a string saying why the verdict is what
-it is (nil when preserved).  A guard is not read: guarding only makes
+it is (nil when preserved).  Type-level reduction runs against ENV
+while the two sides are compared, so `plus Zero m' and `m' are one
+index rather than two.  A guard is not read: guarding only makes
 a rule apply less often, and fewer redexes cannot undo what the
 unguarded rule already preserves."
   (let ((clauses (or (tl-grule-clauses rule)
@@ -2277,7 +2284,16 @@ unguarded rule already preserves."
     (if (null clauses)
         (cons 'cannot-check "the rule has no pattern to match with")
       (let ((verdict 'preserved)
-            (reason nil))
+            (reason nil)
+            ;; Both sides are typed with ENV's type-level reduction in
+            ;; reach -- the binding the batch driver and the evaluator
+            ;; already put around their own comparisons -- because the
+            ;; verdict must not depend on who asked.  Left unbound, the
+            ;; comparison is structural, and a rule whose codomain
+            ;; computes its result index comes back violated for
+            ;; returning exactly what it promises while every path that
+            ;; checks a program accepts it.
+            (tl-nbe-reduce-env env))
         (dolist (clause clauses)
           (let* ((pat (car clause))
                  (side (if (tl-grule-clauses rule)

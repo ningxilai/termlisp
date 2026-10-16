@@ -128,9 +128,49 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   closing the checkbox stays with F5.  Pinned by four tests in
   `rewrite-form-test` (kinds, identification, dangling, and the nil slot
   after an accepted rewrite); suite 474/474.
-- [ ] **F3 prelude 获得类型层规则** — e.g. `Vec` arithmetic, type-level `+`,
+- [x] **F3 prelude 获得类型层规则** — e.g. `Vec` arithmetic, type-level `+`,
   every rule through the F1+F2 gate.
-  - [ ] Every prelude type-level rule lands in its oracle bucket.
+  - [x] Every prelude type-level rule lands in its oracle bucket.
+
+  The prelude gains `vappend`, whose codomain's index is the type-level
+  `plus` of its two argument indices.  Both clauses reduce inside the
+  signature at definition time — `(plus Zero m)` to `m`, `(plus (Succ n) m)`
+  to `(Succ (plus n m))` — and both are readable by the type layer, so the
+  rule joins the rule set as an ordinary member.  It lands `preserved` in
+  both oracles, and both oracle tests now also assert it by name: a rule
+  whose clauses stopped being type-readable would leave `tl-nbe--rules`
+  entirely, which every count they already pin would pass over silently.
+  Four cases in `curry-howard-test` pin it end to end — appending, an
+  annotation accepted at a `Zero` head and at a `Succ` head (the two
+  reductions), and a codomain that claims the first index while the second
+  is one past its head's, refused with the signature's own wording.
+
+  The gate's locality half ran over the prelude's own rules: every clause
+  rebuilt as the term it spells, tried through `tl-rewrite--locality`, nil
+  everywhere but one rule.  `and` and `or` were written as a truth table
+  whose pattern repeated a constructor, and a repeat is identification —
+  two positions reaching one host node; both are reformulated to decide
+  one position in the pattern and pass the other through, the same table
+  without a repeat, which the truth tables `prelude-test` already pins
+  answer unchanged.  `trans` cannot be written that way: both `Refl`
+  patterns are load-bearing, each collapsing one equation of the
+  signature's `x y z` chain so that the body `Refl` proves `(Eq a x z)`.
+  It is recorded instead under its reason in `rewrite-form-test--folded`,
+  and the trial pins the exemption both ways — a folded rule must still
+  come back flagged, and the clause count must reach past the rule count
+  so that a rule which stopped being type-readable cannot slip out of the
+  trial either.  A user rewrite that repeats a subterm it does not need
+  is refused as before.
+
+  `vappend` also found the value checker without its evaluator: the batch
+  driver and the evaluator both bind `tl-nbe-reduce-env` around the
+  comparisons they make, and `tl-preserve-check` did not, so its
+  structural comparison called the rule violated for returning exactly
+  the index its signature computes — a verdict that depended on who was
+  asking.  The check now binds it while typing both sides, the same
+  reduction every checked program runs under, and says so in its
+  docstring.  Pinned by the prelude locality trial, the two oracle
+  presence assertions and four `vappend` cases; suite 479/479.
 - [ ] **F4 Fω 表达力测试** — higher-kinded polymorphism (`Functor` at `* -> *`),
   type-level lambda application, kind inference on open terms, NBE equality
   under type binders; end-to-end Fω samples with higher-kinded instances.
