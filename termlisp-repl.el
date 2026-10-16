@@ -63,12 +63,16 @@ was created with; see `termlisp-repl-toggle-type-check' and
 
 (defvar termlisp-repl-mode-syntax-table
   (let ((table (make-syntax-table)))
-    (modify-syntax-entry ?\( "(" table)
-    (modify-syntax-entry ?\) ")" table)
-    (modify-syntax-entry ?\[ "(" table)
-    (modify-syntax-entry ?\] ")" table)
-    (modify-syntax-entry ?\{ "(" table)
-    (modify-syntax-entry ?\} ")" table)
+    ;; The second character of a descriptor names the partner, and it is
+    ;; from there that `matching-paren' answers -- electric-pair asks it
+    ;; what a typed opener should be paired with.  Classes alone pair
+    ;; nothing, and a nil answer pairs the character with itself.
+    (modify-syntax-entry ?\( "()" table)
+    (modify-syntax-entry ?\) ")(" table)
+    (modify-syntax-entry ?\[ "(]" table)
+    (modify-syntax-entry ?\] ")[" table)
+    (modify-syntax-entry ?\{ "(}" table)
+    (modify-syntax-entry ?\} "){" table)
     (modify-syntax-entry ?\; "<" table)
     (modify-syntax-entry ?\n ">" table)
     (modify-syntax-entry ?\" "\"" table)

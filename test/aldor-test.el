@@ -1349,5 +1349,48 @@ well-kinded and has to run."
                 (should-not (string-match-p "[Ww]arning" (buffer-string)))))))
       (delete-directory staging t))))
 
+;; Typing `(' in `termlisp-repl' produced `((' -- two open parens and no
+;; close -- whenever `electric-pair-mode' was on in the session, and that
+;; mode is global, so the REPL inherits it from whichever buffer was
+;; visited last (`termlisp-repl-mode' derives from `comint-mode', then
+;; `fundamental-mode', and runs neither the hook that turns it on nor the
+;; ones that turn it off).  Electric-pair asks the syntax table what the
+;; partner of a character is, through `matching-paren', which reads the
+;; match that `modify-syntax-entry' records as a descriptor's second
+;; character -- and the REPL's descriptors gave classes only, so the
+;; answer for `(' was nil and electric-pair's fallback pairs a character
+;; with itself.  Closers never showed it: electric-pair steps over a
+;; closer that already stands next to point instead of pairing it, which
+;; is why only the left paren was reported.
+
+(ert-deftest tl-repl-syntax-table-names-each-paren-s-partner ()
+  "Every paren the REPL treats as one knows its own closing character."
+  (with-syntax-table termlisp-repl-mode-syntax-table
+    (dolist (pair '((?\( . ?\)) (?\) . ?\()
+                    (?\[ . ?\]) (?\] . ?\[)
+                    (?\{ . ?\}) (?\} . ?\{)))
+      (should (eq (matching-paren (car pair)) (cdr pair))))))
+
+(ert-deftest tl-repl-electric-pair-closes-the-paren-it-just-opened ()
+  "Electric pairing closes the `(' a REPL buffer just opened."
+  (skip-unless (require 'elec-pair nil t))
+  (with-temp-buffer
+    (termlisp-repl-mode)
+    (setq-local electric-pair-mode t)
+    (setq-local post-self-insert-hook
+                '(electric-pair-post-self-insert-function))
+    (goto-char (point-max))
+    (end-of-line)
+    (let ((last-command-event ?\()
+          (this-command 'self-insert-command)
+          (last-command 'self-insert-command))
+      (self-insert-command 1))
+    ;; comint marks the prompt as a field, and `line-beginning-position'
+    ;; constrains itself to one; the capture wants the real line start.
+    (let ((inhibit-field-text-motion t))
+      (should (equal (buffer-substring-no-properties
+                      (line-beginning-position) (point-max))
+                     (concat termlisp-repl-prompt "()"))))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

@@ -122,6 +122,27 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     suite 495/495, `make compile` clean with 27 .elc, checkdoc 366 = 366 with an
     empty normalized diff against `3500d66`, parsecheck OK (37 files).
 
+- [x] **P1-9 `termlisp-repl' typed `(' and got `(('** — electric-pair asks the
+  syntax table what the partner of a character is, through `matching-paren',
+  which reads the match that `modify-syntax-entry' records as a descriptor's
+  second character -- and the REPL's table gave the paren characters classes
+  only.  With no recorded partner the answer for `(' was nil, and the fallback
+  at the end of `electric-pair-syntax-info' pairs a character with itself, so a
+  session with `electric-pair-mode' on inserted a second open paren after the
+  one typed.  That mode is global -- it is toggled on from `prog-mode-hook' and
+  off again from the lisp hooks by the config that runs termlisp -- while
+  `termlisp-repl-mode' derives from `comint-mode', then `fundamental-mode', and
+  runs neither hook, so the buffer inherited whichever state the session had
+  last set.  Closers never showed it: electric-pair steps over a closer that
+  already stands next to point instead of pairing, which is why only the left
+  side was reported.  The descriptors now carry their partners the way
+  `lisp-mode''s spell `()" and `")("', so `matching-paren' answers for all six
+  characters the table treats as parens.
+  - [x] Two tests pin it: `tl-repl-syntax-table-names-each-paren-s-partner'
+    covers every character of the table, and
+    `tl-repl-electric-pair-closes-the-paren-it-just-opened' types one `(' at a
+    real REPL prompt — red before (the buffer ended `(('), green after (`()').
+
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
 - [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open
