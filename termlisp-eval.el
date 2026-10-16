@@ -55,8 +55,11 @@ Defined in `termlisp-load.el'; declared here so `termlisp-load-prelude'
 byte-compiles without a free-variable warning.")
 
 (defconst termlisp--magic-string
-  ";;; -*- lexical-binding: t; mode: emacs-lisp; -*-"
-  "First-line magic string marking a term-lisp (.tls) source file.")
+  ";;; -*- lexical-binding: t; mode: scheme; -*-"
+  "First-line magic string marking a term-lisp (.tls) source file.
+It names `scheme-mode' because that is the language the file is
+written in; it is only read as elisp.  `load' ignores the file-local
+part, so the line decides how the buffer looks and nothing else.")
 
 ;;; Thunks ---------------------------------------------------------------
 

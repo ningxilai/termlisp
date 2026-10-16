@@ -1293,5 +1293,61 @@ well-kinded and has to run."
         (should (eq status 0))
         (should (string-match-p "prelude-ok" (buffer-string)))))))
 
+;; The magic string is what `termlisp--ensure-magic-string' looks for at
+;; the head of a `.tls' file, and what it inserts when it does not find
+;; it there -- so the bundled prelude has to ship the current spelling,
+;; or loading it would rewrite the installed copy in place.  The
+;; spelling is itself the promise: `scheme' is the language a `.tls'
+;; file is written in, elisp being only how it gets read.
+
+(ert-deftest tl-magic-string-opens-a-tls-file-in-scheme-mode ()
+  "The magic string asks for `scheme-mode', not `emacs-lisp-mode'."
+  (should (string-match-p "mode: scheme" termlisp--magic-string))
+  (should (commandp 'scheme-mode)))
+
+(ert-deftest tl-prelude-ships-the-current-magic-string ()
+  "`termlisp-prelude.tls' already begins with `termlisp--magic-string'."
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "termlisp-prelude.tls"
+                                            termlisp--directory))
+    (goto-char (point-min))
+    (should (looking-at-p (regexp-quote termlisp--magic-string)))))
+
+;; Native compilation byte-compiles a file in a fresh process, where
+;; only that file's own `require's have been loaded; `make compile'
+;; compiles all 27 in one image, where `termlisp-load' has already
+;; required `termlisp-eval' -- and eval has required `termlisp-kinds' --
+;; before either of these is reached.  That is why seven warnings native
+;; compilation reported were invisible to the standing gate:
+;; `termlisp-types' calls five kind functions from the file that
+;; requires it back, `termlisp-nbe' reads two clause accessors from the
+;; file that requires it, and neither can `require' its way to them.
+;; The compile happens in a staging directory of symlinks so that the
+;; `.elc' it writes never lands in the source tree.
+(ert-deftest tl-types-and-nbe-compile-alone-without-warnings ()
+  "Byte-compiling either file in its own Emacs prints no warning."
+  (let ((emacs (or (and invocation-directory
+                        (expand-file-name (invocation-name) invocation-directory))
+                   (executable-find (invocation-name))))
+        (staging (make-temp-file "tl-compile-alone" t)))
+    (skip-unless (and emacs (file-executable-p emacs)))
+    (unwind-protect
+        (progn
+          (dolist (src (directory-files termlisp--directory t
+                                        "\\`termlisp.*\\.el\\'"))
+            (make-symbolic-link src
+                                (expand-file-name
+                                 (file-name-nondirectory src) staging)))
+          (dolist (file '("termlisp-types.el" "termlisp-nbe.el"))
+            (with-temp-buffer
+              (let ((status
+                     (call-process
+                      emacs nil t nil "-Q" "--batch"
+                      "-L" staging "-f" "batch-byte-compile"
+                      (expand-file-name file staging))))
+                (should (eq status 0))
+                (should-not (string-match-p "[Ww]arning" (buffer-string)))))))
+      (delete-directory staging t))))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

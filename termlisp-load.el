@@ -15,9 +15,21 @@
 ;; are reserved and must not be used for ordinary elisp definitions.
 ;;
 ;; A `.tls' file starts with a magic string (see
-;; `termlisp--magic-string') that opens it in `emacs-lisp-mode' with
-;; lexical binding.  `load' does not process the file-local variable part
-;; of the magic string, so it has no effect on evaluation.
+;; `termlisp--magic-string') that opens it in `scheme-mode' -- the
+;; language the file is written in, elisp being only how it is read.
+;; `load' does not process the file-local variable part of the magic
+;; string, so it has no effect on evaluation.
+;;
+;; The same reserved names are why this file opts out of definition
+;; prefixes.  Generating autoloads collects a prefix for every
+;; definition in the file, and `:' is one character long, which Emacs
+;; refuses to register -- it prints `Not registering prefix ":"' and
+;; drops the prefix, on every build.  A prefix exists to fetch a file
+;; whose definitions are not loaded yet, and the WARNING above says
+;; these names must be required before they are met rather than fetched
+;; by accident.  The file-local `autoload-compute-prefixes: nil' after
+;; the `ends here' line says that for the whole file, so the warning
+;; goes away with the prefixes it was about.
 
 ;;; Code:
 
@@ -74,3 +86,7 @@ it."
 
 (provide 'termlisp-load)
 ;;; termlisp-load.el ends here
+
+;; Local Variables:
+;; autoload-compute-prefixes: nil
+;; End:

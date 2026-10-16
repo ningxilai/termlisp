@@ -47,6 +47,14 @@
 (require 'termlisp-graph-unify)
 (require 'termlisp-types)
 
+;; The clause struct is termlisp-eval's, and eval requires this file,
+;; so it cannot be required back.  A batch byte-compile has eval loaded
+;; by the time it reaches this file; native compilation compiles this
+;; file alone in a fresh process, where only these declarations know the
+;; accessors exist.
+(declare-function tl-clause-params "termlisp-eval" (clause))
+(declare-function tl-clause-body "termlisp-eval" (clause))
+
 (cl-defstruct (tl-nbe (:constructor tl-nbe (env locals)))
   "A reduction environment.
 ENV is the `tl-env' holding the function clauses to unfold; LOCALS is an

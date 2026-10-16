@@ -1,10 +1,10 @@
 # TODO
 
 Work archive for the post-Stage-2 round.  Every node starts unchecked; a node is
-ticked only when its listed acceptance criteria hold on a committed tree with all
-four gates green (`make compile` 0 warnings, `make test`, checkdoc multiset zero
-new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
-`[x]` done.
+ticked only when its listed acceptance criteria hold on a committed tree with the
+standing gates green (`make compile` 0 warnings, `make test`, checkdoc multiset zero
+new, `parsecheck.sh` OK, every library file byte-compiling clean on its own).
+Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ## 表一：上轮报告缺陷
 
@@ -71,6 +71,56 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   gate accepts is reduced through `tl-dpo-normalize` on every later type
   comparison.  The kind oracle, in F1's node, buckets the same rule set
   this normalization carries.
+
+- [x] **P2-6 `.tls' 首行 magic string 写的是 `emacs-lisp`** — `termlisp--magic-string'
+  named the mode a `.tls' file opens in `emacs-lisp', which is how the file is
+  read rather than what it is written in.  It now says `mode: scheme', the bundled
+  `termlisp-prelude.tls''s first line says the same, and `termlisp-load''s
+  commentary follows.  The prelude had to move with the constant:
+  `termlisp--ensure-magic-string' *inserts* when the head does not match, so a
+  constant that moved alone would have rewritten the installed copy of the
+  prelude in place on its first load.  `load' ignores the file-local part either
+  way, so the line chooses the buffer's mode and nothing else.
+  - [x] Two tests pin the pair: `tl-magic-string-opens-a-tls-file-in-scheme-mode'
+    (red before -- the string said `emacs-lisp'), and
+    `tl-prelude-ships-the-current-magic-string' (red on either half moving alone).
+
+- [x] **P2-7 `Not registering prefix ":"' printed on every build** — the line is
+  Emacs's `loaddefs-generate--make-prefixes' declining to register a
+  one-character prefix and naming the definition it dropped; elpaca runs that
+  generator over this package whenever it builds it, so every build printed it.  A
+  prefix exists to fetch a file whose definitions are not loaded yet, and
+  `termlisp-load.el' already told the reader in its commentary that these names
+  must be required before they are met -- so the file now says the same to the
+  generator, through a file-local `autoload-compute-prefixes: nil' after the
+  `ends here' line, documented beside the WARNING it belongs to.  The warning went
+  with the prefixes it was about; the other 25 registrations are untouched.
+  - [x] `loaddefs-generate' over this tree prints no prefix warning.
+
+- [x] **P1-8 Native compilation found nine warnings the standing gate could not
+  see** — native compilation byte-compiles one file per fresh process, where only
+  that file's own `require's are loaded; `make compile' compiles all 27 in one
+  image, in which `termlisp-load' has already required `termlisp-eval' -- and eval
+  has required `termlisp-kinds' -- before `termlisp-nbe' and `termlisp-types' are
+  reached.  Compiled alone, types.el did not know `tl-karr', `tl-kind-freshen',
+  `tl-kind-whnf', `tl-kind-unify' or `tl-kind->string', nor the variable
+  `tl-kind-star', and nbe.el did not know the two `tl-clause' accessors; the
+  ninth was `tl-type-lenient', read in `tl-infer-application' 174 lines before its
+  own `defvar'.  `declare-function' now names kinds' five beside the eval ones
+  already declared there, `tl-kind-star' is declared beside them, and nbe declares
+  the two accessors -- kinds and eval both require these files back, so a `require'
+  was never available, and the `fboundp' guards at every call, which are what
+  keeps a host that loaded `termlisp-types' alone from calling into a kind module
+  it never loaded, stay exactly as they were.  The free variable was ordering
+  inside one file, so the two oracle flags moved up beside `tl-infer-constraints'
+  with the other inference flags.
+  - [x] `tl-types-and-nbe-compile-alone-without-warnings' compiles both files in
+    fresh Emacsen of their own, in a staging directory of symlinks so no `.elc'
+    reaches the source tree; red before the declarations (the nine warnings are
+    what the report carried), green after.
+  - [x] All 27 library files byte-compile clean when each is compiled alone;
+    suite 495/495, `make compile` clean with 27 .elc, checkdoc 366 = 366 with an
+    empty normalized diff against `3500d66`, parsecheck OK (37 files).
 
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
@@ -334,4 +384,9 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   regenerated from HEAD, parsecheck OK, full ert suite green, and the kind oracle
   `tl-kind-preserve-oracle-buckets-the-prelude-rules` (every prelude type-level
   rule bucketed `preserved` / `violated` / `cannot-check`, the `violated` family
-  pinned by name and count).  `make compile` starts with `rm -f *.elc`.
+  pinned by name and count).  `make compile` starts with `rm -f *.elc`.  Two
+  checks P1-8 added to these, because one batch image cannot see what a fresh
+  process sees: every library file byte-compiles clean when it is compiled alone
+  (`emacs -Q --batch -L . -f batch-byte-compile FILE`, one file per process, no
+  output) -- that is the condition native compilation meets -- and
+  `loaddefs-generate` over the tree prints no prefix warning.
