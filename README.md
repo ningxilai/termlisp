@@ -17,6 +17,7 @@
     - [Patterns](#patterns)
     - [Types](#types)
     - [Kinds](#kinds)
+    - [System Fω](#system-fω)
     - [Options](#options)
   - [Using the library](#using-the-library)
   - [Debugging](#debugging)
@@ -419,8 +420,9 @@ with both `:type-check` and `:elaborate` set).
 ### Kinds
 
 Kinds are nodes too (`termlisp-kinds.el`), so kind unification reuses the
-graph unifier. `*` is the kind of proper types and arrows are written
-`->`. Two kinds go past that:
+graph unifier. `*` is the kind of proper types, and an arrow kind is
+written `(-> K1 K2)` — `->` is the head, right-associative — or `(karr
+K1 K2)` cons-spelled. Two kinds go past that:
 
 - `univ(T)` is the kind of the *values* of `T`. `Zero : Nat` because it is
   a `Nat`, and the universe leaf is what says which datatype a value came
@@ -430,12 +432,14 @@ graph unifier. `*` is the kind of proper types and arrows are written
   three independent kind variables cannot say.
 
 `tl-kind-parse` accepts exactly five shapes — `*`, a bare datatype name,
-`(univ T)`, `K1 -> K2` and `(karr K1 K2)` — and nothing else. So a
-parameter annotation can be written like this:
+`(univ T)`, `(-> K1 K2)` and `(karr K1 K2)` — and nothing else. The arrow
+is `->` in head position and right-associative, so `(-> * * *)` is `* ->
+(* -> *)`; `karr` is the same arrow cons-spelled. So a parameter
+annotation can be written like this:
 
 ```lisp
 (datatype (Vec (a : *) (n : Nat)) ...)     ; * and Nat
-(datatype (T (a : * -> *)) ...)            ; an arrow kind
+(datatype (T (a : (-> * *))) ...)          ; an arrow kind
 (datatype (T (a : (karr * *))) ...)        ; the same arrow, cons-spelled
 ```
 
@@ -474,6 +478,62 @@ of a case somebody forgot to rule out.
 (vhd (VCons 7 VNil))              ; => 7
 (vhd VNil)                        ; rejected: its index is Zero
 ```
+
+### System Fω
+
+An arrow kind, a higher-kinded parameter, and a type-level `lambda` are
+what lift the kind language past annotated `*` into a small Fω. Every
+claim here is pinned by `test/curry-howard-test.el` and
+`test/prelude-test.el`.
+
+A datatype parameter may be annotated with an arrow kind, so it
+abstracts over a *type constructor* rather than a type:
+
+```lisp
+(datatype (Box (f : (-> * *)) a) (MkBox (f a)))   ; Box : (* -> *) -> * -> *
+(: b (Box Maybe Int))                             ; accepted
+(: bad (Box Int Int))                             ; Kind error at the application
+```
+
+`Box Maybe Int` is accepted because `Maybe : * -> *` and `Box`'s first
+parameter is annotated `(-> * *)`; `Box Int Int` is a kind error at the
+declaration, not a case somebody forgot. A class parameter may carry the
+same annotation — `(class Toy ((f : (-> * *))) nil (tof (-> (f Int) Int)))`
+— and an instance is then checked against it: `(instance (Toy Int) ...)`
+is refused because `Int : *` where a `(* -> *)` is required. A parameter
+that is annotated but not written `(NAME : KIND)` is refused as
+`Malformed parameter`. The prelude leaves its own parameters bare
+(`(class Functor (f) ...)`) and lets the method signatures pin `f : * -> *`
+by inference.
+
+A type-level `lambda` is an ordinary `lambda` read in type position. Its
+kind is inferred, so it meets an arrow-annotated parameter at an
+application:
+
+```lisp
+(: b (Box (lambda (a) (Vec a Zero)) Int))   ; the lambda is (* -> *)
+```
+
+Application reduces through the same normalization the type level runs, so
+a signature may compute its own index:
+
+```lisp
+(: v (Vec Int ((lambda (n) (Succ n)) Zero)))   ; reduces to (Vec Int (Succ Zero))
+```
+
+The reduction only fires while an environment is in reach. Ordinary
+unification stays structural: `(Succ Zero)` and `((lambda (n) (Succ n))
+Zero)` are two shapes until `tl-nbe-reduce-env` is bound, which is what
+keeps unification predictable while still letting a signature reduce.
+
+Finally, every type-level `rewrite` rule is gated at the kind level
+before it is written. `tl-kind-preserve-check` normalizes both sides of a
+rule at the kind level and refuses a reduct that lands at a different
+kind. The whole rule set is bucketed `preserved` / `violated` /
+`cannot-check` by the oracle test
+`tl-kind-preserve-oracle-buckets-the-prelude-rules`, so a prelude change
+that moves a rule between buckets fails the suite — the kind oracle is
+one of the standing gates.
 
 ### Options
 

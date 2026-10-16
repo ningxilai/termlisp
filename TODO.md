@@ -56,9 +56,21 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   - [x] `(require 'termlisp-load)` alone loads prelude successfully — pinned by
     a fresh-image subprocess test (`tl-load-standalone-typechecks-the-prelude`),
     red before the require landed (dies of `Unknown symbol: seq`), green after.
-- [ ] **P3-5 `tl-dpo-normalize` production-dead** — decided by F2 below: if kind
+- [x] **P3-5 `tl-dpo-normalize` production-dead** — decided by F2 below: if kind
   normalization adopts it, it gains a production caller; otherwise document it as
   the entry point for callers needing the reduction graph.  Closed by F5.
+
+  Closed as adopted, so the fallback — a side-entry documentation page for a
+  dead function — never applies.  `tl-dpo-normalize` carries three production
+  callers and the standing suite exercises all three.  The type-level normal form
+  `tl-nbe-nf` unfolds through it, which is the reduction behind definitional
+  equality `tl-nbe-equal`; `tl-reduce-term` reads its value-level unfolding off
+  the same entry; and the locality trial `tl-rewrite--locality` — a kind-level
+  question, the one F2 named — runs each rule's own pattern through it.  None is
+  a test-only shim: the first is the type checker's normal form, so a rewrite the
+  gate accepts is reduced through `tl-dpo-normalize` on every later type
+  comparison.  The kind oracle, in F1's node, buckets the same rule set
+  this normalization carries.
 
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
@@ -212,14 +224,54 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   without an environment.  Suite 492/492, 0 byte-compile warnings,
   checkdoc 366 = 366 with an empty normalized diff against `a2f138d`,
   parsecheck OK (37 files).
-- [ ] **F5 文档与门收口** — README Fω section; kind-oracle joins the standing
+- [x] **F5 文档与门收口** — README Fω section; kind-oracle joins the standing
   gates; P3-5 closes here.
+
+  The README gains a `System Fω` section documenting what F1–F4 built: an
+  arrow-kind parameter, a type-level `lambda` and its application, and the
+  kind-level gate every type-level rule passes before it is written.  Writing it
+  found a documentation defect that had stood since the Kinds section was first
+  written.  That section claimed arrows are spelled `K1 -> K2` and showed
+  `(datatype (T (a : * -> *)) ...)`, but a kind is read as `(-> K1 K2)` — `->` in
+  head position, right-associative — and `* -> *` reads as `(* -> *)`, which
+  `tl-kind-parse` has always refused as `Bad kind`.  Only the prefix spelling was
+  ever real: F4 had already made `(-> * *)` parse correctly, and the README's
+  infix example was simply never true.  The Kinds section is corrected to
+  `(-> K1 K2)` / `(karr K1 K2)` and the Fω section is written against the
+  spellings the tests pin — `Box`'s annotated parameter, the `(lambda (a) (Vec a
+  Zero))` of kind `(* -> *)`, and the computed index `(Vec Int ((lambda (n) (Succ
+  n)) Zero))`.
+
+  The kind oracle joins the standing gates: `tl-kind-preserve-oracle-buckets-
+  the-prelude-rules` is named in the Notes alongside compile/test/checkdoc/
+  parsecheck, and it already asserts every prelude rule lands in exactly one
+  bucket — `preserved`, `violated`, or `cannot-check` — with the `violated`
+  family pinned by name and count and `vappend`'s presence asked directly, so a
+  rule that stopped being type-readable cannot slip out of the count.  P3-5 closes
+  as adopted: `tl-dpo-normalize` is not production-dead, carrying `tl-nbe-nf`,
+  `tl-reduce-term`, and the locality trial as callers, so it needs no side-entry
+  page.
+
+  The `trans` exemption is left as it stands and its rationale is not weakened
+  here.  The locality trial reports `identification` for `trans` because its
+  pattern spells `Refl` at two positions that hash-cons to one node — the same
+  shape as the user rewrite `(f (MkG a) (MkG a)) -> (MkG a)` that F2 deliberately
+  pins as refused.  No structural criterion separates the two: both share a node
+  outside the interface, both leave a reduct that is a copy rather than the shared
+  node itself, and neither dangles in the isolated trial graph.  So truly clearing
+  the exemption would mean accepting the F2-pinned refusal too, which is a change
+  to a safety property the suite pins, not a documentation-round tidy-up.  It stays
+  a name-based carve-out, recorded in `rewrite-form-test--folded`, and any move to
+  make it structural belongs in its own round with that trade-off stated.  Suite
+  492/492, 0 byte-compile warnings, checkdoc 0 new, parsecheck OK.
 
 ## Notes
 
 - P0-1 (the recursion crash) was scheduled before F1 because kind-preservation
   verification of type-level rules meets the same self-reference unfolding; it
   is fixed, so F1 inherits the cycle guard for free.
-- Standing gates unchanged: 0 byte-compile warnings, checkdoc multiset zero new
-  vs `7ff25f7`, parsecheck OK, full ert suite green.  `make compile` starts with
-  `rm -f *.elc`.
+- Standing gates: 0 byte-compile warnings, checkdoc multiset zero new vs the base
+  regenerated from HEAD, parsecheck OK, full ert suite green, and the kind oracle
+  `tl-kind-preserve-oracle-buckets-the-prelude-rules` (every prelude type-level
+  rule bucketed `preserved` / `violated` / `cannot-check`, the `violated` family
+  pinned by name and count).  `make compile` starts with `rm -f *.elc`.
