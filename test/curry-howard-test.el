@@ -1393,22 +1393,23 @@ datatype's own universe, so the two must not be read as one kind."
                           vhd"
                          "clause 2 is unreachable" tl-ch-cov-opts)
 
-;; One REPL submission is one coverage batch, so a report arrives at the
+;; One submission is one coverage batch, so a report arrives at the
 ;; end of the submission that wrote the clauses -- not partway through a
-;; function whose remaining clauses have not been typed yet.
+;; function whose remaining clauses have not been typed yet.  The REPL
+;; prints what `termlisp-eval-submission' answers through
+;; `termlisp-repl--error-message', so the driver is what these pin.
 (ert-deftest tl-ch-cov-repl-reports-per-submission ()
   "The gap is reported at the end of the submission that wrote the clauses."
-  (let ((termlisp-repl--env
-         (termlisp-load-prelude
-          (termlisp-make-env '(:type-check t :elaborate t :coverage t)))))
+  (let ((env (termlisp-load-prelude
+              (termlisp-make-env '(:type-check t :elaborate t :coverage t)))))
     (should (string-match-p
              "no case for False"
              (termlisp-repl--error-message
-              (should-error (termlisp-repl--eval-string "(define (f True) 1) f")
+              (should-error (termlisp-eval-submission "(define (f True) 1) f" env)
                             :type 'termlisp-type-error))))
     ;; The next submission starts from an empty queue.
-    (should (equal (termlisp-repl--eval-string
-                    "(define (g True) 1) (define (g False) 2) (g True)")
+    (should (equal (termlisp-eval-submission
+                    "(define (g True) 1) (define (g False) 2) (g True)" env)
                    "1"))))
 
 (ert-deftest tl-ch-cov-repl-drops-a-failed-submission ()
@@ -1417,17 +1418,17 @@ The first form announced a clause and the second failed.  Were the
 announcement to survive, the next submission would report a function the
 user is not working on, and would report it while it is still half
 written."
-  (let ((termlisp-repl--env
-         (termlisp-load-prelude
-          (termlisp-make-env '(:type-check t :elaborate t :coverage t)))))
+  (let ((env (termlisp-load-prelude
+              (termlisp-make-env '(:type-check t :elaborate t :coverage t)))))
     (should (string-match-p
              "Unknown symbol"
              (termlisp-repl--error-message
               (should-error
-               (termlisp-repl--eval-string "(define (h True) 1) (define (h True) nope)")
+               (termlisp-eval-submission
+                "(define (h True) 1) (define (h True) nope)" env)
                :type 'termlisp-type-error))))
-    (should (equal (termlisp-repl--eval-string
-                    "(define (g True) 1) (define (g False) 2) (g True)")
+    (should (equal (termlisp-eval-submission
+                    "(define (g True) 1) (define (g False) 2) (g True)" env)
                    "1"))))
 
 ;;; `tl-apply-pi': what fills a `Pi' binder at a call site

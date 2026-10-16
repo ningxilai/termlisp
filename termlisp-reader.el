@@ -61,5 +61,28 @@ and signal a spurious `end-of-file'.")
     (insert-file-contents file)
     (termlisp-parse (buffer-string))))
 
+(defun termlisp-read-complete-p (string)
+  "Return non-nil when STRING reads to its end as top-level forms.
+Whitespace and comments are skipped, with the same reader setup --
+and so the same trust boundary -- as `termlisp-parse'.  Hitting the end
+of file while reading a form means more input is needed, so the answer
+is nil; any other read error does not mean more input, and is reported
+when the input is evaluated."
+  (with-temp-buffer
+    (insert string)
+    (goto-char (point-min))
+    ;; `read-eval' was removed in Emacs 32, where `#.' is invalid syntax;
+    ;; on older Emacsen it defaults to t, so turn it off buffer-locally.
+    (when (boundp 'read-eval)
+      (set (make-local-variable 'read-eval) nil))
+    (let ((read-circle nil))
+      (condition-case nil
+          (progn
+            (while (termlisp--skip-trivia)
+              (read (current-buffer)))
+            t)
+        (end-of-file nil)
+        (error t)))))
+
 (provide 'termlisp-reader)
 ;;; termlisp-reader.el ends here

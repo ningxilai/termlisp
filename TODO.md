@@ -143,6 +143,49 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     `tl-repl-electric-pair-closes-the-paren-it-just-opened' types one `(' at a
     real REPL prompt — red before (the buffer ended `(('), green after (`()').
 
+- [x] **P1-10 `termlisp-repl' held its own copy of the interpreter driver** —
+  `termlisp-repl--eval-string' re-did `termlisp-eval''s whole batch wiring
+  (the four `tl-infer-forward-*' bindings, the evaluation loop,
+  `tl-forward--link') and then added on top the three lines a front end needs
+  -- `tl-run-post-batch', the drop of a queue a failure left behind, and the
+  rendered answer -- because `termlisp-eval' returns a raw value and leaves
+  the coverage queue to whoever drove it; `tl-test--coverage' carried a
+  second copy of those same three lines for that same reason.  The shape
+  Geiser draws and IELM already draws is one evaluation API with a front end
+  that only formats, so the bookkeeping now lives in one place:
+  `termlisp--eval-forms' holds the batch wiring that `termlisp-eval' and the
+  new `termlisp-eval-submission' both call, and the submission driver is
+  what a front end drives -- STRING parsed as one unit, every form
+  evaluated, forward names linked, the coverage check run once the
+  submission succeeded, a queue a failure left behind dropped rather than
+  reported at the next one, and the answer printed.  The reader gained the
+  front end's only other question, `termlisp-read-complete-p', which used to
+  be `termlisp-repl--complete-p' reaching into the reader's private
+  `termlisp--skip-trivia' from the repl file.  `termlisp-repl.el' now holds
+  no interpreter wiring at all -- `termlisp-repl--send' calls the API and
+  `termlisp-repl-return' calls the reader -- and `tl-test--coverage' drives
+  that same API, so the REPL, the test harness and any future front end
+  share one driver.
+  - [x] The two coverage tests now drive `termlisp-eval-submission' with an
+    explicit environment instead of `let'-binding `termlisp-repl--env', and
+    still pin what the prompt shows
+    (`tl-ch-cov-repl-reports-per-submission',
+    `tl-ch-cov-repl-drops-a-failed-submission').
+  - [x] Two new pins: `tl-read-complete-p-says-when-input-may-be-sent'
+    (unfinished / finished / comment-only / lone closer) and
+    `tl-eval-submission-with-no-forms-returns-nil' — red before (both
+    functions did not exist), green after.
+  - [x] README documents both functions in the API list, its
+    `tl-run-post-batch' caller line now names the three functions that
+    actually call it (`termlisp-eval-submission', `termlisp-load',
+    `termlisp-typecheck-def' — the line had said `tl-typecheck-def', which
+    names no function), and the REPL section says which side of that API the
+    buffer sits on.
+  - [x] Suite 499/499, `make compile` 0 warnings with 27 .elc, isolated
+    per-file compile clean, checkdoc 366 = 366 with an empty normalized diff
+    against `0efdeb8', parsecheck OK (37 files), `loaddefs-generate' prints
+    no prefix warning (25 registrations).
+
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
 - [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open

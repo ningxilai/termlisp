@@ -1392,5 +1392,30 @@ well-kinded and has to run."
                       (line-beginning-position) (point-max))
                      (concat termlisp-repl-prompt "()"))))))
 
+;; Whether an input may be sent is a question about reading, and the
+;; front-end asks the reader's API for the answer
+;; (`termlisp-read-complete-p'), which reads with the same setup -- and
+;; so the same trust boundary -- as `termlisp-parse'.
+
+(ert-deftest tl-read-complete-p-says-when-input-may-be-sent ()
+  "An unfinished input waits; an input that already reads may be sent."
+  (should-not (termlisp-read-complete-p "(define (f x)"))
+  (should (termlisp-read-complete-p "(define (f x) x)"))
+  ;; Comments alone read to their end: there is nothing to wait for.
+  (should (termlisp-read-complete-p ";; nothing but a comment"))
+  ;; A lone closer will never balance.  It reads as an error rather
+  ;; than running out of input, and an error is reported when the
+  ;; input is evaluated -- so the input may be sent instead of waited
+  ;; on.
+  (should (termlisp-read-complete-p ")")))
+
+;; A submission with no top-level forms prints nothing at the prompt:
+;; the driver answers nil rather than a rendered empty value.
+
+(ert-deftest tl-eval-submission-with-no-forms-returns-nil ()
+  "An input of only comments or whitespace evaluates to nil."
+  (should-not (termlisp-eval-submission ";; nothing to evaluate"))
+  (should-not (termlisp-eval-submission "  \n ")))
+
 (provide 'aldor-test)
 ;;; aldor-test.el ends here

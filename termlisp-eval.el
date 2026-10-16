@@ -747,19 +747,14 @@ Handles top-level `do' desugaring like `termlisp-eval', and honors the
       (signal 'termlisp-hole (list (tl-goal-lines tl-infer-holes))))
     (tl-eval-top env form)))
 
-(defun termlisp-eval (string &optional env)
-  "Parse and evaluate STRING in ENV (creating a fresh env if nil).
-
-A top-level `do' is desugared before inference/elaboration so that a
-type-directed `(do ...)' exposes its `bind'/`return' class-method calls to
-the elaborator.  A `do' nested inside a larger expression is instead
-desugared at evaluation time by `tl-run' and is therefore not elaborated:
-nested type-directed `do' (without an explicit monad operand) remains a
-known limitation."
+(defun termlisp--eval-forms (forms env)
+  "Evaluate FORMS in ENV as one batch and return the last value.
+A name declared by a later form in FORMS is knowable while an earlier
+one is checked, and forward references are linked once the whole batch
+has run.  ENV defaults to a fresh environment."
   (let* ((env (or env (termlisp-make-env)))
-         (forms (termlisp-parse string))
-         ;; One input is one unit: a name declared by a later form in
-         ;; STRING is knowable here even though it is not yet in ENV.
+         ;; One input is one unit: a name declared by a later form is
+         ;; knowable here even though it is not yet in ENV.
          (tl-infer-forward-names (termlisp-collect-forward-names forms))
          (tl-infer-forward-vars (or tl-infer-forward-vars
                                     (make-hash-table :test #'eq)))
@@ -769,10 +764,45 @@ known limitation."
          (result nil))
     (prog1 (dolist (form forms result)
              (setq result (termlisp-eval-form form env)))
-      ;; The whole string is one unit, so every definition it declares
+      ;; The whole batch is one unit, so every definition it declares
       ;; is now in ENV and the references made to a forward name before
       ;; its definition arrived can be told what it really was.
       (tl-forward--link))))
+
+(defun termlisp-eval (string &optional env)
+  "Parse and evaluate STRING in ENV (creating a fresh env if nil).
+
+A top-level `do' is desugared before inference/elaboration so that a
+type-directed `(do ...)' exposes its `bind'/`return' class-method calls to
+the elaborator.  A `do' nested inside a larger expression is instead
+desugared at evaluation time by `tl-run' and is therefore not elaborated:
+nested type-directed `do' (without an explicit monad operand) remains a
+known limitation."
+  (termlisp--eval-forms (termlisp-parse string) env))
+
+(defun termlisp-eval-submission (string &optional env)
+  "Evaluate STRING in ENV as one submission and return its printed value.
+ENV defaults to a fresh environment.  This is the driver every
+front-end shares: STRING is parsed as one unit (so a name a later form
+declares is knowable while an earlier one is checked), every form runs
+through `termlisp-eval-form', forward references are linked, the
+post-batch coverage check runs once the submission succeeded -- the
+first moment every clause of a function typed across it is present --
+and a queue left behind by a submission that failed partway is dropped
+rather than reported at the next one.  Return nil when STRING holds no
+top-level forms.  A form the checker leaves with holes signals
+`termlisp-hole' with its goals from inside the batch."
+  (let ((forms (termlisp-parse string)))
+    (unwind-protect
+        (when forms
+          (prog1 (termlisp-value->string
+                  (termlisp--eval-forms forms env))
+            (tl-run-post-batch)))
+      ;; A submission that failed partway left a function holding only
+      ;; some of its clauses.  Reporting it now would name a clause the
+      ;; user has not typed yet, so the queue is dropped instead -- the
+      ;; same half-written state `tl-run-post-batch' refuses to report.
+      (setq tl-coverage-announcements nil))))
 
 (defun termlisp--ensure-magic-string (file)
   "Ensure FILE begins with `termlisp--magic-string', inserting it if absent.

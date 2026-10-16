@@ -598,8 +598,13 @@ API:
 - `termlisp-make-env` — create an environment from a plist (see Options).
 - `termlisp-parse` / `termlisp-parse-file` — read a string / file into a
   list of S-expressions.
+- `termlisp-read-complete-p` — say whether a string reads to its end as a
+  sequence of complete top-level forms.
 - `termlisp-eval` / `termlisp-eval-file` / `termlisp-eval-form` — parse and
   evaluate a string / file / already-read form.
+- `termlisp-eval-submission` — evaluate a string as one submission: forward
+  names linked, the post-batch coverage check run, and the answer already
+  rendered. This is what a REPL front end drives.
 - `termlisp-typecheck` / `termlisp-typecheck-file` — typecheck without
   evaluating; returns the environment and signals on error.
 - `termlisp-load` / `termlisp-load-prelude` — load a `.tls` file / the
@@ -634,6 +639,11 @@ the rest of the session. The environment starts from
 `termlisp-repl-load-prelude` is nil, the prelude is loaded into it. It
 greets you with `Welcome to term-lisp (prelude loaded).` followed by the
 options in force.
+
+The buffer is only the front end: whether an input may be sent is the
+reader's answer (`termlisp-read-complete-p`), and evaluation goes through
+`termlisp-eval-submission`, the driver the API list above documents —
+`termlisp-repl.el` itself holds no interpreter wiring.
 
 - `RET` sends the input when it reads as a sequence of complete top-level
   forms; an unfinished form moves to the next line and is indented, so a
@@ -815,10 +825,11 @@ declaration actually builds, not the arrow form used in prose.
   the checker must be on (the questions are announced from inside
   `tl-typecheck-define`), `termlisp-exhaust` must be loaded (its post-batch
   hook is a `setq`, a single global slot, not `add-hook`), and
-  **something must call `tl-run-post-batch`** — `termlisp-repl`,
-  `termlisp-load`, `tl-typecheck-def` and the tests all do;
-  `termlisp-eval` does not, so a plain caller with `:coverage t` waits
-  forever for a check that never comes.
+  **something must call `tl-run-post-batch`** — `termlisp-eval-submission`,
+  `termlisp-load` and `termlisp-typecheck-def` do; `termlisp-repl` and the
+  test suites reach it through the first of these rather than calling the
+  hook themselves, while `termlisp-eval` does not call it at all, so a plain
+  caller with `:coverage t` waits forever for a check that never comes.
 - `:fuel` (default `100000`) — bounds evaluation. Exhaustion is
   `fuel exhausted`, which usually means a rewrite rule loops rather than
   that the number is too small.

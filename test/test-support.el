@@ -54,20 +54,16 @@ may be nil to accept the defaults.  The failure must carry the
 Return \"ok\" when neither evaluation nor the coverage check reports
 anything, or \"ERR:<message>\" when either does.  Coverage is checked
 after the whole submission, which is how the REPL and the file loader
-behave; `termlisp-eval' leaves the queue to whoever drove it, so this
-flushes the way they do.  The queue is dropped on the way out, so a case
-that fails partway cannot report a half-written function into the next
-one."
+behave, so this drives `termlisp-eval-submission': the driver runs the
+check itself and drops the queue a submission that failed partway left
+behind."
   (let ((env (termlisp-load-prelude (termlisp-make-env opts))))
-    (prog1
-        (condition-case e
-            (progn (termlisp-eval src env)
-                   (tl-run-post-batch)
-                   "ok")
-          (error (format "ERR:%s"
-                         (if (stringp (cadr e)) (cadr e)
-                           (error-message-string e)))))
-      (setq tl-coverage-announcements nil))))
+    (condition-case e
+        (progn (termlisp-eval-submission src env)
+               "ok")
+      (error (format "ERR:%s"
+                     (if (stringp (cadr e)) (cadr e)
+                       (error-message-string e)))))))
 
 (defmacro tl-test-covers (name src opts)
   "Define ERT test NAME asserting SRC is accepted under coverage checking.
