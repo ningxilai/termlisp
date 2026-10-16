@@ -510,17 +510,19 @@ as it happens and leaves the first verdict that is not local in
 `tl-dpo-last-gluing'; this function reads the slot back, and leaves
 the verdict there for the same callers `tl-reduce-term' documents --
 the slot says what the most recent DPO normalisation found, and the
-trial is one.  A redex at
-the root has no holder outside the match, so the first cut is always
-local; what the rest of the walk can find is the rule rewriting its
-own reduct again under a holder it does not own (dangling), or a
-pattern whose two positions would reach one node (identification).
-Both verdicts are ordinary at the value level, where they are
-recorded and the reduction goes on -- a value can be re-generalized
-after a shared cut -- and a kind cannot, which is why the record
-becomes a refusal here.  A walk that runs out of fuel is the rule not
-settling at its own redex.  Return a string naming what was found, or
-nil when every cut was local."
+trial is one.  A redex at the root has no holder outside the match,
+so the first cut is always local; what the rest of the walk can find
+is the rule rewriting its own reduct again under a holder it does not
+own -- dangling, the only verdict there is.  A pattern that spells
+one subterm at two positions does not earn one: SPO folds the shared
+node, and a fold wholly inside the redex cannot be observed from
+outside; only a fold whose node is held outside leaks, and that is
+the dangling case already asked.  A dangling verdict is recorded and
+the value reduction goes on -- a value can be re-generalized after a
+cut that reaches outside the redex -- and a kind cannot, which is why
+the record becomes a refusal here.  A walk that runs out of fuel is
+the rule not settling at its own redex.  Return a string naming what
+was found, or nil when every cut was local."
   (let ((settled nil)
         (reason nil))
     (condition-case e
@@ -557,9 +559,9 @@ inside a type, so `tl-kind-preserve-check' must find the rule
 preserving the kinds of both its sides as well, and the rule is tried
 at its own pattern through `tl-dpo-normalize' so that
 `tl-rewrite--locality' can ask whether every cut it takes is local.
-A value can be re-generalized after a shared cut, which is why
-`tl-reduce-term' only records that verdict; a kind cannot, so here it
-refuses.
+A value can be re-generalized after a cut that reaches outside the
+redex, which is why `tl-reduce-term' only records that verdict; a
+kind cannot, so here it refuses.
 
 Every refusal is a `termlisp-type-error'
 raised before any dispatcher has appended anything, so a refused rewrite

@@ -177,7 +177,8 @@ to be recorded before the question can be asked."
 
 (ert-deftest tl-dpo-match-requires-a-repeat-to-agree ()
   "Two positions naming one variable must reach one node by `eq'.
-That is what makes the identification condition decidable."
+That is what lets a repeat bind once: a pattern that spells a
+variable twice does not match where the two spellings disagree."
   (should-not (tl-dpo-match '(f $x $x)
                             (tl-graph-root (tl-graph-build '(f a b)))))
   (should (tl-dpo-match '(f $x $x)
@@ -207,15 +208,17 @@ SPO cuts the edge anyway; DPO says which one it was."
                               '(g $x))))
     (should-not (tl-dpo-gluing m (tl-dpo-parents graph)))))
 
-(ert-deftest tl-dpo-gluing-reports-two-positions-reaching-one-node ()
-  "Two positions of L reaching one host node is what non-injective means.
-A complement would have to cut one of them and keep the other, so SPO
-folds them; DPO names the node instead."
+(ert-deftest tl-dpo-gluing-folds-two-positions-reaching-one-node ()
+  "Two positions of L reaching one host node cuts nothing outside.
+The match is non-injective there -- the host spelled `(f a a)' as one
+hash-consed `a' -- but the reduct replaces the whole redex, so the
+fold is unobservable from outside it and no holder outside the match
+loses an edge.  SPO folds; only a shared node held outside the match
+would be a dangling verdict, and that is asked separately."
   (let* ((graph (tl-graph-build '(f a a)))
          (m (tl-dpo-interface (tl-dpo-match '(f $x $y) (tl-graph-root graph))
                               '(g $x $y))))
-    (should (eq (car (tl-dpo-gluing m (tl-dpo-parents graph)))
-                'identification))))
+    (should-not (tl-dpo-gluing m (tl-dpo-parents graph)))))
 
 (ert-deftest tl-spo-apply-leaves-the-host-graph-as-it-was ()
   "The cut is an indirection, not a deletion.

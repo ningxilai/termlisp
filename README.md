@@ -421,8 +421,8 @@ with both `:type-check` and `:elaborate` set).
 
 Kinds are nodes too (`termlisp-kinds.el`), so kind unification reuses the
 graph unifier. `*` is the kind of proper types, and an arrow kind is
-written `(-> K1 K2)` — `->` is the head, right-associative — or `(karr
-K1 K2)` cons-spelled. Two kinds go past that:
+written `(-> K1 K2)` — `->` is the head, right-associative — or
+`(karr K1 K2)` cons-spelled. Two kinds go past that:
 
 - `univ(T)` is the kind of the *values* of `T`. `Zero : Nat` because it is
   a `Nat`, and the universe leaf is what says which datatype a value came
@@ -433,8 +433,8 @@ K1 K2)` cons-spelled. Two kinds go past that:
 
 `tl-kind-parse` accepts exactly five shapes — `*`, a bare datatype name,
 `(univ T)`, `(-> K1 K2)` and `(karr K1 K2)` — and nothing else. The arrow
-is `->` in head position and right-associative, so `(-> * * *)` is `* ->
-(* -> *)`; `karr` is the same arrow cons-spelled. So a parameter
+is `->` in head position and right-associative, so `(-> * * *)` reads
+`* -> (* -> *)`; `karr` is the same arrow cons-spelled. So a parameter
 annotation can be written like this:
 
 ```lisp
@@ -1001,12 +1001,11 @@ must find it preserving the types of the terms it rewrites,
 `tl-kind-preserve-check` the kinds of the types the type layer could
 unfold it inside, and a trial through `tl-dpo-normalize` must leave
 `tl-dpo-last-gluing` nil, every cut the rule takes at its own pattern
-having been local. A value can be re-generalized after a shared cut,
-which is why `reduce` records that verdict and carries on; a kind
-cannot, so `rewrite` refuses it. Every refusal signals
-`termlisp-type-error` before the clause
-list is touched, so a refused `rewrite` leaves the environment exactly
-as it was.
+having been local. A value can be re-generalized after a cut that
+reaches outside the redex, which is why `reduce` records that verdict
+and carries on; a kind cannot, so `rewrite` refuses it. Every refusal
+signals `termlisp-type-error` before the clause list is touched, so a
+refused `rewrite` leaves the environment exactly as it was.
 
 ### Hooking reduction
 
@@ -1029,10 +1028,10 @@ for the walk rather than for one node. It is called as
 `(HOOK GRAPH NODE RULE REDUCT)` after a rule has reduced `NODE` to
 `REDUCT` and before `REDUCT` is recorded in `NODE`'s memo slot, so the
 graph the hook sees is still the graph the step is about to take.
-`tl-dpo-normalize` (`termlisp-dpo.el:434`) binds it to ask, at every
+`tl-dpo-normalize` (`termlisp-dpo.el:416`) binds it to ask, at every
 step, whether the cut that step is about to take is local; the first
 verdict that is not is written to `tl-dpo-last-gluing`
-(`termlisp-dpo.el:426`) — `(dangling NODE)` for a redex a holder
+(`termlisp-dpo.el:408`) — `(dangling NODE)` for a redex a holder
 outside the match still reached, nil when every cut was local.
 
 ### The environment

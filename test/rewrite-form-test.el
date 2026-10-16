@@ -125,9 +125,10 @@ r1" "(Succ Zero)" '(:type-check t :elaborate t))
 ;; The gate also holds the two obligations a value verdict cannot
 ;; speak for.  A clause the type layer can read may be unfolded inside
 ;; a type, so the kinds it preserves are asked of it too, and its cut
-;; is tried at its own pattern under DPO discipline: a value can be
-;; re-generalized after a shared cut, a kind cannot, so what `reduce'
-;; merely records the gate refuses.
+;; is tried at its own pattern: a value can be re-generalized after a
+;; cut that reaches outside the redex, a kind cannot, so what `reduce'
+;; merely records the gate refuses.  A fold wholly inside the redex is
+;; not such a reach, and the admission test pins that it is not.
 
 (tl-test-reject tl-rewrite-form-refuses-a-rule-the-kinds-do-not-allow
   "(datatype Box (MkBox (-> Nat Nat)))
@@ -135,11 +136,12 @@ r1" "(Succ Zero)" '(:type-check t :elaborate t))
 (rewrite (h (MkBox f)) (f Zero))" "the reduct does not kind"
   '(:type-check t :elaborate t))
 
-(tl-test-reject tl-rewrite-form-refuses-a-pattern-that-cuts-where-it-does-not-own
+(tl-test-eval tl-rewrite-form-admits-a-pattern-that-repeats-a-subterm
   "(define (f x y) x)
 (datatype G (MkG a))
-(rewrite (f (MkG a) (MkG a)) (MkG a))" "the cut is not local: identification"
-  '(:type-check t :elaborate t))
+(rewrite (f (MkG a) (MkG a)) (MkG a))
+(f (MkG Zero) (MkG Zero))"
+  "(MkG Zero)" '(:type-check t :elaborate t))
 
 (tl-test-reject tl-rewrite-form-refuses-a-reduct-that-escapes-its-own-cut
   "(define (f x) x)
@@ -161,20 +163,6 @@ answers at the extended type because the clause really landed."
     (should (equal (termlisp-eval "(rf False)" env) 'False))))
 
 ;;; The locality trial over the prelude's own rules
-
-(defconst rewrite-form-test--folded
-  '(trans)
-  "Prelude rules the locality trial reports, by name.
-`trans' spells both its arguments `Refl' because the clause needs
-them to type: each `Refl' pattern collapses one equation of the
-signature's `x y z' chain, and only then does the body `Refl' prove
-`(Eq a x z)'.  The two positions reach one node on a term graph that
-hash-conses, so what the trial reports as identification is one
-element of the pattern appearing at two places, and the reduct is
-the node those positions already share.  The verdict stays recorded
-in `tl-dpo-last-gluing' as it is for `reduce', and a user rewrite
-that repeats a subterm it does not need is refused as before: this
-is the one rule the prelude cannot spell any other way.")
 
 (defun rewrite-form-test--pattern-term (pat)
   "Return the term the compiled pattern PAT spells.
@@ -205,31 +193,26 @@ remaining arguments read as terms."
   "Every clause the prelude ships cuts locally at its own pattern.
 Each rule's clauses are rebuilt as the terms they spell and put
 through `tl-rewrite--locality', the trial the gate runs on a new
-`rewrite': nil is the answer every rule gives, except that the rules
-named in `rewrite-form-test--folded' must come back flagged, so the
-exemption can neither be passed over quietly nor outlive the reason
-written down for it.  A rule that stopped being type-readable would
+`rewrite': nil is the answer every rule gives, and there is no list
+of exceptions to carry.  `trans' used to be one, flagged for
+spelling `Refl' at two positions that hash-cons to one node, until
+the gate learned that a fold wholly inside the redex is not a cut
+reaching outside it.  A rule that stopped being type-readable would
 leave the rule set and never be tried at all, so the count is also
 checked to have reached past the number of rules: clauses, not
 rules, are what this pins."
   (let* ((env (termlisp-load-prelude
                (termlisp-make-env '(:type-check t :elaborate t))))
          (rules (tl-nbe--rules (tl-nbe env nil)))
-         (tried 0)
-         (flagged nil))
+         (tried 0))
     (should rules)
     (dolist (r rules)
       (dolist (cl (tl-grule-clauses r))
-        (let* ((name (tl-grule-name r))
-               (v (tl-rewrite--locality
-                   r (rewrite-form-test--lhs name (car cl)))))
-          (setq tried (1+ tried))
-          (if (memq name rewrite-form-test--folded)
-              (when v (push name flagged))
-            (should-not v)))))
-    (should (> tried (length rules)))
-    (dolist (name rewrite-form-test--folded)
-      (should (memq name flagged)))))
+        (setq tried (1+ tried))
+        (should-not
+         (tl-rewrite--locality
+          r (rewrite-form-test--lhs (tl-grule-name r) (car cl))))))
+    (should (> tried (length rules)))))
 
 (provide 'rewrite-form-test)
 ;;; rewrite-form-test.el ends here

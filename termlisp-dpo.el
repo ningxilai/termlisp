@@ -51,18 +51,13 @@ ROOT is the image of L's root -- the redex root the step replaces.
 IMAGE is the set of host nodes m reached, without repetition: the
 dangling condition is a statement about which host nodes the cut would
 take, and a set is what that question is about.
-POSITIONS is an alist from a pattern position to the host node it
-reached, one entry per position, which is where the identification
-condition looks: two positions that are different elements of L
-reaching one host node is what non-injective means.
 INTERFACE is the part of IMAGE that survives the step: the image of K,
 the nodes a rule's template names and so cannot be cut.
 VARS is an alist from a pattern variable to the host node it matched.
 
 A repeat of one variable must reach one node by `eq', which is what
-`tl-graph-match' already demands and what makes the identification
-condition decidable here."
-  root image positions interface vars)
+`tl-graph-match' already demands and what binding a repeat relies on."
+  root image interface vars)
 
 (defun tl-dpo--rest-p (pat)
   "Return non-nil if PAT is a `(:rest $name)' pattern element."
@@ -78,10 +73,8 @@ question can be asked.  INTERFACE is left nil; `tl-dpo-interface' fills
 it in once the template is known."
   (let ((vars nil)
         (image nil)
-        (positions nil)
         (ok t))
-    (cl-labels ((take (pat nd)
-                  (push (cons pat nd) positions)
+    (cl-labels ((take (nd)
                   (unless (memq nd image) (push nd image)))
                 (bind (pat nd)
                   (let ((cell (assq pat vars)))
@@ -95,7 +88,7 @@ it in once the template is known."
                       (unless (null (cdr pats)) (setq ok nil))
                       (when ok
                         (bind (cadar pats) nds)
-                        (dolist (d nds) (take (cadar pats) d))
+                        (dolist (d nds) (take d))
                         (setq pats nil nds nil)))
                      ((null nds) (setq ok nil))
                      (t (one (car pats) (car nds))
@@ -105,30 +98,25 @@ it in once the template is known."
                   (when ok
                     (cond
                      ((tl-graph--pvar-p pat)
-                      ;; A repeat is one element of L appearing at two
-                      ;; positions, so the node is taken the first time
-                      ;; only: recording both would hand `tl-dpo-gluing'
-                      ;; two positions of different elements reaching one
-                      ;; node, which is not what identification means.
-                      (if (assq pat vars)
-                          (bind pat nd)
-                        (take pat nd)
-                        (bind pat nd)))
+                      ;; A repeat reaches one node (BIND enforces it by
+                      ;; `eq') and `take' is idempotent, so one spelling
+                      ;; covers the first occurrence and every repeat.
+                      (take nd)
+                      (bind pat nd))
                      ((consp pat)
                       (if (and (tl-node-application nd)
                                (eq (tl-node-head nd) (car pat)))
-                          (progn (take pat nd)
+                          (progn (take nd)
                                  (seq (cdr pat) (tl-node-children nd)))
                         (setq ok nil)))
                      (t (if (and (not (tl-node-application nd))
                                  (eq (tl-node-head nd) pat))
-                            (take pat nd)
+                            (take nd)
                           (setq ok nil)))))))
       (one pattern node)
       (when ok
         (tl-make-dpo-match :root node
                            :image (nreverse image)
-                           :positions (nreverse positions)
                            :vars (nreverse vars))))))
 
 (defun tl-dpo--template-vars (template)
@@ -179,48 +167,44 @@ of the graph being rewritten."
     table))
 
 (defun tl-dpo-gluing (match parents)
-  "Check DPO's gluing condition for MATCH against a PARENTS table.
-Return nil when it holds, or a list (CONDITION NODE) naming the first
-offender.  Two conditions are reported.
+  "Check the gluing condition for MATCH against a PARENTS table.
+Return nil when the step's cut stays inside the redex, or a list
+naming the offender as (CONDITION NODE) -- always `dangling', which
+is the whole condition now.
+
+A host node in m(L) outside m(K) has a parent that is not in m(L).
+Cutting it would take an edge the rule never matched, so the step is
+not local.  Containment is the entire question because the rewrite is
+SPO -- `tl-spo-apply' cuts the matched image and glues the template --
+and an SPO step is local exactly when nothing outside the match
+observes the cut.
 
 `identification' -- two positions of L that are different elements
-reached one host node.  The complement would have to cut one of them
-and keep the other, which is not a subgraph construction; SPO folds
-them instead.  One variable appearing twice is not this: a repeat is
-one element of L appearing at two positions, and `tl-dpo-match' binds
-it once.
+reaching one host node -- is deliberately not reported.  It is a
+failure of the DPO pushout complement, which would have to cut one of
+two coincident images and keep the other; SPO folds them instead, and
+the fold is unobservable outside the redex as long as the shared node
+is not held outside it, which is the dangling case that is still
+asked.  One variable appearing twice is not this either: a repeat is
+one element of L at two positions, and `tl-dpo-match' binds it once.
 
-`dangling' -- a host node in m(L) outside m(K) has a parent that is not
-in m(L).  Cutting it would take an edge the rule never matched, so the
-DPO complement does not exist; SPO cuts the edge anyway.
-
-Both are ordinary on a term graph that hash-conses, because a redex is
-then reachable from every place its spelling occurs.  This function
-reports; it does not decide.  A node absent from PARENTS -- one the
-table was not built over -- counts as having no parents."
+Hash-consing makes both shapes ordinary -- a redex is reachable from
+every place its spelling occurs -- so a condition that fired on them
+would refuse most of what a normalisation is asked to do.  This
+function reports; it does not decide.  A node absent from PARENTS --
+one the table was not built over -- counts as having no parents."
   (let* ((in-l (make-hash-table :test #'eq))
-         (k (make-hash-table :test #'eq))
-         (bad nil))
+         (k (make-hash-table :test #'eq)))
     (dolist (n (tl-dpo-match-image match))
       (puthash n t in-l))
     (dolist (n (tl-dpo-match-interface match))
       (puthash n t k))
-    (catch 'identification
-      (let ((seen nil))
-        (dolist (pair (tl-dpo-match-positions match))
-          (let ((nd (cdr pair)))
-            (when (memq nd seen)
-              (throw 'identification
-                     (setq bad (list 'identification nd))))
-            (push nd seen)))))
-    (unless bad
-      (catch 'dangling
-        (dolist (n (tl-dpo-match-image match))
-          (unless (gethash n k)
-            (dolist (p (gethash n parents))
-              (unless (gethash p in-l)
-                (throw 'dangling (setq bad (list 'dangling n)))))))))
-    bad))
+    (catch 'dangling
+      (dolist (n (tl-dpo-match-image match))
+        (unless (gethash n k)
+          (dolist (p (gethash n parents))
+            (unless (gethash p in-l)
+              (throw 'dangling (list 'dangling n)))))))))
 
 (defun tl-spo-apply (match template)
   "Glue TEMPLATE onto MATCH's redex.  Return the reduct.
@@ -257,7 +241,7 @@ See `tl-spo-apply' for how the step itself is performed."
 (defun tl-dpo--image-match (pattern node)
   "Match compiled PATTERN against NODE, recording the whole correspondence.
 Return a `tl-dpo-match', or nil when PATTERN does not fit NODE.  This is
-`tl-pat-match' with every position kept rather than only the bindings a
+`tl-pat-match' with the whole image kept rather than only the bindings a
 template would read: a clause-based rule matches through the decision
 tree in `termlisp-case', which throws the correspondence away, and the
 gluing condition is a statement about that correspondence.
@@ -270,11 +254,9 @@ match than the step took.  INTERFACE is left nil: what the step actually
 kept of the match is read off the reduct, see `tl-dpo--step-gluing'."
   (let ((vars nil)
         (image nil)
-        (positions nil)
         (ok t)
         (tl-pat--subject node))
-    (cl-labels ((take (pat nd)
-                  (push (cons pat nd) positions)
+    (cl-labels ((take (nd)
                   (unless (memq nd image) (push nd image)))
                 (bind (name nd)
                   (let ((cell (assq name vars)))
@@ -296,7 +278,7 @@ kept of the match is read off the reduct, see `tl-dpo--step-gluing'."
                     (`(pnil) (unless (null nodes) (setq ok nil)))
                     (`(pcon cons (prest ,name) (pnil))
                      (bind-list name nodes)
-                     (dolist (d nodes) (take (car pat) d)))
+                     (dolist (d nodes) (take d)))
                     (`(pcon cons ,head ,tail)
                      (if (null nodes)
                          (setq ok nil)
@@ -304,10 +286,10 @@ kept of the match is read off the reduct, see `tl-dpo--step-gluing'."
                        (when ok (lseq tail (cdr nodes)))))
                     (`(prest ,name)
                      (bind-list name nodes)
-                     (dolist (d nodes) (take pat d)))
+                     (dolist (d nodes) (take d)))
                     (`(pvar ,name)
                      (bind-list name nodes)
-                     (dolist (d nodes) (take pat d)))
+                     (dolist (d nodes) (take d)))
                     (_ (setq ok nil))))
                 (seq (pats nodes)
                   ;; `tl-pat-match-seq': positional, exact arity unless a
@@ -318,7 +300,7 @@ kept of the match is read off the reduct, see `tl-dpo--step-gluing'."
                       (unless (null (cdr pats)) (setq ok nil))
                       (when ok
                         (bind-list (cadr (car pats)) nodes)
-                        (dolist (d nodes) (take (car pats) d))
+                        (dolist (d nodes) (take d))
                         (setq pats nil nodes nil)))
                      ((null nodes) (setq ok nil))
                      (t
@@ -329,11 +311,12 @@ kept of the match is read off the reduct, see `tl-dpo--step-gluing'."
                   (when ok
                     (pcase pat
                       (`(pvar ,name)
-                       (if (assq name vars)
-                           (bind name nd)
-                         (take pat nd)
-                         (bind name nd)))
-                      (`(pwild) (take pat nd))
+                       ;; A repeat reaches one node (BIND enforces it by
+                       ;; `eq') and `take' is idempotent, so one spelling
+                       ;; covers the first occurrence and every repeat.
+                       (take nd)
+                       (bind name nd))
+                      (`(pwild) (take nd))
                       ((or `(plit ,value) `(lit ,value))
                        ;; `lit' is what `tl-nbe--case-pattern' has been
                        ;; known to emit; `tl-pat-match' would signal on
@@ -343,15 +326,15 @@ kept of the match is read off the reduct, see `tl-dpo--step-gluing'."
                        (let ((m (tl-pat-whnf nd)))
                          (when (and (not (tl-node-application m))
                                     (equal (tl-node-head m) value))
-                           (take pat m))))
+                           (take m))))
                       (`(pnil)
                        (let ((m (tl-pat-whnf nd)))
                          (when (and (not (tl-node-application m))
                                     (eq (tl-node-head m) nil))
-                           (take pat m))))
+                           (take m))))
                       (`(pas ,name ,sub)
                        ;; An as-pattern renames what its subpattern
-                       ;; already reached; it adds no position of its
+                       ;; already reached; it reaches no host node of its
                        ;; own, so it is not taken.
                        (one sub nd)
                        (when ok (bind name nd)))
@@ -361,16 +344,16 @@ kept of the match is read off the reduct, see `tl-dpo--step-gluing'."
                           ((null pats)
                            (when (and (not (tl-node-application m))
                                       (eq (tl-node-head m) head))
-                             (take pat m)))
+                             (take m)))
                           ((and (null (cdr pats))
                                 (tl-pat-list-pattern-p (car pats)))
                            (when (and (tl-node-application m)
                                       (eq (tl-node-head m) head))
-                             (take pat m)
+                             (take m)
                              (lseq (car pats) (tl-node-children m))))
                           ((and (tl-node-application m)
                                 (eq (tl-node-head m) head))
-                           (take pat m)
+                           (take m)
                            (seq pats (tl-node-children m)))
                           (t (setq ok nil)))))
                       (_ (setq ok nil))))))
@@ -378,7 +361,6 @@ kept of the match is read off the reduct, see `tl-dpo--step-gluing'."
       (when ok
         (tl-make-dpo-match :root node
                            :image (nreverse image)
-                           :positions (nreverse positions)
                            :vars (nreverse vars))))))
 
 (defun tl-dpo--step-gluing (graph node rule reduct)

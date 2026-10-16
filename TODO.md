@@ -139,7 +139,8 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   `tl-dpo-normalize` as a production caller — is answered yes here;
   closing the checkbox stays with F5.  Pinned by four tests in
   `rewrite-form-test` (kinds, identification, dangling, and the nil slot
-  after an accepted rewrite); suite 474/474.
+  after an accepted rewrite); suite 474/474.  The identification pin is
+  reversed by F6 below, which withdraws that condition from the gate.
 - [x] **F3 prelude 获得类型层规则** — e.g. `Vec` arithmetic, type-level `+`,
   every rule through the F1+F2 gate.
   - [x] Every prelude type-level rule lands in its oracle bucket.
@@ -172,7 +173,10 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   come back flagged, and the clause count must reach past the rule count
   so that a rule which stopped being type-readable cannot slip out of the
   trial either.  A user rewrite that repeats a subterm it does not need
-  is refused as before.
+  is refused as before.  F6 below withdraws the identification condition
+  itself, so the reformulated `and` and `or` stay only because they are
+  the smaller table, the exemption list is deleted, and a
+  repeated-subterm rewrite is admitted rather than refused.
 
   `vappend` also found the value checker without its evaluator: the batch
   driver and the evaluator both bind `tl-nbe-reduce-env` around the
@@ -238,16 +242,17 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   ever real: F4 had already made `(-> * *)` parse correctly, and the README's
   infix example was simply never true.  The Kinds section is corrected to
   `(-> K1 K2)` / `(karr K1 K2)` and the Fω section is written against the
-  spellings the tests pin — `Box`'s annotated parameter, the `(lambda (a) (Vec a
-  Zero))` of kind `(* -> *)`, and the computed index `(Vec Int ((lambda (n) (Succ
-  n)) Zero))`.
+  spellings the tests pin — `Box`'s annotated parameter, the
+  `(lambda (a) (Vec a Zero))` of kind `(* -> *)`, and the computed index
+  `(Vec Int ((lambda (n) (Succ n)) Zero))`.
 
-  The kind oracle joins the standing gates: `tl-kind-preserve-oracle-buckets-
-  the-prelude-rules` is named in the Notes alongside compile/test/checkdoc/
-  parsecheck, and it already asserts every prelude rule lands in exactly one
-  bucket — `preserved`, `violated`, or `cannot-check` — with the `violated`
-  family pinned by name and count and `vappend`'s presence asked directly, so a
-  rule that stopped being type-readable cannot slip out of the count.  P3-5 closes
+  The kind oracle joins the standing gates: the prelude bucketing test is
+  named in the Notes alongside compile/test/checkdoc/parsecheck,
+  `tl-kind-preserve-oracle-buckets-the-prelude-rules`, and it already
+  asserts every prelude rule lands in exactly one bucket — `preserved`,
+  `violated`, or `cannot-check` — with the `violated` family pinned by name
+  and count and `vappend`'s presence asked directly, so a rule that stopped
+  being type-readable cannot slip out of the count.  P3-5 closes
   as adopted: `tl-dpo-normalize` is not production-dead, carrying `tl-nbe-nf`,
   `tl-reduce-term`, and the locality trial as callers, so it needs no side-entry
   page.
@@ -262,8 +267,63 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   the exemption would mean accepting the F2-pinned refusal too, which is a change
   to a safety property the suite pins, not a documentation-round tidy-up.  It stays
   a name-based carve-out, recorded in `rewrite-form-test--folded`, and any move to
-  make it structural belongs in its own round with that trade-off stated.  Suite
-  492/492, 0 byte-compile warnings, checkdoc 0 new, parsecheck OK.
+  make it structural belongs in its own round with that trade-off stated.  F6 below
+  takes that round.  Suite 492/492, 0 byte-compile warnings, checkdoc 0 new,
+  parsecheck OK.
+
+- [x] **F6 局部性判决收口** — the locality condition becomes containment alone:
+  `identification` leaves `tl-dpo-gluing`, the `trans` exemption is deleted, and
+  F2's pin of `(f (MkG a) (MkG a)) -> (MkG a)` as refused is reversed into an
+  admission.
+  - [x] Every prelude clause returns nil from the trial, with no exemption list
+    to carry.
+  - [x] The dangling and kinds refusals are untouched.
+
+  F5 left the `trans` exemption a name-based carve-out and said the structural
+  move belongs in its own round with the trade-off stated; this is that round,
+  taken with sign-off on the trade-off.  The two cases were never separable —
+  `trans` and the user rewrite `(f (MkG a) (MkG a)) -> (MkG a)` share a node
+  outside the interface, both leave a reduct that is a copy rather than the
+  shared node, and neither dangles in the isolated trial graph — so the choice
+  was refusing both or admitting both, and it is admission, because
+  identification was never a locality question.  The step is SPO:
+  `tl-spo-apply` cuts the matched image and glues the template, so a step is
+  local exactly when nothing outside the match observes the cut, which is the
+  dangling condition and only that.  Two positions reaching one host node is a
+  failure of the DPO pushout complement — it would have to cut one coincident
+  image and keep the other — and SPO has no complement to fail; it folds the
+  positions, and a fold wholly inside the redex cannot be seen from outside.
+  A fold whose node is held outside leaks, which is the dangling case still
+  asked.
+
+  The condition had to leave `tl-dpo-gluing` rather than be filtered by the
+  trial: `tl-dpo-normalize` records the first non-nil verdict the walk takes,
+  so a walk finding identification at one step and dangling at a later one
+  would have named the first and hidden the second behind it.  `dangling` alone
+  is what the slot can ever hold now.
+
+  The match's `positions` slot existed only to answer the removed condition,
+  so it goes with it — both matchers keep the image, and the repeat
+  special-case in each `one` simplifies to `take` then `bind`, which `take`'s
+  memq guard already made right on a repeat.  What the value level records is
+  unchanged in kind: `tl-reduce-term` never refused, and it simply never sees
+  identification in the slot; nothing read it there.
+
+  The suite says so in both directions.  `trans` passes with nil and
+  `rewrite-form-test--folded` is deleted: the prelude trial
+  `tl-rewrite-locality-trials-the-prelude-rules` now demands nil for every
+  prelude clause with no exceptions to carry.  The F2 pin flips:
+  `(rewrite (f (MkG a) (MkG a)) (MkG a))` is admitted, pinned by
+  `tl-rewrite-form-admits-a-pattern-that-repeats-a-subterm`, and that
+  reversal of a safety property F2 recorded as deliberate is exactly the
+  trade-off F5 named.  What was never in question stays pinned:
+  `(rewrite (f (Succ x)) (Succ (f (Succ x))))` still refuses dangling, the
+  kinds refusal is untouched, and the gluing unit test that used to report
+  `identification` for `(f a a)` now asserts nil on the same graph.  The
+  prelude's `and`/`or` comment, which claimed the trial reports a repeated
+  constructor, is corrected with it.  F2's node above describes the
+  two-verdict gate as built; this node is its correction.  Suite 492/492, 0
+  byte-compile warnings, checkdoc 0 new, parsecheck OK.
 
 ## Notes
 

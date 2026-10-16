@@ -11,10 +11,12 @@
 (define (not (True)) (False))
 (define (not (False)) (True))
 ;; `and' and `or' decide one position in the pattern and pass the
-;; other through instead of spelling the truth table out.  A pattern
-;; that repeats a constructor is a cut the locality trial reports --
-;; two positions reaching one node on a hash-consed graph -- and the
-;; two clauses here answer the same table without one.
+;; other through instead of spelling the truth table out: four
+;; clauses become two.  A clause that repeated a constructor would
+;; spell two positions reaching one hash-consed node, which the
+;; locality trial does not report (only a cut reaching outside the
+;; redex is not local), and the decided form stays because it is the
+;; smaller table.
 (define (and (True) b) b)
 (define (and (False) a) (False))
 (define (or (True) a) (True))
