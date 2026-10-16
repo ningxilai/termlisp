@@ -110,6 +110,81 @@ Lets a bare builtin (e.g. `+' in `(foldl + 0 xs)') be passed as a value."
           (/ a b)
         (/ (float a) (float b))))))
 
+;; The integer operator language.  Each of these carries a type scheme
+;; in `termlisp-ir-types' already, so before they had runtimes a call
+;; to any of them typechecked and then sat there as a stuck form --
+;; rendering back as source instead of answering.  The semantics are
+;; the emitter's own, copied so both paths agree: `quo' truncates
+;; toward zero (Aldor's and C's), `mod' floors (elisp's, which is what
+;; `tl-emit' falls through to), and the predicates read a number the
+;; way `tl-emit' inlines them.
+(tl-register-builtin 'quo
+  (lambda (args)
+    (tl-check-numbers args 'quo)
+    (let ((b (nth 1 args)))
+      (when (zerop b)
+        (signal 'termlisp-eval-error (list "Division by zero")))
+      (truncate (nth 0 args) b))))
+(tl-register-builtin 'mod
+  (lambda (args)
+    (tl-check-numbers args 'mod)
+    (let ((b (nth 1 args)))
+      (when (zerop b)
+        (signal 'termlisp-eval-error (list "Division by zero")))
+      (mod (nth 0 args) b))))
+(tl-register-builtin 'cl-gcd
+  (lambda (args)
+    (tl-check-numbers args 'cl-gcd)
+    (dolist (a args)
+      (unless (integerp a)
+        (signal 'termlisp-type-error
+                (list (format "cl-gcd expects integers, got %S" a)))))
+    (cl-gcd (nth 0 args) (nth 1 args))))
+(tl-register-builtin '^
+  (lambda (args)
+    (tl-check-numbers args '^)
+    (expt (nth 0 args) (nth 1 args))))
+;; `factorial' is a primitive because the prelude cannot spell it: an
+;; accumulator loop over Integers has only variable positions to
+;; match, so its recursive call would re-match its own clause under
+;; the `if' that guards it -- the dangling cut the locality trial
+;; refuses, and the prelude carries no exceptions to it.  Aldor's
+;; Integer domain has factorial as a basic operation anyway (the
+;; operator table lowers it to `tl-factorial' for the corpus), and
+;; the loop answers 1 for every n <= 1, the mathematical base
+;; included.
+(tl-register-builtin 'factorial
+  (lambda (args)
+    (tl-check-one-number args 'factorial)
+    (unless (integerp (car args))
+      (signal 'termlisp-type-error
+              (list (format "factorial expects an integer, got %S"
+                            (car args)))))
+    (let ((n (car args))
+          (acc 1))
+      (while (> n 1)
+        (setq acc (* acc n)
+              n (1- n)))
+      acc)))
+(tl-register-builtin 'zero?
+  (lambda (args)
+    (tl-check-one-number args 'zero?)
+    (tl-bool (zerop (car args)))))
+(tl-register-builtin 'even?
+  (lambda (args)
+    (tl-check-one-number args 'even?)
+    (tl-bool (zerop (mod (car args) 2)))))
+(tl-register-builtin 'odd?
+  (lambda (args)
+    (tl-check-one-number args 'odd?)
+    (tl-bool (not (zerop (mod (car args) 2))))))
+;; `neq' is `eq' decided over the same value equality and negated, so
+;; the two always disagree exactly.
+(tl-register-builtin 'neq
+  (lambda (args)
+    (tl-bool (not (tl-value-equal (nth 0 args) (nth 1 args)
+                                  #'tl-force-or-identity)))))
+
 (dolist (spec '((sin . sin) (cos . cos) (tan . tan) (exp . exp)))
   (let ((name (car spec))
         (impl (cdr spec)))
@@ -135,6 +210,22 @@ Lets a bare builtin (e.g. `+' in `(foldl + 0 xs)') be passed as a value."
         (signal 'termlisp-eval-error
                 (list "Square root requires non-negative number")))
       (float (sqrt x)))))
+
+;; Float-to-integer roundings: the answer is a real integer in both
+;; directions (a number the checker reads as `Int' comes back whole),
+;; and `round' halves to even, elisp's own rule.  These are kept
+;; primitives for parity, not for want of a spelling: the emitter's
+;; fallback already lands on elisp's own of these names, so binding
+;; the interpreter to the same functions keeps both paths exact at
+;; the float/bignum boundary -- and a floor is anyway one
+;; sign-adjustment over `(quo x 1)', which the suite pins.
+(dolist (spec '((floor . floor) (ceiling . ceiling) (round . round)))
+  (let ((name (car spec))
+        (impl (cdr spec)))
+    (tl-register-builtin name
+      (lambda (args)
+        (tl-check-one-number args name)
+        (funcall impl (car args))))))
 
 (defun tl-list-cons-p (v)
   "Return non-nil if V is a termlisp Cons cell."

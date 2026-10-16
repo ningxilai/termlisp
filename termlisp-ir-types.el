@@ -426,6 +426,16 @@ result is left unconstrained rather than aborting the whole program."
 (dolist (n '(sin cos tan exp log sqrt))
   (tl-register-builtin-type n
     (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tint)))))
+;; The roundings take a number the checker reads as `Int' (a float
+;; literal included, per the literal rule) and hand back a whole one,
+;; so `Int -> Int' is both the convention and the truth here.
+(dolist (n '(floor ceiling round))
+  (tl-register-builtin-type n
+    (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tint)))))
+;; `factorial' is a builtin for the reason termlisp-builtins gives;
+;; its scheme is Integer all the way.
+(tl-register-builtin-type 'factorial
+  (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tint))))
 ;; `format' takes the format string (the runtime only accepts "~a") and then
 ;; the value to render.
 (let ((a (tl-fresh-tvar)))

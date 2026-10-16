@@ -571,8 +571,9 @@ to select anything.
 
 Numeric literals are inferred `Int` regardless of their runtime
 representation, so `sin`/`cos`/`tan`/`exp`/`log`/`sqrt` are typed
-`Int -> Int`. The exact numeric tower (`tl-fraction`, `tl-complex`,
-`tl-num-*`) is polymorphic underneath.
+`Int -> Int`, and so are the roundings `floor`/`ceiling`/`round`,
+which answer a whole number in any case. The exact numeric tower
+(`tl-fraction`, `tl-complex`, `tl-num-*`) is polymorphic underneath.
 
 Variadic `list` has no fixed arity to express as a curried arrow, so it is
 expanded to nested `Cons` applications in both the evaluator and the type
@@ -607,14 +608,18 @@ API:
 - `termlisp-load` / `termlisp-load-prelude` — load a `.tls` file / the
   bundled prelude into an environment.
 - `termlisp-value->string` — render a value.
-- Builtins — the primitive functions term-lisp code can call: `eq`, `+`, `-`,
-  `*`, `/`, `<`, `<=`, `>`, `>=`, `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`,
-  `absurd`, `seq`, `first`, `rest`, `empty?`, `list`, `format`, `print`,
-  `read-line`, `stdin`, `string-join`, `string->list`, `list->string`.
+- Builtins — the primitive functions term-lisp code can call: `eq`, `neq`,
+  `+`, `-`, `*`, `/`, `quo`, `mod`, `cl-gcd`, `^`, `<`, `<=`, `>`, `>=`,
+  `zero?`, `even?`, `odd?`, `absurd`, `factorial`, `floor`, `ceiling`,
+  `round`, `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`, `seq`, `first`,
+  `rest`, `empty?`, `list`, `format`, `print`, `read-line`, `stdin`,
+  `string-join`, `string->list`, `list->string`.
 
 The prelude defines the booleans, pairs, `Either`/`Void`, lists, `Nat`,
 `Vec`, `Fin`, `Eq`, monads and type classes, together with the operators
-`=`, `xor`, `null?`, `map`, `foldl`, `reverse` and `sort`.
+`=`, `xor`, `null?`, `map`, `foldl`, `reverse` and `sort`, and an
+arithmetic library: `abs`, `signum`, `min`, `max`, `positive?`,
+`negative?`, `square`, `rem`, `div`, `gcd`, `lcm`, `sum` and `product`.
 
 Example:
 

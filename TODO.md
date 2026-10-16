@@ -223,6 +223,77 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     against `72defcc', parsecheck OK (37 files), `loaddefs-generate' prints
     no prefix warning (25 registrations).
 
+- [x] **P1-12 Eight operators typechecked, then rendered back as
+  themselves** — `quo', `mod', `cl-gcd', `^', `zero?', `even?',
+  `odd?' and `neq' each carried a type scheme in `termlisp-ir-types'
+  and no runtime: under `:type-check', `(quo 7 2)' passed the checker
+  and then answered `(quo 7 2)' -- a stuck form, arithmetic that
+  fails by being silent.  The schemes came from the emit path, which
+  compiles these names to elisp (`truncate', `mod', `cl-gcd',
+  `zerop', `expt', `neq' inlined as `(not (equal a b))'); plain
+  term-lisp evaluation never had the other half.  Each now has a
+  runtime in `termlisp-builtins' spelled the way `tl-emit' inlines
+  it, so the two paths cannot drift, and `quo'/`mod' divide by zero
+  the way `/' has always reported it.  Three more names existed
+  nowhere -- `floor', `ceiling', `round' -- kept as primitives for
+  parity, not impossibility: the emitter's fallback already lands on
+  elisp's own of these names, so the interpreter binds the same
+  functions, exact at the float/bignum boundary and at the
+  half-to-even rule `round' inherits.  An impossibility claim would
+  have been wrong twice over -- `quo' had just opened the door,
+  `(quo x 1)' truncating a float to an integer, and over it a floor
+  is one sign-adjustment while a half-to-even round is a
+  reconstruction; both were compared against the primitives on an
+  18-float battery (positive and negative whole, half and fractional
+  values, signed zero, ten-digit scale), every one equal, and the
+  floor spelling is pinned in the suite beside the two `(quo x 1)'
+  facts it rests on.
+  With them and the eight, the prelude gains the Arithmetic section
+  the baseline library was missing: `abs', `signum', `min', `max',
+  `positive?', `negative?', `square', `sum', `product',
+  `gcd'/`lcm' over `cl-gcd', and the partner both division families
+  needed -- `quo' pairs with `rem', cutting toward zero, `mod' with
+  `div', which did not exist at all, flooring.  The section pins its
+  own claim at the value level: each pair rebuilds -7 from b = 2, so
+  the difference between cutting and flooring is observable rather
+  than asserted.
+  The bar was `~/aldor--.hs' -- the Haskell sketch of an Aldor
+  interpreter's AST -- with the prelude as its base library, and the
+  transcription tests separate the two halves honestly: the six
+  mutually recursive trees (`FB', `DefTable', `DTE', `Expr', `Value',
+  `Type', in the .hs file's own order, the `DefTable' constructor
+  keeping its datatype's name, `QName = [String]' as `(List String)'),
+  the `BuiltInOp' closure field carrying `(-> (List Value) Value)',
+  the nested match back out and the forward-referencing defines were
+  already there -- symbolic capability needed no round; the
+  interpreter's arithmetic did, and `value-quo' over `IntegerVal' is
+  where the two halves meet.  `factorial 20' and `(^ 2 100)' pin the
+  arbitrary-width Integer an interpreter's `IntegerVal' must have.
+  `factorial' ended up a primitive because the suite insisted: the
+  locality trial over the prelude's clauses
+  (`tl-rewrite-locality-trials-the-prelude-rules') refuses an
+  accumulator loop over Integers -- a pattern with only variable
+  positions matches its own recursive call under the `if' that guards
+  it, and the cut reaching outside the redex is dangling.  Every
+  recursive clause the prelude did ship escapes the trial the same
+  way, its recursive call violating the constructor its own pattern
+  demands; with the loop in elisp at the mathematical base (0! = 1),
+  the prelude still carries no exceptions.
+  - [x] Deliberately untouched: `ListFirst', `ListRest', `ListEmpty'
+    and `tl-output-char', `tl-output-<<', `tl-format' also typecheck
+    without runtimes, but they are emit-pipeline internals -- the
+    first three always inlined before evaluation, the last three
+    elisp functions the emitted program calls -- and a runtime behind
+    them would promise source an entry surface that is not its own.
+  - [x] Red/green: 44 of the 48 new pins fail at the round's parent
+    `f7549e1' with the tests kept; the four that pass are the purely
+    symbolic transcriptions, which is the capability that already
+    existed.  All 48 green with the round applied.
+  - [x] Suite 548/548, `make compile` 0 warnings with 27 .elc, isolated
+    per-file compile clean, checkdoc 366 = 366 with an empty normalized
+    diff against `f7549e1', parsecheck OK (37 files), `loaddefs-generate'
+    prints no prefix warning (25 registrations).
+
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
 - [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open

@@ -283,5 +283,32 @@
 (define (sort Nil) Nil)
 (define (sort (Cons x xs)) (sort-insert x (sort xs)))
 
+;; Arithmetic.  The primitives carry the operator language the
+;; interpreter reaches for directly: `quo' truncates toward zero,
+;; `mod' floors, `cl-gcd' is the gcd, `^' exponentiates, `zero?'
+;; `even?' `odd?' test a number, and `floor' `ceiling' `round' turn a
+;; float into an integer.  The rest of the library is written here
+;; over them, and both division families get their partner: `quo'
+;; pairs with `rem' (cutting toward zero -- Aldor's and C's) and
+;; `mod' with `div' (flooring -- Scheme's).  Each pair satisfies
+;; a = q * b + r for every sign of a and b; the two families give the
+;; same q exactly when a/b does not come out negative.  `gcd'/`lcm'
+;; are spelled over `cl-gcd', the name the Aldor operator table
+;; lowers to.
+
+(define (abs n) (if (< n 0) (- n) n))
+(define (signum n) (if (< n 0) (- 1) (if (> n 0) 1 0)))
+(define (min a b) (if (< a b) a b))
+(define (max a b) (if (> a b) a b))
+(define (positive? n) (> n 0))
+(define (negative? n) (< n 0))
+(define (square n) (* n n))
+(define (rem a b) (- a (* (quo a b) b)))
+(define (div a b) (/ (- a (mod a b)) b))
+(define (gcd a b) (cl-gcd a b))
+(define (lcm a b) (if (or (eq a 0) (eq b 0)) 0 (abs (/ (* a b) (gcd a b)))))
+(define (sum xs) (foldl + 0 xs))
+(define (product xs) (foldl * 1 xs))
+
 ;; Assertions
 (define (assertEqual a b) (if (eq a b) True False))

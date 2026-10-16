@@ -116,6 +116,179 @@
 (tl-test-reject tl-prelude-reject-string-list-42 "(string->list 42)" "Cannot apply" '(:type-check t))
 (tl-test-reject tl-prelude-reject-list-1-true "(list 1 True)" "Cannot apply" '(:type-check t))
 
+;;; Integer and float arithmetic
+
+;; Every primitive here carried a type scheme already and nothing
+;; behind it: the call typechecked and then rendered back as source,
+;; stuck.  These pin the runtimes under `:type-check t', because the
+;; promise that was broken was the scheme's.
+(tl-test-eval tl-arith-quo "(quo 7 2)" "3" '(:type-check t))
+(tl-test-eval tl-arith-quo-toward-zero "(quo -7 2)" "-3" '(:type-check t))
+;; `quo' truncates a float too -- elisp `truncate' behind it -- and
+;; that is what makes a floor spellable in term-lisp at all.
+(tl-test-eval tl-arith-quo-truncates-a-float "(quo 7.5 1)" "7" '(:type-check t))
+(tl-test-eval tl-arith-quo-truncates-a-negative-float "(quo -7.5 1)" "-7"
+              '(:type-check t))
+;; ...and this is that spelling, kept honest: expressible (the round
+;; compared all three roundings against the primitives on an
+;; 18-float battery, every one equal) and shipped as primitives
+;; anyway, for emit parity and exactness.
+(tl-test-eval tl-arith-floor-is-spellable-over-quo
+  "(define (floor-spelled x)
+     (if (and (< x 0) (> (quo x 1) x)) (- (quo x 1) 1) (quo x 1)))
+   (and (eq (floor-spelled -7.5) (floor -7.5))
+        (eq (floor-spelled 7.5) (floor 7.5)))"
+  "True" '(:type-check t))
+(tl-test-eval tl-arith-mod-floors "(mod -7 2)" "1" '(:type-check t))
+(tl-test-eval tl-arith-cl-gcd "(cl-gcd -12 18)" "6" '(:type-check t))
+(tl-test-eval tl-arith-expt-bignum "(^ 2 100)"
+              "1267650600228229401496703205376" '(:type-check t))
+(tl-test-eval tl-arith-zero-true "(zero? 0)" "True" '(:type-check t))
+(tl-test-eval tl-arith-zero-false "(zero? 3)" "False" '(:type-check t))
+(tl-test-eval tl-arith-even-true "(even? 4)" "True" '(:type-check t))
+(tl-test-eval tl-arith-even-false "(even? 5)" "False" '(:type-check t))
+(tl-test-eval tl-arith-odd-true "(odd? 5)" "True" '(:type-check t))
+(tl-test-eval tl-arith-neq-true "(neq 1 2)" "True" '(:type-check t))
+(tl-test-eval tl-arith-neq-false "(neq 2 2)" "False" '(:type-check t))
+(tl-test-eval tl-arith-floor "(floor 7.5)" "7" '(:type-check t))
+(tl-test-eval tl-arith-ceiling "(ceiling 7.2)" "8" '(:type-check t))
+;; `round' halves to even -- elisp's rule, and now the prelude's.
+(tl-test-eval tl-arith-round-half-to-even "(round 2.5)" "2" '(:type-check t))
+(tl-test-reject tl-arith-quo-by-zero "(quo 7 0)" "Division by zero" '(:type-check t))
+(tl-test-reject tl-arith-mod-by-zero "(mod 7 0)" "Division by zero" '(:type-check t))
+
+;; The library the primitives feed.  Default options here: these are
+;; value pins, and every one of the checked tests above has already
+;; loaded and typechecked the prelude that defines them.
+(tl-test-eval tl-arith-abs-negative "(abs -3)" "3")
+(tl-test-eval tl-arith-abs-positive "(abs 3)" "3")
+(tl-test-eval tl-arith-signum-negative "(signum -3)" "-1")
+(tl-test-eval tl-arith-signum-zero "(signum 0)" "0")
+(tl-test-eval tl-arith-signum-positive "(signum 3)" "1")
+(tl-test-eval tl-arith-min "(min 3 5)" "3")
+(tl-test-eval tl-arith-max "(max 3 5)" "5")
+(tl-test-eval tl-arith-positive-true "(positive? 1)" "True")
+(tl-test-eval tl-arith-negative-true "(negative? -1)" "True")
+(tl-test-eval tl-arith-square "(square 7)" "49")
+(tl-test-eval tl-arith-rem-toward-zero "(rem -7 2)" "-1")
+(tl-test-eval tl-arith-rem-positive-divisor "(rem 7 -2)" "1")
+(tl-test-eval tl-arith-div-floors "(div -7 2)" "-4")
+(tl-test-eval tl-arith-div-positive "(div 7 2)" "3")
+;; The section's own claim, checked at the value level: each pair
+;; rebuilds its dividend whatever the signs, which is the difference
+;; between `quo' and `div' made observable.
+(tl-test-eval tl-arith-quo-rem-rebuild-the-dividend
+              "(+ (* (quo -7 2) 2) (rem -7 2))" "-7")
+(tl-test-eval tl-arith-div-mod-rebuild-the-dividend
+              "(+ (* (div -7 2) 2) (mod -7 2))" "-7")
+(tl-test-eval tl-arith-gcd "(gcd 12 18)" "6")
+(tl-test-eval tl-arith-lcm "(lcm 4 6)" "12")
+(tl-test-eval tl-arith-lcm-zero-is-zero "(lcm 0 5)" "0")
+;; 20! exceeds a fixnum, so this pins the arbitrary-width Integer an
+;; interpreter's `IntegerVal' is supposed to have.  `factorial' is a
+;; primitive, not a prelude definition: the locality law refuses an
+;; Int accumulator loop (see the note in termlisp-builtins).
+(tl-test-eval tl-arith-factorial "(factorial 10)" "3628800" '(:type-check t))
+(tl-test-eval tl-arith-factorial-bignum "(factorial 20)"
+              "2432902008176640000" '(:type-check t))
+(tl-test-eval tl-arith-sum "(sum (list 1 2 3))" "6")
+(tl-test-eval tl-arith-product "(product (list 2 3 4))" "24")
+
+;;; The aldor--.hs skeleton: six mutually recursive trees
+
+;; `~/aldor--.hs' is the Haskell sketch of an Aldor interpreter's AST:
+;; FB, DefTable, DTE, Expr, Value and Type refer to one another in a
+;; cycle, `Value' carries closures as data, and the evaluator does
+;; integer arithmetic over all of it.  The prelude is the base library
+;; that port must stand on, so the transcription is the capability
+;; pin -- symbolic half first, the interpreter's arithmetic in the
+;; last two.  The declarations keep the .hs file's own order, which is
+;; the part that must not be reordered: every tree mentions a partner
+;; the reader has not reached yet.  `QName = [String]' is spelled
+;; `(List String)', and the `DefTable' constructor keeps its
+;; datatype's own name exactly as the Haskell declaration has it.
+
+(defconst tl-prelude--aldor-hs-datatypes
+  "(datatype DefTable (DefTable (List DTE) (List (List String))))
+(datatype DTE (DTE String FB Expr))
+(datatype FB
+  (SimpleFB Expr)
+  (NestedFB DefTable FB)
+  (FParamFB DTE)
+  (VoidFB))
+(datatype Expr
+  (Literal Value)
+  (Identifier (List String))
+  (AndList (List FB))
+  (OrList (List FB))
+  (IfThenElse FB FB FB)
+  (FunctionCall FB (List FB))
+  (RecordCtor (List FB))
+  (UnionCtor Expr FB)
+  (UnionCase FB Expr)
+  (RestrictType FB FB)
+  (ConvertTo FB FB)
+  (Add1 FB)
+  (Add2 FB FB)
+  (With1 FB)
+  (With2 FB FB)
+  (VoidExpr))
+(datatype Value
+  (TypeVal Type)
+  (BooleanVal Bool)
+  (IntegerVal Int)
+  (FloatVal DoubleFloat)
+  (StringVal String)
+  (LambdaVal Type FB)
+  (BuiltInOp String Type (-> (List Value) Value))
+  (RecordVal (List Value))
+  (UnionVal Expr Value)
+  (ADT_Val Type Value)
+  (TrivVal))
+(datatype Type
+  (TrivT) (ExitT) (TypeT) (BooleanT) (IntegerT) (FloatT) (StringT)
+  (FunctionT (List FB) FB)
+  (BuiltInT (List Type) Type)
+  (RecordT (List FB))
+  (UnionT (List FB))
+  (ADT FB DefTable)
+  (CategoryT DefTable))"
+  "The six data declarations of ~/aldor--.hs, in the file's own order.")
+
+(tl-test-eval tl-prelude-aldor-hs-declare-and-build
+  (concat tl-prelude--aldor-hs-datatypes "
+           (Literal (TypeVal IntegerT))")
+  "(Literal (TypeVal IntegerT))" '(:type-check t))
+
+(tl-test-eval tl-prelude-aldor-hs-nested-match
+  (concat tl-prelude--aldor-hs-datatypes "
+           (define (int-of (Literal (IntegerVal n))) n)
+           (int-of (Literal (IntegerVal 42)))")
+  "42" '(:type-check t))
+
+(tl-test-eval tl-prelude-aldor-hs-closure-field
+  (concat tl-prelude--aldor-hs-datatypes "
+           (define (sum-ints Nil) 0)
+           (define (sum-ints (Cons v vs)) (sum-one v (sum-ints vs)))
+           (define (sum-one (IntegerVal n) m) (+ n m))
+           (define plus-op
+             (BuiltInOp \"+\" IntegerT (lambda (args) (IntegerVal (sum-ints args)))))
+           (define (call-op (BuiltInOp name ty f) args) (f args))
+           (call-op plus-op (list (IntegerVal 1) (IntegerVal 2) (IntegerVal 3)))")
+  "(IntegerVal 6)" '(:type-check t))
+
+(tl-test-eval tl-prelude-aldor-hs-evaluator-adds
+  (concat tl-prelude--aldor-hs-datatypes "
+           (define (value-add (IntegerVal a) (IntegerVal b)) (IntegerVal (+ a b)))
+           (value-add (IntegerVal 3) (IntegerVal 4))")
+  "(IntegerVal 7)" '(:type-check t))
+
+(tl-test-eval tl-prelude-aldor-hs-evaluator-quotes
+  (concat tl-prelude--aldor-hs-datatypes "
+           (define (value-quo (IntegerVal a) (IntegerVal b)) (IntegerVal (quo a b)))
+           (value-quo (IntegerVal 7) (IntegerVal 2))")
+  "(IntegerVal 3)" '(:type-check t))
+
 ;;; do-notation and monad sequencing
 
 (tl-test-eval tl-do-two-bind-do "(do (x <- (Just 1)) (y <- (Just 2)) (return (+ x y)))" "(Just 3)" '(:elaborate t))
