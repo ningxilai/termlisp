@@ -62,12 +62,38 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
 
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
-- [ ] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open
+- [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open
   type variables of type-level rules as kind metavariables, normalize both sides
   at the kind level, compare; refuse when kinds do not match.
-  - [ ] kind-oracle over the type-level rule set: preserved / violated /
+  - [x] kind-oracle over the type-level rule set: preserved / violated /
     cannot-check buckets.
-  - [ ] Tests pin at least one violating rule as a refusal.
+  - [x] Tests pin at least one violating rule as a refusal.
+
+  `tl-kind-preserve-check` (termlisp-kinds.el) takes the same three verdicts,
+  the same clause loop, and the same unread guard as the value checker, but
+  reads both sides of a rule as types: one dynamic `tl-type-parse-vars`
+  binding spans both parses, so each variable of the rule is one node whose
+  kind slot the left side fills and the right side reads — that is the
+  freeze.  Graph sides write their variables `$name', which a type parser
+  would take for constructor leaves, so the `$' is dropped on the way in.
+  The two sides fail differently and the verdicts say so: an unknown head
+  takes a fresh kind variable where value inference refuses a name, so a
+  reduct that fails to kind proves a clash between the two sides and is
+  `violated', while a pattern that fails to kind is `cannot-check'.  The
+  whnf-aware `tl-kind-unify' carries the final comparison, and its clash —
+  or the reduct's kind error — is the reason string on a refusal.
+
+  The oracle pins one finding about the prelude.  The value checker cannot
+  decide the class-method family at all, no scheme covering a dict-taking
+  pattern, while the kind side can see them and refuses all twelve: the
+  pattern lifts a method out of its dictionary, and the dictionary
+  constructor has already said what came out is a value (its fields are
+  types, so the lifted kind asks for `univ' of their types), which no
+  application can consume — the reduct `(add a b)' does not kind.  Both
+  refusal paths are pinned directly as well: a reduct at another kind
+  (`(List $a) -> Zero') and a reduct that mistakes a type for a value
+  (`(List $a) -> (Cons $a $a)').  Type-level `rewrite' is not gated here;
+  F2 hangs the gate on this checker.
 - [ ] **F2 类型层 `rewrite`/`reduce` 落地，门控于 F1 + 局部性** — the
   `tl-dpo-last-gluing` consumer: kind-level normalization runs through
   `tl-dpo-normalize` and `tl-dpo--step-gluing`; the checker reads

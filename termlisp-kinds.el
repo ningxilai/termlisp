@@ -681,5 +681,147 @@ need two kinds at once is still a kind error."
   (when (tl-tscheme-p scheme)
     (tl-kind-check env (tl-tscheme-type scheme))))
 
+;; Kind preservation of type-level rules.
+;; A rule LHS -> RHS preserves kinds when every type it rewrites sits
+;; at some kind K and its reduct sits at that same K -- the kind-level
+;; counterpart of `tl-preserve-check', which asks the question of value
+;; types.  Both sides are read as types with the rule's variables
+;; shared: one node per name, its KIND slot filled while the left side
+;; is kinded and read (not solved) while the right side is, so the
+;; right side is judged at every kind the match admits rather than at
+;; the one it would choose.  Three verdicts come out -- `preserved',
+;; `violated', `cannot-check' -- and only the first says the rule is
+;; safe.  The two sides fail differently, and the difference is the
+;; kind system's leniency: an unknown head takes a fresh kind variable
+;; where value inference would have refused a name, so a failure while
+;; the right side is being kinded proves a clash rather than a hole in
+;; the environment, and is reported as one.
+
+(defun tl-kind-preserve--drop-dollars (sexp)
+  "Return SEXP with graph pattern variables written the way types read them.
+A pattern binds `$name', but a type variable must start with a
+lowercase letter, so an undropped `$n' would come back to the parser
+as a constructor leaf -- a different thing than the variable the rule
+already bound.  Everything else stands: literals, arrows and binders
+are the parser's own business, and this oracle does not second-guess
+them."
+  (cond ((and (symbolp sexp) (tl-graph--pvar-p sexp))
+         (intern (substring (symbol-name sexp) 1)))
+        ((consp sexp)
+         (cons (tl-kind-preserve--drop-dollars (car sexp))
+               (tl-kind-preserve--drop-dollars (cdr sexp))))
+        (t sexp)))
+
+(defun tl-kind-preserve--read (side)
+  "Parse SIDE, one side of a rule, as the type it reads as.
+Return (TYPE), or (nil MESSAGE) when SIDE spells no type and MESSAGE
+says why the parser refused it.  Pattern variables are shared through
+`tl-type-parse-vars', so one name is one node with one kind slot on
+both sides -- the freeze that makes the question the right one."
+  (condition-case e
+      (list (tl-type-parse* (tl-kind-preserve--drop-dollars side)))
+    (termlisp-type-error
+     (list nil (if (stringp (cadr e)) (cadr e) (error-message-string e))))
+    (error (list nil (error-message-string e)))))
+
+(defun tl-kind-preserve--infer (env ty)
+  "Kind-infer TY in ENV as (KIND), or as (nil MESSAGE).
+MESSAGE carries the failure, whatever class it was, in the shape
+`tl-preserve--infer' reports a typing failure: the two checkers
+announce themselves through one grammar."
+  (condition-case e
+      (list (tl-kind-infer env ty))
+    (termlisp-type-error
+     (list nil (if (stringp (cadr e)) (cadr e) (error-message-string e))))
+    (error (list nil (error-message-string e)))))
+
+(defun tl-kind-preserve--pair (env lhs rhs)
+  "Kind the types LHS and RHS against each other in ENV.
+LHS and RHS are s-expressions read off the two sides of a rule; each
+variable of the rule becomes one kind metavariable shared by both
+sides -- bound while the left side is kinded, read while the right
+side is.  Return (VERDICT . REASON) in the shape `tl-preserve-check'
+returns it: VERDICT is one of the symbols `preserved', `violated' and
+`cannot-check', REASON a string when a verdict needs one and nil when
+it does not."
+  (let* ((tl-type-parse-vars nil)
+         (lhs-r (tl-kind-preserve--read lhs))
+         (k1-r (and (car lhs-r) (tl-kind-preserve--infer env (car lhs-r))))
+         (rhs-r (and k1-r (car k1-r) (tl-kind-preserve--read rhs)))
+         (k2-r (and rhs-r (car rhs-r) (tl-kind-preserve--infer env (car rhs-r)))))
+    (cond
+     ((null (car lhs-r))
+      (cons 'cannot-check
+            (format "the pattern cannot be read as a type: %s" (cadr lhs-r))))
+     ((null (car k1-r))
+      (cons 'cannot-check
+            (format "the pattern does not kind: %s" (cadr k1-r))))
+     ((null (car rhs-r))
+      (cons 'cannot-check
+            (format "the reduct cannot be read as a type: %s" (cadr rhs-r))))
+     ((null (car k2-r))
+      (cons 'violated
+            (format "the reduct does not kind: %s" (cadr k2-r))))
+     (t
+      (let ((u (condition-case e
+                   (and (tl-kind-unify (car k1-r) (car k2-r)) t)
+                 (termlisp-type-error
+                  (cons nil (if (stringp (cadr e))
+                                (cadr e)
+                              (error-message-string e)))))))
+        (if (eq u t)
+            '(preserved)
+          (cons 'violated
+                (or (cdr u)
+                    (format "the reduct is at kind %s, the pattern at kind %s"
+                            (tl-kind->string (car k2-r))
+                            (tl-kind->string (car k1-r)))))))))))
+
+(defun tl-kind-preserve-check (env rule)
+  "Decide whether RULE preserves the kinds of the types it rewrites.
+ENV is a type environment -- a `tl-env', whose kind table says what
+the datatype heads and constructors of RULE are for.  RULE is a
+`tl-grule', plain or clause-based.  Return (VERDICT . REASON) where
+VERDICT is one of the symbols `preserved', `violated', and
+`cannot-check', and REASON is a string saying why the verdict is what
+it is (nil when preserved).  A guard is not read: guarding only makes
+a rule apply less often, and fewer redexes cannot undo what the
+unguarded rule already preserves."
+  (let ((clauses (or (tl-grule-clauses rule)
+                     (and (tl-grule-pattern rule)
+                          (list (cons (tl-grule-pattern rule)
+                                      (tl-grule-template rule)))))))
+    (if (null clauses)
+        (cons 'cannot-check "the rule has no pattern to match with")
+      (let ((verdict 'preserved)
+            (reason nil))
+        (dolist (clause clauses)
+          (let* ((pat (car clause))
+                 (side (if (tl-grule-clauses rule)
+                           (tl-preserve--pat-side pat)
+                         (tl-preserve--graph-side pat)))
+                 (v (if (eq side :unsupported)
+                        (cons 'cannot-check
+                              (format "pattern %S has no term reading" pat))
+                      (let* ((vars (delete-dups (cdr side)))
+                             (ident (mapcar (lambda (v)
+                                               (cons v (tl-make-node v nil nil)))
+                                             vars))
+                             (term (tl-preserve--template-term
+                                    (cdr clause) ident)))
+                        (if (eq term :unsupported)
+                            (cons 'cannot-check
+                                  (format "the template of %S cannot be read as a term"
+                                          pat))
+                          (tl-kind-preserve--pair env (car side) term))))))
+            (pcase (car v)
+              ('violated
+               (unless (eq verdict 'violated)
+                 (setq verdict 'violated reason (cdr v))))
+              ('cannot-check
+               (when (eq verdict 'preserved)
+                 (setq verdict 'cannot-check reason (cdr v)))))))
+        (cons verdict reason)))))
+
 (provide 'termlisp-kinds)
 ;;; termlisp-kinds.el ends here

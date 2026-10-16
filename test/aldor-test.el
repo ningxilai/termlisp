@@ -15,6 +15,7 @@
 (require 'nbe-test)
 (require 'graph-rewrite-test)
 (require 'preserve-test)
+(require 'kind-preserve-test)
 (require 'rewrite-form-test)
 (require 'treematch-workload-test)
 
