@@ -60,8 +60,8 @@
 (cl-defstruct (tl-tscheme (:constructor tl-tscheme (vars type &optional constraints)))
   vars type (constraints nil))
 (cl-defstruct (tl-constraint (:constructor tl-constraint (class type))) class type)
-(cl-defstruct (tl-cclass (:constructor tl-cclass (name params supers methods &optional fundeps)))
-  name params supers methods fundeps)
+(cl-defstruct (tl-cclass (:constructor tl-cclass (name params supers methods &optional fundeps kinds)))
+  name params supers methods fundeps kinds)
 (cl-defstruct (tl-instance (:constructor tl-instance (class head context methods &optional dict)))
   class head context methods dict)
 
@@ -362,7 +362,16 @@ order written."
       (tl-type-parse-pi (car b) (cadr b)
                         (lambda () (tl-type-parse* (caddr sexp))))))
    ((consp sexp)
-    (tl-tcon (tl-type-head (car sexp)) (mapcar #'tl-type-parse* (cdr sexp))))
+    ;; A lambda in head position parses to the very node a lambda
+    ;; written alone parses to, so the two spellings cannot diverge:
+    ;; `tl-nbe--whnf' reaches the head to find out whether the
+    ;; application beta-reduces, and the raw form would never answer.
+    ;; Any other head keeps the parse-var treatment it always had.
+    (tl-tcon (let ((h (car sexp)))
+               (if (and (consp h) (eq (car h) 'lambda))
+                   (tl-type-parse* h)
+                 (tl-type-head h)))
+             (mapcar #'tl-type-parse* (cdr sexp))))
    (t (signal 'termlisp-type-error (list (format "Bad type: %S" sexp))))))
 
 (defun tl-type-parse (sexp)
@@ -2115,9 +2124,25 @@ Return `(FROM-POSITIONS . TO-POSITIONS)' as indices into the parameters."
 
 (defun tl-register-class (env form)
   "Register `(class NAME (PARAM...) SUPERS METHOD-DECL... [FUNDEPS])' in ENV.
+A parameter may carry its kind: `(f : (-> * *))' pins what the class's
+instances must be, which is the whole content of `Functor : (* -> *) ->
+*'.  A bare parameter keeps meaning what it always meant -- a type
+nothing has pinned, each use and each instance deciding for itself.
 FUNDEPS, when present, is `(fundeps (A... -> B...)...)' of parameter names."
   (let* ((name (nth 1 form))
-         (params (nth 2 form))
+         (declared (nth 2 form))
+         (params (mapcar (lambda (p) (if (consp p) (car p) p)) declared))
+         (kind-sexps
+          (let ((acc nil))
+            (dolist (p declared)
+              (cond
+               ((and (consp p) (eq (cadr p) ':) (= (length p) 3))
+                (push (cons (car p) (caddr p)) acc))
+               ((consp p)
+                (signal 'termlisp-error
+                        (list (format "Malformed parameter %S in class %S; write it as (NAME : KIND)"
+                                      p name))))))
+            (nreverse acc)))
          (super-forms (nth 3 form))
          (rest (nthcdr 4 form))
          (fundep-form (and (consp (car (last rest)))
@@ -2127,6 +2152,14 @@ FUNDEPS, when present, is `(fundeps (A... -> B...)...)' of parameter names."
          (pindex (cl-loop for p in params for i from 0 collect (cons p i)))
          (parse-vars (cl-loop for p in params collect (cons p (tl-fresh-tvar))))
          (first-var (cdr (car parse-vars)))
+         ;; An annotation is read against the parameters' own names and
+         ;; kept under them, so an instance head is later measured
+         ;; against the kind its class declared.
+         (kind-annos
+          (and kind-sexps (fboundp 'tl-kind-parse)
+               (mapcar (lambda (cell)
+                         (cons (car cell) (tl-kind-parse (cdr cell) params)))
+                       kind-sexps)))
          (fundeps (mapcar (lambda (fd) (tl-class-parse-fundep fd pindex))
                           (cdr fundep-form)))
          (methods nil)
@@ -2145,7 +2178,7 @@ FUNDEPS, when present, is `(fundeps (A... -> B...)...)' of parameter names."
                                 (list (tl-constraint name first-var))))
               methods)))
     (setq methods (nreverse methods))
-    (puthash name (tl-cclass name params supers methods fundeps)
+    (puthash name (tl-cclass name params supers methods fundeps kind-annos)
              (tl-env-class-env env))
     (dolist (m methods)
       (puthash (car m) (cdr m) (tl-env-method-env env)))
@@ -2156,7 +2189,9 @@ FUNDEPS, when present, is `(fundeps (A... -> B...)...)' of parameter names."
 CONTEXT, when present, is a list of `(CLASS TYPE)' predicates the instance
 requires; DICT is then a constructor applied to one sub-dictionary per
 context predicate.  Without a context DICT is the runtime dictionary value
-the elaborator inserts as the first argument of overloaded method calls."
+the elaborator inserts as the first argument of overloaded method calls.
+When the class pinned its parameter's kind, TYPE is measured against it
+here; see `tl-register-class'."
   (let* ((head (nth 1 form))
          (cname (car head))
          (rest (nthcdr 2 form))
@@ -2168,6 +2203,23 @@ the elaborator inserts as the first argument of overloaded method calls."
                             (tl-constraint (car cf) (tl-type-parse* (cadr cf))))
                           ctx-forms))
          (inst (tl-instance cname ty context nil dict)))
+    ;; A class that pinned its parameter's kind refuses an instance at
+    ;; any other, here at the declaration rather than at the first
+    ;; method call that cannot resolve.  A class that pinned nothing
+    ;; keeps deciding per instance, as it always has.
+    (let* ((cls (gethash cname (tl-env-class-env env)))
+           (want (and cls
+                      (cdr (assq (car (tl-cclass-params cls))
+                                 (tl-cclass-kinds cls))))))
+      (when (and want (fboundp 'tl-kind-infer))
+        (let* ((expected (tl-kind-freshen want))
+               (offered (tl-kind-whnf (tl-kind-infer env ty))))
+          (unless (tl-kind-unify expected offered)
+            (signal 'termlisp-type-error
+                    (list (format "Kind error: instance of %S is at a %s where a %s is required"
+                                  cname
+                                  (tl-kind->string offered)
+                                  (tl-kind->string expected))))))))
     (puthash cname (append (gethash cname (tl-env-instance-env env)) (list inst))
              (tl-env-instance-env env))
     cname))

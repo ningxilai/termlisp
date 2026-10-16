@@ -1745,5 +1745,123 @@ lowering IR, so it can be checked but not run."
   "(let ((a Zero) (b a)) b)"
   "Unknown symbol" '(:type-check t :elaborate t))
 
+;;; F omega: higher kinds and type-level application
+
+;; The expressiveness round: a parameter that ranges over type
+;; constructors at `(* -> *)', a type-level lambda that applies where a
+;; type is read, an open term's kind taken from its head, and
+;; definitional equality that runs under a `Pi' binder.  Each had a
+;; real defect behind it -- the `->' kind spelling parsed its own
+;; operator as a universe named `->', a lambda in head position
+;; reached the checker as a raw sexp, and a rigid binder's variable
+;; refused the pair before reduction ever got its chance.
+
+(ert-deftest tl-kind-arrow-spelling-parses-as-karr-does ()
+  "`(-> * *)' and `(karr * *)' are one kind written two ways.
+The operator is not an argument.  Walking the whole form used to parse
+it too, leaving an arrow whose first domain was a universe named `->'
+-- which is how `(f : (-> * *))' was refused at its first use while
+the `karr' spelling worked.  A chain of operands reads
+right-associatively, the way a chain of arrow types does."
+  (should (equal (tl-kind->string (tl-kind-parse '(-> * *)))
+                 (tl-kind->string (tl-kind-parse '(karr * *)))))
+  (should (equal (tl-kind->string (tl-kind-parse '(-> * * *)))
+                 (tl-kind->string (tl-kind-parse '(karr * (karr * *)))))))
+
+(tl-test-eval tl-ch-box-admits-a-higher-kinded-parameter
+  "(datatype (Box (f : (-> * *)) a) (MkBox (f a)))
+   (define (unbox (MkBox x)) x)
+   (: b (Box Maybe Int))
+   (define b (MkBox (Just 4)))
+   (unbox b)"
+  "(Just 4)" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-ch-box-refuses-a-proper-type-argument
+  "(datatype (Box (f : (-> * *)) a) (MkBox (f a)))
+   (: bad (Box Int Int))"
+  "Kind error: Box argument 1 is a * where a (* -> *) is required"
+  '(:type-check t :elaborate t))
+
+(ert-deftest tl-ch-an-applied-type-level-lambda-unifies-with-its-result ()
+  "Beta inside the checker: `((lambda (n) (Succ n)) Zero)' is `Succ Zero'.
+The second is the first with a function call written into it, and no
+structural comparison can see that -- only the reduction hook can, and
+only while the layer that owns an environment has bound one.  A
+signature is therefore free to compute its own index, and ordinary
+unification stays as structural as it ever was when nothing is in
+reach to unfold."
+  (let* ((env (tl-ch--typed-env))
+         (tl-nbe-reduce-env env)
+         (a (tl-type-parse '(Succ Zero)))
+         (b (tl-type-parse '((lambda (n) (Succ n)) Zero))))
+    (should (car (tl-unify-types a b nil))))
+  ;; With no environment bound the hook unfolds nothing: the pair stays
+  ;; two shapes, as `tl-ch-no-reduction-without-an-environment' says
+  ;; for every computed type.
+  (let ((a (tl-type-parse '(Succ Zero)))
+        (b (tl-type-parse '((lambda (n) (Succ n)) Zero))))
+    (should-not (car (tl-unify-types a b nil)))))
+
+(tl-test-eval tl-ch-a-type-level-lambda-applies-in-a-signature
+  "(define (vfirst (VCons x xs)) x)
+   (: v (Vec Int ((lambda (n) (Succ n)) Zero)))
+   (define v (VCons 9 VNil))
+   (vfirst v)"
+  "9" '(:type-check t :elaborate t))
+
+(ert-deftest tl-ch-a-type-level-lambda-has-an-arrow-kind ()
+  "A type-level lambda is a type constructor in disguise, and its kind says so.
+One argument in, one type out -- exactly what `(f : (-> * *))' demands
+of a `Box' parameter, so inference agreeing with the annotation is
+what lets the two spellings meet at an application."
+  (let* ((env (tl-ch--typed-env))
+         (k (tl-kind-infer env (tl-type-parse '(lambda (a) (Vec a Zero))))))
+    (should (tl-kind-unify (tl-kind-parse '(-> * *)) k))))
+
+(ert-deftest tl-ch-reduction-under-a-binder-equates-indexes ()
+  "`((n : Nat) -> Vec Nat (plus Zero n))' and `((n : Nat) -> Vec Nat n)' are one type.
+The indices differ only under the binder, and the binder's variable is
+rigid -- yet rigidity refuses to *bind*, not to *look again*: a side
+that would reduce gets its chance before the pair is called unequal,
+and `plus Zero n' hands back the very variable it is compared against.
+Nothing structural alone can see this, so the two are equal only with
+an environment in reach."
+  (let* ((env (tl-ch--typed-env))
+         (tl-nbe-reduce-env env)
+         (a (tl-type-parse '((n : Nat) -> (Vec Nat (plus Zero n)))))
+         (b (tl-type-parse '((n : Nat) -> (Vec Nat n)))))
+    (should (car (tl-unify-types a b nil)))))
+
+(ert-deftest tl-ch-no-reduction-under-a-binder-without-an-environment ()
+  "The same pair stays two types when nothing is in reach to unfold.
+The binder-level twin of `tl-ch-no-reduction-without-an-environment':
+rigidity still refuses what cannot be reduced, and here nothing can
+be."
+  (let ((a (tl-type-parse '((n : Nat) -> (Vec Nat (plus Zero n)))))
+        (b (tl-type-parse '((n : Nat) -> (Vec Nat n)))))
+    (should-not (car (tl-unify-types a b nil)))))
+
+(ert-deftest tl-ch-an-open-term-takes-the-kind-its-head-says ()
+  "`Succ' applied to a free variable is still a `Nat'.
+Inference over an open term does not wait for the variable: the head's
+registered kind decides the result, and the free one only has to fit
+the domain it landed in.  This is what lets a clause be kinded before
+anything has named its arguments."
+  (let ((env (tl-ch--typed-env)))
+    (should (equal (tl-kind->string
+                    (tl-kind-infer env (tl-type-parse '(Succ n))))
+                   "Nat"))))
+
+(ert-deftest tl-ch-an-unregistered-head-leaves-its-kind-undecided ()
+  "`(plus n m)' gets a kind variable, not a guess.
+`plus' is an ordinary definition and nothing registered a kind for it,
+so there is nothing to say -- and a variable is the honest answer: a
+use that needs `Nat' unifies it there, and a use that needs something
+else is still free to say so.  Guessing would be a lie the checker
+could not retract at the use that disagrees."
+  (let* ((env (tl-ch--typed-env))
+         (k (tl-kind-infer env (tl-type-parse '(plus n m)))))
+    (should (tl-node-var-p (tl-kind-deref k)))))
+
 (provide 'curry-howard-test)
 ;;; curry-howard-test.el ends here

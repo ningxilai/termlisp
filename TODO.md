@@ -171,9 +171,47 @@ new, `parsecheck.sh` OK).  Status values: `[ ]` not started, `[~]` in progress,
   reduction every checked program runs under, and says so in its
   docstring.  Pinned by the prelude locality trial, the two oracle
   presence assertions and four `vappend` cases; suite 479/479.
-- [ ] **F4 Fω 表达力测试** — higher-kinded polymorphism (`Functor` at `* -> *`),
+- [x] **F4 Fω 表达力测试** — higher-kinded polymorphism (`Functor` at `* -> *`),
   type-level lambda application, kind inference on open terms, NBE equality
   under type binders; end-to-end Fω samples with higher-kinded instances.
+
+  The round opened on a spelling: `->` written as a kind had never worked.
+  `tl-kind-parse` walked the operator itself among the operands, so
+  `(-> * *)` parsed as an arrow whose first domain was a universe named
+  `->`, and `(f : (-> * *))` — datatype parameter or class parameter
+  alike — was refused at its first use while `(karr * *)` went through.
+  With the operator skipped, a parameter ranges over type constructors:
+  `(datatype (Box (f : (-> * *)) a) (MkBox (f a)))` admits
+  `(Box Maybe Int)` and refuses `(Box Int Int)` naming the argument, and
+  a class parameter may now carry `(NAME : KIND)`, measured at each
+  instance's own declaration — the `Int` instance refused, the `Maybe`
+  instance resolving through its dictionary to its answer.  A parameter
+  written any other way is a named error instead of being read as two
+  extra parameters.
+
+  A lambda in application position now parses to the same node a
+  standalone lambda does, so `((lambda (n) (Succ n)) Zero)` reaches the
+  checker as a term it can reduce rather than as a raw sexp, and
+  `tl-nbe--whnf` consults a node head only for beta — a fallback that
+  returned that head instead of the application had leaked bare heads
+  into every result it could not reduce.  Rigidity learned the same
+  lesson from the other side: a Pi binder's variable refuses to be
+  bound but no longer refuses to be looked at first, so
+  `(plus Zero n)` reduces to the binder's own `n` and the two
+  `(n : Nat) -> Vec Nat …` types are one with an environment in reach
+  and two without, structural checking unchanged in between.
+
+  Open terms take the kind their head says — `(Succ n)` is a `Nat` —
+  and a head nothing registered leaves a kind variable each use decides,
+  which is what lets a clause be kinded before anything has named its
+  arguments.  Thirteen cases pin the round, ten in `curry-howard-test`
+  and three in `prelude-test`: the `Box` datatype both ways, an applied
+  type-level lambda unifying and computing an index inside a signature,
+  its kind meeting the arrow spelling, class instances both ways with
+  the bare parameter spelling refused, and binder equality with and
+  without an environment.  Suite 492/492, 0 byte-compile warnings,
+  checkdoc 366 = 366 with an empty normalized diff against `a2f138d`,
+  parsecheck OK (37 files).
 - [ ] **F5 文档与门收口** — README Fω section; kind-oracle joins the standing
   gates; P3-5 closes here.
 

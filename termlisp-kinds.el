@@ -197,9 +197,14 @@ every use is refused for a reason that appears nowhere in the message."
      ((and (consp sexp) (eq (car sexp) 'karr) (= (length sexp) 3))
       (tl-karr (tl-kind-parse (cadr sexp) vars) (tl-kind-parse (caddr sexp) vars)))
      ((and (consp sexp) (eq (car sexp) '->) (cdr sexp) (cddr sexp))
-      ;; Right-associative, exactly as an arrow type reads.
+      ;; Right-associative, exactly as an arrow type reads.  The
+      ;; operator is not one of the arguments: `(-> * *)' is one arrow
+      ;; with domain `*', not an arrow whose first domain is a
+      ;; universe named `->' -- which is what walking the whole form
+      ;; parsed it as, and why `(f : (-> * *))' was refused at its
+      ;; first use while `(f : (karr * *))' worked.
       (let ((k (tl-kind-parse (car (last sexp)) vars)))
-        (dolist (p (reverse (butlast sexp)))
+        (dolist (p (reverse (butlast (cdr sexp))))
           (setq k (tl-karr (tl-kind-parse p vars) k)))
         k))
      ((consp sexp)

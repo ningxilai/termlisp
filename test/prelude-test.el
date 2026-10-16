@@ -135,5 +135,37 @@
 (tl-test-eval tl-readme-either-in-a-signature "(: g (Either Int String)) (define (g) (Right \"ok\")) (g)" "(Right ok)" '(:type-check t :elaborate t))
 
 
+;;; A class parameter may pin its kind
+
+;; `Functor' never said what its parameter ranges over; every instance
+;; decided alone.  A parameter may now carry `(NAME : KIND)', which is
+;; how `Functor : (* -> *) -> *' gets said -- and an instance at any
+;; other kind is refused at its declaration rather than at the first
+;; call that cannot resolve.  A parameter written any way other than
+;; `(NAME : KIND)' is a typo, and is now read as one instead of being
+;; swallowed as two extra parameters.
+
+(tl-test-eval tl-class-a-higher-kinded-instance-resolves
+  "(datatype ToyDict (ToyDict tof))
+   (define (tof (ToyDict impl) x) (impl x))
+   (class Toy ((f : (-> * *))) nil (tof (-> (f Int) Int)))
+   (define ToyMaybeDict (ToyDict (lambda (x) 1)))
+   (instance (Toy Maybe) ToyMaybeDict)
+   (tof (Just 4))"
+  "1" '(:type-check t :elaborate t))
+
+(tl-test-reject tl-class-a-parameter-kind-refuses-a-proper-type-instance
+  "(datatype ToyDict (ToyDict tof))
+   (class Toy ((f : (-> * *))) nil (tof (-> Int Int)))
+   (define ToyIntDict (ToyDict (lambda (x) x)))
+   (instance (Toy Int) ToyIntDict)"
+  "Kind error: instance of Toy is at a * where a (* -> *) is required"
+  '(:type-check t :elaborate t))
+
+(tl-test-reject tl-class-a-bare-parameter-annotation-is-refused
+  "(class Toy (f : (-> * *)) nil (tof (-> Int Int)))"
+  "Malformed parameter (-> * *) in class Toy; write it as (NAME : KIND)"
+  '(:type-check t :elaborate t))
+
 (provide 'prelude-test)
 ;;; prelude-test.el ends here
