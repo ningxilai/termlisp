@@ -42,6 +42,7 @@
 
 (require 'cl-lib)
 (require 'termlisp-base)
+(require 'termlisp-dpo)
 (require 'termlisp-graph)
 (require 'termlisp-graph-unify)
 (require 'termlisp-types)
@@ -176,7 +177,7 @@ different names, so this renames and nothing more."
   (pcase (car pat)
     ('wild '(pwild))
     ('var (list 'pvar (cdr pat)))
-    ('lit (list 'lit (cadr pat)))
+    ('lit (list 'plit (cadr pat)))
     ('con (cons 'pcon (cons (cadr pat)
                             (mapcar #'tl-nbe--case-pattern (cddr pat)))))
     (_ (signal 'termlisp-error
@@ -298,10 +299,15 @@ it shared by the reductions a match performs while it is deciding."
     (if (not (tl-node-application node))
         (tl-nbe-resolve node nbe)
       (let* ((head (tl-node-head node))
-             (target (if (symbolp head)
-                         (let ((cell (assq head (tl-nbe-locals nbe))))
-                           (if cell (cdr cell) node))
-                       node))
+             ;; A local's value stands in for the name; otherwise the
+             ;; head itself when it is the type-level lambda, reached
+             ;; so the test below can ask whether it beta-reduces;
+             ;; otherwise the application as written.
+             (cell (and (symbolp head)
+                        (assq head (tl-nbe-locals nbe))))
+             (target (cond (cell (cdr cell))
+                           ((tl-node-p head) (tl-gnode-deref head))
+                           (t node)))
              (reduced
               (cond
                ;; The head resolved to a type-level lambda: beta.  The
@@ -316,7 +322,10 @@ it shared by the reductions a match performs while it is deciding."
                (t nil))))
         (if reduced
             (tl-nbe-whnf reduced nbe)
-          target)))))
+          ;; Nothing moved: a local hands back its value and anything
+          ;; else hands back the application itself -- never the head
+          ;; alone, which was not what was asked for.
+          (if cell (cdr cell) node))))))
 
 (defun tl-nbe-nf (node nbe)
   "Reduce NODE to normal form under NBE.  Return a node.
@@ -335,9 +344,7 @@ to see which constructor it has must do."
         (tl-graph-whnf (lambda (arg) (tl-nbe-whnf arg nbe))))
     (if (null rules)
         node
-      (tl-graph-root
-       (tl-graph-rewrite (tl-make-graph node nil) rules
-                         tl-nbe-fuel 'termlisp-type-error)))))
+      (tl-dpo-normalize node rules tl-nbe-fuel 'termlisp-type-error))))
 
 (defun tl-nbe-equal (a b nbe)
   "Return non-nil when A and B reduce to the same normal form under NBE.

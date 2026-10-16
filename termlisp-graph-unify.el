@@ -229,13 +229,25 @@ rejected a cyclic binding."
            ((eq x y))
            ;; A rigid (Pi-bound) variable is fixed by its binder, so it
            ;; may only ever be equated with itself -- which the `eq'
-           ;; case above already discharged.  Reaching here means
-           ;; something is trying to unify the binder's variable with a
-           ;; *new* term, which would let a caller rewrite the very type
-           ;; the binder was declared over.
+           ;; case above already discharged.  Reaching here with nothing
+           ;; to reduce means something is trying to unify the binder's
+           ;; variable with a *new* term, which would let a caller
+           ;; rewrite the very type the binder was declared over.  A
+           ;; side that would reduce gets its chance first: `plus Zero n'
+           ;; against the binder's own `n' is one type seen two ways, and
+           ;; reduction is what says so -- under a binder exactly as
+           ;; anywhere else.
            ((or (and (tl-node-var-p x) (tl-node-rigid x))
                 (and (tl-node-var-p y) (tl-node-rigid y)))
-            (setq ok nil) (throw 'tl-gnode-fail nil))
+            (if (tl-gnode--moves x y fuel)
+                (progn
+                  (setq fuel (1- fuel))
+                  (push (cons (if (tl-node-application x)
+                                  (funcall tl-unify-reduce x) x)
+                              (if (tl-node-application y)
+                                  (funcall tl-unify-reduce y) y))
+                        pending))
+              (setq ok nil) (throw 'tl-gnode-fail nil)))
            ;; Two dependent function types are equal up to what their
            ;; binders are *called*.  Binders are rigid and so cannot be
            ;; unified away; re-spell the second type's binder as the

@@ -17,12 +17,28 @@
 (require 'termlisp-builtins)
 (require 'termlisp-types)
 (require 'termlisp-elaborate)
+;; The builtin type schemes (`seq', `first', ...) register themselves
+;; when `termlisp-ir-types' loads, and this is the layer that needs
+;; them: `tl-typecheck-form' falls back to that table for any global the
+;; environment does not define, and `termlisp-load-prelude' walks the
+;; prelude -- which calls `seq' -- through this module's `:type-check'
+;; path.  Requiring it from the umbrella alone is what let a fresh image
+;; with `termlisp-load' alone die of "Unknown symbol: seq".
+(require 'termlisp-ir-types)
 ;; The unifier reduces types through this module's `tl-nbe-reduce'
 ;; whenever two types match nothing structurally.  Requiring it here (and
 ;; not from `termlisp-graph-unify', which it depends on) is what keeps the
 ;; dependency pointing the right way: the unifier declares a hook, the
 ;; layer that owns an evaluator fills it in.
 (require 'termlisp-nbe)
+;; The rewrite gate in this module is where a clause pays for the two
+;; obligations a value verdict cannot speak for: `tl-kind-preserve-check'
+;; asks whether the rule preserves the kinds of the types it could be
+;; unfolded inside, and the locality trial runs the rule through
+;; `tl-dpo-normalize'.  Both are kind-level questions, and kinds is
+;; where their checker lives; the dependency is acyclic (kinds needs
+;; only `termlisp-types').
+(require 'termlisp-kinds)
 
 (define-error 'termlisp-hole "Unsolved goal")
 ;; Inheriting from `error' and not from `termlisp-type-error' is
@@ -246,6 +262,49 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
         acc)
     (tl-desugar-do-method form)))
 
+(defun tl-reduce--term (term)
+  "Rewrite the `list' and `do' forms in TERM the way inference reads them.
+Both are forms inference expands before it types them -- `list' into
+constructor applications, `do' into its `bind'/`return' calls -- and a
+reduction whose type side sees one spelling while the graph is built
+from another would be answering about two different terms.  `let' and
+`lambda' are left alone: inference keeps `let' as a binding, and
+neither it nor a lambda is an application any rewrite rule of this
+environment speaks about, so they stand in the term as written."
+  (cl-labels ((walk (x)
+                (cond
+                 ((atom x) x)
+                 ((eq (car x) 'list) (walk (tl-desugar-list x)))
+                 ((eq (car x) 'do) (walk (tl-desugar-do x)))
+                 (t (cons (walk (car x)) (walk (cdr x)))))))
+    (walk term)))
+
+(defun tl-reduce-term (term env)
+  "Return the normal form of TERM under ENV's rewrite rules, as a term.
+TERM is read as a term, not evaluated: it goes into a graph the way it
+is written, every function of ENV that the type layer can read unfolds
+through `tl-dpo-normalize' -- the same unfolding `tl-nbe-nf' performs,
+the same `tl-graph-whnf' hooked to the same `tl-nbe-whnf' -- and the
+graph is rendered back.  A name nothing unfolds stays as itself, so an
+open term comes back open and a free variable is not mistaken for
+anything it might be bound to later.  This is what a rewrite rule is
+asked of at the value level: not `is this argument already a value',
+which forcing answers, but what the rules do with the term underneath
+the values.
+
+The walk is bounded by the environment's `:fuel', and exhaustion
+signals `termlisp-eval-error' -- a rewrite that will not stop is what
+that error class is for.  The verdict of the DPO gluing condition, if
+any cut along the way was not local, is left in `tl-dpo-last-gluing'."
+  (let* ((nbe (tl-nbe env nil))
+         (rules (tl-nbe--rules nbe))
+         (tl-graph-whnf (lambda (arg) (tl-nbe-whnf arg nbe))))
+    (tl-node->sexp
+     (tl-dpo-normalize (tl-graph-root (tl-graph-build (tl-reduce--term term)))
+                       rules
+                       (or (tl-env-option env :fuel) 100000)
+                       'termlisp-eval-error))))
+
 ;;; Driver ---------------------------------------------------------------
 
 ;; Known limitations (not addressed here):
@@ -301,6 +360,12 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
                 (setq control (tl-desugar-let control)))
                ((eq head 'list)
                 (setq control (tl-desugar-list control)))
+               ((eq head 'reduce)
+                (unless (and (consp args) (null (cdr args)))
+                  (signal 'termlisp-eval-error
+                          '("reduce takes exactly one term")))
+                (setq value (tl-reduce-term (car args) termlisp--current-env)
+                      mode 'ret))
                ((symbolp head)
                 (let ((cell (assq head cenv))
                       (global (assq head (tl-env-globals termlisp--current-env)))
@@ -429,6 +494,132 @@ or nested `do' form (handled in `tl-eval-top' and `tl-run')."
               (cons (cons target value) (tl-env-globals env)))
         value))))
 
+(defconst tl-rewrite--trial-fuel 100
+  "How many steps a rewrite's locality trial may take.
+The subject is the rule's own pattern, which one step already
+rewrites; the rest of the budget is there for a reduct that keeps
+rewriting itself, and a rule that needs more than this at its own
+redex would not settle inside a type either.")
+
+(defun tl-rewrite--locality (rule lhs)
+  "Return why RULE's cut at its own pattern LHS is not local, or nil.
+LHS is the pattern as written -- for a clause the type layer can
+read, it is a term as well -- and it is built into a graph of its own
+and reduced with this one rule.  `tl-dpo-normalize' checks every cut
+as it happens and leaves the first verdict that is not local in
+`tl-dpo-last-gluing'; this function reads the slot back, and leaves
+the verdict there for the same callers `tl-reduce-term' documents --
+the slot says what the most recent DPO normalisation found, and the
+trial is one.  A redex at the root has no holder outside the match,
+so the first cut is always local; what the rest of the walk can find
+is the rule rewriting its own reduct again under a holder it does not
+own -- dangling, the only verdict there is.  A pattern that spells
+one subterm at two positions does not earn one: SPO folds the shared
+node, and a fold wholly inside the redex cannot be observed from
+outside; only a fold whose node is held outside leaks, and that is
+the dangling case already asked.  A dangling verdict is recorded and
+the value reduction goes on -- a value can be re-generalized after a
+cut that reaches outside the redex -- and a kind cannot, which is why
+the record becomes a refusal here.  A walk that runs out of fuel is
+the rule not settling at its own redex.  Return a string naming what
+was found, or nil when every cut was local."
+  (let ((settled nil)
+        (reason nil))
+    (condition-case e
+        (progn
+          (tl-dpo-normalize (tl-graph-root (tl-graph-build lhs))
+                            (list rule)
+                            tl-rewrite--trial-fuel
+                            'termlisp-type-error)
+          (setq settled t))
+      (termlisp-type-error
+       (setq reason (format "the pattern does not settle: %s" (cadr e)))))
+    (cond (tl-dpo-last-gluing
+           (format "the cut is not local: %s" (car tl-dpo-last-gluing)))
+          ((not settled) reason)
+          (t nil))))
+
+(defun tl-rewrite-desugar (env form)
+  "Return FORM as the `define' form it means, having checked the rewrite.
+FORM that is not a `rewrite' comes back untouched, so every dispatcher
+may apply this to the forms it handles.
+
+A `rewrite' is `define' with its obligation paid up front.  The form
+spells itself `(rewrite (NAME PATTERN...) BODY)': it extends the clause
+list of an existing NAME, and the clause goes through only when the
+rule it adds preserves the types of the terms it would rewrite.
+`tl-preserve-check' decides that against ENV, and `preserved' is the
+only verdict that lets the clause in -- `violated' names what broke,
+`cannot-check' what ENV could not see, so an environment without
+`:type-check' refuses as surely as one that watched the rule fail.
+
+Two further obligations follow from the clause being readable by the
+type layer at all: a clause the type layer can choose may be unfolded
+inside a type, so `tl-kind-preserve-check' must find the rule
+preserving the kinds of both its sides as well, and the rule is tried
+at its own pattern through `tl-dpo-normalize' so that
+`tl-rewrite--locality' can ask whether every cut it takes is local.
+A value can be re-generalized after a cut that reaches outside the
+redex, which is why `tl-reduce-term' only records that verdict; a
+kind cannot, so here it refuses.
+
+Every refusal is a `termlisp-type-error'
+raised before any dispatcher has appended anything, so a refused rewrite
+leaves the environment exactly as it was.
+
+What gets through is handed to `define''s own handler as the equivalent
+`define' form, so the clause reaches the type side and the evaluation
+side exactly as a `define' would -- coverage announcements,
+forward-name registration and signature checking included."
+  (if (not (and (consp form) (eq (car form) 'rewrite)))
+      form
+    (let* ((target (cadr form))
+           (name (and (consp target) (car target)))
+           (body (caddr form)))
+      (unless (and (consp target) (symbolp (car target)))
+        (signal 'termlisp-type-error
+                '("rewrite extends a function: (rewrite (NAME pattern...) body)")))
+      (when (gethash name (tl-env-method-env env))
+        (signal 'termlisp-type-error
+                (list (format "rewrite of %s: a class method's clauses come from its instances"
+                              name))))
+      (unless (or (gethash name (tl-env-functions env))
+                  (gethash name (tl-env-clauses env)))
+        (signal 'termlisp-type-error
+                (list (format "rewrite of %s: no such function to extend" name))))
+      (let* ((params (mapcar (lambda (p)
+                               (tl-pattern-parse
+                                p (lambda (s) (gethash s (tl-env-constructors env)))))
+                             (cdr target)))
+             ;; The rule a single clause is: NAME applied to the pattern,
+             ;; rewriting to the body.  `tl-nbe--make-rule' returns nil
+             ;; for a clause the type layer could never choose -- guard,
+             ;; or, and, dot, rest -- and such a clause has no
+             ;; preservation question to ask, which is the same as no
+             ;; answer.
+             (rule (tl-nbe--make-rule
+                    name (list (tl-make-clause name params body)))))
+        (unless rule
+          (signal 'termlisp-type-error
+                  (list (format "rewrite of %s: the pattern is not one the type layer can read"
+                                name))))
+        (let ((verdict (tl-preserve-check env rule)))
+          (unless (eq (car verdict) 'preserved)
+            (signal 'termlisp-type-error
+                    (list (format "rewrite of %s refused: %s"
+                                  name (cdr verdict))))))
+        (let ((kverdict (tl-kind-preserve-check env rule)))
+          (unless (eq (car kverdict) 'preserved)
+            (signal 'termlisp-type-error
+                    (list (format "rewrite of %s refused: %s"
+                                  name (cdr kverdict))))))
+        (let ((escape (tl-rewrite--locality rule target)))
+          (when escape
+            (signal 'termlisp-type-error
+                    (list (format "rewrite of %s refused: %s"
+                                  name escape)))))
+        (cons 'define (cdr form))))))
+
 (defun tl-eval-datatype (env form)
   "Handle `(datatype [open] HEAD (CON ARGTYPE...) ...)' in ENV.
 HEAD is either the datatype's name or `(NAME PARAM...)', which declares
@@ -511,6 +702,8 @@ constructor argument types are parsed and their schemes registered."
 (defun tl-eval-top (env form)
   "Evaluate one top-level FORM in ENV."
   (cond
+   ((and (consp form) (eq (car form) 'rewrite))
+    (tl-eval-define env (tl-rewrite-desugar env form)))
    ((and (consp form) (eq (car form) 'define)) (tl-eval-define env form))
    ((and (consp form) (eq (car form) 'datatype)) (tl-eval-datatype env form))
    ((and (consp form) (eq (car form) 'datatype-extension))
@@ -565,9 +758,18 @@ known limitation."
          ;; One input is one unit: a name declared by a later form in
          ;; STRING is knowable here even though it is not yet in ENV.
          (tl-infer-forward-names (termlisp-collect-forward-names forms))
+         (tl-infer-forward-vars (or tl-infer-forward-vars
+                                    (make-hash-table :test #'eq)))
+         (tl-infer-forward-order nil)
+         (tl-infer-forward-regen (or tl-infer-forward-regen
+                                     (make-hash-table :test #'eq)))
          (result nil))
-    (dolist (form forms result)
-      (setq result (termlisp-eval-form form env)))))
+    (prog1 (dolist (form forms result)
+             (setq result (termlisp-eval-form form env)))
+      ;; The whole string is one unit, so every definition it declares
+      ;; is now in ENV and the references made to a forward name before
+      ;; its definition arrived can be told what it really was.
+      (tl-forward--link))))
 
 (defun termlisp--ensure-magic-string (file)
   "Ensure FILE begins with `termlisp--magic-string', inserting it if absent.
@@ -596,8 +798,16 @@ Returns ENV."
   (let* ((termlisp--load-env (or env (termlisp-make-env)))
          ;; The whole file is one unit, so a `define' may mention a name
          ;; a later `define' declares.
-         (tl-infer-forward-names (termlisp-collect-file-forward-names file)))
+         (tl-infer-forward-names (termlisp-collect-file-forward-names file))
+         (tl-infer-forward-vars (or tl-infer-forward-vars
+                                    (make-hash-table :test #'eq)))
+         (tl-infer-forward-order nil)
+         (tl-infer-forward-regen (or tl-infer-forward-regen
+                                     (make-hash-table :test #'eq))))
     (load (expand-file-name file) nil t)
+    ;; The file is one batch, so a use made of a forward name before
+    ;; its definition was read can now be told what it really was.
+    (tl-forward--link)
     ;; A file is one batch, so this is the first moment every definition
     ;; in it has all of its clauses and a coverage check can mean
     ;; anything.
@@ -622,8 +832,18 @@ Loading goes through `load', so `termlisp-load' must be required for the
         (tl-coverage-announcements nil))
     (termlisp--ensure-magic-string file)
     (let ((tl-infer-forward-names
-           (termlisp-collect-file-forward-names file)))
-      (load file nil t))
+           (termlisp-collect-file-forward-names file))
+          (tl-infer-forward-vars (or tl-infer-forward-vars
+                                     (make-hash-table :test #'eq)))
+          (tl-infer-forward-order nil)
+          (tl-infer-forward-regen (or tl-infer-forward-regen
+                                      (make-hash-table :test #'eq))))
+      (load file nil t)
+      ;; The file is one batch: a use made of a forward name before its
+      ;; definition was read can now be told what it really was.  The
+      ;; prelude has such uses -- the State functions -- and the schemes
+      ;; they came out with depend on this.
+      (tl-forward--link))
     termlisp--load-env))
 
 (provide 'termlisp-eval)

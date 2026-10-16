@@ -17,6 +17,7 @@
     - [Patterns](#patterns)
     - [Types](#types)
     - [Kinds](#kinds)
+    - [System Fω](#system-fω)
     - [Options](#options)
   - [Using the library](#using-the-library)
   - [Debugging](#debugging)
@@ -84,6 +85,13 @@ One struct serves two subsystems, so the unifier and the normaliser share
 the graph instead of translating between two copies of it. The reducer was
 already written on nodes before the decision was made, so taking it cost no
 second implementation.
+
+`memo` is where a reduction is recorded rather than installed. A reduct is
+written to the redex root's `memo`, and every holder reaches it through
+that one indirection, so a node hash-consing made one is reduced once and
+stays one node instead of splitting into two spellings of the same term.
+`state` marks the nodes a walk is inside, which is how a cyclic graph
+terminates.
 
 The structural invariant that follows is worth knowing when reading the
 code: a type constructor's head has exactly one spelling, so head lookups
@@ -158,12 +166,13 @@ renames such variables for exactly that reason.
 ### Top-level forms
 
 The evaluator dispatches top-level forms in `tl-eval-top`
-(`termlisp-eval.el:511`):
+(`termlisp-eval.el:620`):
 
 | form | meaning |
 |---|---|
 | `(define x VALUE)` | define a value |
 | `(define (f PATTERN...) BODY)` | define a function: patterns plus **one** body form |
+| `(rewrite (NAME PATTERN...) BODY)` | extend an existing function with one clause — refused unless `tl-preserve-check` accepts the rule |
 | `(datatype open NAME (Ctor TYPE...) ...)` | declare a datatype |
 | `(datatype (NAME PARAM...) (Ctor TYPE...) ...)` | declare a parameterised datatype |
 | `(datatype-extension NAME (Ctor TYPE...) ...)` | add constructors to an open datatype |
@@ -186,10 +195,10 @@ also only *consulted* when `:type-check` or `:elaborate` is on — with
 neither, `:` evaluates to `nil` and nothing is checked.
 
 **`class` and `instance` are not exclusive to `:elaborate`.**
-`tl-elaborate-form` (`termlisp-elaborate.el:186-187`) does handle them,
+`tl-elaborate-form` (`termlisp-elaborate.el:187-188`) does handle them,
 and so are constrained `define`s — `:elaborate` is what turns a method
 call site into a dictionary lookup. But `tl-typecheck-form`
-(`termlisp-types.el:2028-2029`) handles them too, so `:type-check` alone
+(`termlisp-types.el:2174-2175`) handles them too, so `:type-check` alone
 will parse and register them. With *neither* flag set they do not fail;
 they fall through to the expression branch and come back as an inert
 list, silently.
@@ -201,10 +210,15 @@ the options (see [Holes](#holes)).
 Finally, **one input is one unit.** A `define` may mention a name
 declared by a *later* form in the same string, file or REPL submission —
 `termlisp-eval` collects the forward names first
-(`termlisp-eval.el:564`), and so does the checker
-(`termlisp-types.el:1163`). Order within a file therefore does not have
+(`termlisp-eval.el:678`), and so does the checker
+(`termlisp-types.el:1209`). Order within a file therefore does not have
 to be topological, and a signature may follow the definition it
-describes.
+describes. When the unit ends, every use made of a forward name is
+linked to the definition it waited for: each use sees the scheme's real
+type, so a forward-referencing definition is as constrained as one
+written after its dependencies, and a use that does not fit its
+definition is a type error naming it. A name no form declares remains
+an error at the point it is mentioned.
 
 A definition is *a list of patterns plus a body*, not a lambda applied to
 patterns. There is no separate `match` form:
@@ -236,8 +250,8 @@ keeps straight. Ordinary datatypes are untouched by any of this:
 
 ### Expressions
 
-Application is the ordinary `(f a b)`. Beyond it there are five forms,
-all handled by `tl-run` (`termlisp-eval.el:295`):
+Application is the ordinary `(f a b)`. Beyond it there are six forms,
+all handled by `tl-run` (`termlisp-eval.el:301`):
 
 | form | meaning |
 |---|---|
@@ -245,6 +259,7 @@ all handled by `tl-run` (`termlisp-eval.el:295`):
 | `(let ((x V) (y V)) BODY)` | **parallel** bindings, then `BODY` |
 | `(do (x <- EXPR) ... (return EXPR))` | monadic sequencing |
 | `(list a b c)` | sugar for `(Cons a (Cons b (Cons c Nil)))` |
+| `(reduce TERM)` | unfold `TERM` under the environment's rewrite rules — the term is read as a term, not evaluated |
 | `(if COND A B)` | not a form — `if` is an ordinary multi-clause function |
 
 **`let` bindings do not see each other.** They are all evaluated outside
@@ -270,9 +285,9 @@ dictionary can be inferred from the steps:
 A `do` that does not end in `(return …)` signals
 `do block must end with (return e)`, and steps drawn from two different
 monads report `Cannot apply …`. Only a **top-level** `do` is desugared
-before checking (`termlisp-eval.el:535`); a nested `do` is desugared at
+before checking (`termlisp-eval.el:646`); a nested `do` is desugared at
 evaluation time and is explicitly not elaborated — a known limitation
-recorded at `termlisp-eval.el:557`.
+recorded at `termlisp-eval.el:668`.
 
 **There is no `quote`.** `'foo` reads as `(quote foo)` and comes back as
 that two-element list, not as the symbol `foo`:
@@ -286,10 +301,10 @@ that two-element list, not as the symbol `foo`:
 
 `termlisp-load` — the path `termlisp-load-prelude` and the library use —
 reads a file and evaluates each top-level form as **elisp**. That works
-for the forms it defines macros for: `datatype`, `define`, `class`,
-`instance` and `:` (`termlisp-load.el:34`). The two it does not define a
-macro for will fail in a `.tls` file with `Symbol's function definition
-is void`:
+for the forms it defines macros for: `datatype`, `define`, `rewrite`,
+`reduce`, `class`, `instance` and `:` (`termlisp-load.el:35`). The two
+it does not define a macro for will fail in a `.tls` file with
+`Symbol's function definition is void`:
 
 ```lisp
 (datatype-extension Expr (Add Expr Expr))   ; void: datatype-extension
@@ -405,8 +420,9 @@ with both `:type-check` and `:elaborate` set).
 ### Kinds
 
 Kinds are nodes too (`termlisp-kinds.el`), so kind unification reuses the
-graph unifier. `*` is the kind of proper types and arrows are written
-`->`. Two kinds go past that:
+graph unifier. `*` is the kind of proper types, and an arrow kind is
+written `(-> K1 K2)` — `->` is the head, right-associative — or
+`(karr K1 K2)` cons-spelled. Two kinds go past that:
 
 - `univ(T)` is the kind of the *values* of `T`. `Zero : Nat` because it is
   a `Nat`, and the universe leaf is what says which datatype a value came
@@ -416,12 +432,14 @@ graph unifier. `*` is the kind of proper types and arrows are written
   three independent kind variables cannot say.
 
 `tl-kind-parse` accepts exactly five shapes — `*`, a bare datatype name,
-`(univ T)`, `K1 -> K2` and `(karr K1 K2)` — and nothing else. So a
-parameter annotation can be written like this:
+`(univ T)`, `(-> K1 K2)` and `(karr K1 K2)` — and nothing else. The arrow
+is `->` in head position and right-associative, so `(-> * * *)` reads
+`* -> (* -> *)`; `karr` is the same arrow cons-spelled. So a parameter
+annotation can be written like this:
 
 ```lisp
 (datatype (Vec (a : *) (n : Nat)) ...)     ; * and Nat
-(datatype (T (a : * -> *)) ...)            ; an arrow kind
+(datatype (T (a : (-> * *))) ...)          ; an arrow kind
 (datatype (T (a : (karr * *))) ...)        ; the same arrow, cons-spelled
 ```
 
@@ -461,6 +479,62 @@ of a case somebody forgot to rule out.
 (vhd VNil)                        ; rejected: its index is Zero
 ```
 
+### System Fω
+
+An arrow kind, a higher-kinded parameter, and a type-level `lambda` are
+what lift the kind language past annotated `*` into a small Fω. Every
+claim here is pinned by `test/curry-howard-test.el` and
+`test/prelude-test.el`.
+
+A datatype parameter may be annotated with an arrow kind, so it
+abstracts over a *type constructor* rather than a type:
+
+```lisp
+(datatype (Box (f : (-> * *)) a) (MkBox (f a)))   ; Box : (* -> *) -> * -> *
+(: b (Box Maybe Int))                             ; accepted
+(: bad (Box Int Int))                             ; Kind error at the application
+```
+
+`Box Maybe Int` is accepted because `Maybe : * -> *` and `Box`'s first
+parameter is annotated `(-> * *)`; `Box Int Int` is a kind error at the
+declaration, not a case somebody forgot. A class parameter may carry the
+same annotation — `(class Toy ((f : (-> * *))) nil (tof (-> (f Int) Int)))`
+— and an instance is then checked against it: `(instance (Toy Int) ...)`
+is refused because `Int : *` where a `(* -> *)` is required. A parameter
+that is annotated but not written `(NAME : KIND)` is refused as
+`Malformed parameter`. The prelude leaves its own parameters bare
+(`(class Functor (f) ...)`) and lets the method signatures pin `f : * -> *`
+by inference.
+
+A type-level `lambda` is an ordinary `lambda` read in type position. Its
+kind is inferred, so it meets an arrow-annotated parameter at an
+application:
+
+```lisp
+(: b (Box (lambda (a) (Vec a Zero)) Int))   ; the lambda is (* -> *)
+```
+
+Application reduces through the same normalization the type level runs, so
+a signature may compute its own index:
+
+```lisp
+(: v (Vec Int ((lambda (n) (Succ n)) Zero)))   ; reduces to (Vec Int (Succ Zero))
+```
+
+The reduction only fires while an environment is in reach. Ordinary
+unification stays structural: `(Succ Zero)` and `((lambda (n) (Succ n))
+Zero)` are two shapes until `tl-nbe-reduce-env` is bound, which is what
+keeps unification predictable while still letting a signature reduce.
+
+Finally, every type-level `rewrite` rule is gated at the kind level
+before it is written. `tl-kind-preserve-check` normalizes both sides of a
+rule at the kind level and refuses a reduct that lands at a different
+kind. The whole rule set is bucketed `preserved` / `violated` /
+`cannot-check` by the oracle test
+`tl-kind-preserve-oracle-buckets-the-prelude-rules`, so a prelude change
+that moves a rule between buckets fails the suite — the kind oracle is
+one of the standing gates.
+
 ### Options
 
 `termlisp-make-env` takes a plist merged over `termlisp-default-options`
@@ -482,8 +556,8 @@ runs instead of the plain checker.
 Two rows deserve more than the table gives them.
 
 **`:occurs-check` is off by default, everywhere.** It is read by the plain
-typechecker (`termlisp-types.el:1910`, `:2009`) as well as the elaborator
-(`termlisp-elaborate.el:177`), so it is not something elaboration does —
+typechecker (`termlisp-types.el:2049`, `:2149`) as well as the elaborator
+(`termlisp-elaborate.el:178`), so it is not something elaboration does —
 it gates `Infinite type: %S unifies with %S` for whatever checker is
 running. Turn it on when you suspect a type is looping back on itself;
 leave it off when a program that should be fine is failing with that
@@ -492,8 +566,8 @@ message.
 **`:phase` has no effect.** It appears in `termlisp-default-options` and
 nowhere else — no code in the repository reads it. Rewrite rules do have
 phases, but they are keywords (`:surface`, `:normalize`, `:desugar`, …)
-and `tl-graph--applies` runs **all of them, in one fixed order**
-(`termlisp-graph.el:319`, `:456`), narrowing the rule set by priority
+and `tl-graph-rewrite` runs **all of them, in one fixed order**
+(`termlisp-graph.el:333`, `:516`), narrowing the rule set by priority
 within each phase rather than selecting one phase to apply. The `B` in
 the default is inert. Treat the option as reserved and do not expect it
 to select anything.
@@ -686,9 +760,14 @@ rows, and the `eval` rows are `termlisp-eval-error`.
 | types | `inconsistent type` | two clauses of one function returning different types |
 | types | `Malformed arrow type: (-> Int)` | an arrow with nothing to its right |
 | types | `is not a proper type` | `(: r (Eq Int))` — tail of `Kind error: (Eq Int) is not a proper type; it has kind …` |
+| types | `rewrite of f refused: the reduct is at Int, the pattern at Bool` | `(define (f True) True)` then `(rewrite (f True) 1)` — the gate before anything is written |
+| types | `rewrite extends a function: (rewrite (NAME pattern...) body)` | `(rewrite f True)` — the shape needs an application |
+| types | `rewrite of nope: no such function to extend` | `(rewrite (nope True) False)` — no clause list to extend |
+| types | `reduce takes exactly one term` | `(reduce a b)` — an unchecked environment reports the same text as `termlisp-eval-error` |
 | kinds | `Kind error: Vec argument 2 is a * where a Nat is required` | `(: v (Vec Int String))` |
 | kinds | `Bad kind: ...` | a malformed kind annotation |
 | eval | `fuel exhausted` | a looping rewrite, or `:fuel` set too low |
+| eval | `TGR fuel exhausted` | `(reduce (spin Zero))` with `:fuel 30` — the graph rewriter's step budget |
 | eval | `Cannot extend non-open datatype Bool` | `(datatype-extension Bool (Meh))` |
 | eval | `Division by zero` | `(/ 1 0)` |
 | eval | `do block must end with (return e)` | a `do` whose last step is not `(return …)` |
@@ -911,6 +990,23 @@ Two constructors, both building a `tl-grule`:
 — and `PRIORITY` orders those that do, ascending. An optional `GUARD`
 further constrains a rule.
 
+Two top-level forms speak this machinery. `(reduce TERM)` reads a term
+as a term — it does not evaluate — and unfolds it under the
+environment's rules, with `:fuel` as its budget; the reduct it hands
+back is a term again, ready to splice into a program or to read as
+data. `(rewrite (NAME PATTERN...) BODY)` goes the other way: it adds a
+clause to an existing function, and the clause is admitted only when
+the rule the pair makes passes its three gates — `tl-preserve-check`
+must find it preserving the types of the terms it rewrites,
+`tl-kind-preserve-check` the kinds of the types the type layer could
+unfold it inside, and a trial through `tl-dpo-normalize` must leave
+`tl-dpo-last-gluing` nil, every cut the rule takes at its own pattern
+having been local. A value can be re-generalized after a cut that
+reaches outside the redex, which is why `reduce` records that verdict
+and carries on; a kind cannot, so `rewrite` refuses it. Every refusal
+signals `termlisp-type-error` before the clause list is touched, so a
+refused `rewrite` leaves the environment exactly as it was.
+
 ### Hooking reduction
 
 `tl-graph-whnf` (`termlisp-graph.el:60`) is a `defvar` holding a function
@@ -926,6 +1022,17 @@ literal comparison cannot decide without the host's normaliser:
 
 That binding is exactly how `termlisp-nbe.el` plugs its normaliser into
 `termlisp-case` and into the rewriter.
+
+`tl-graph-step-hook` (`termlisp-graph.el:68`) is the observation point
+for the walk rather than for one node. It is called as
+`(HOOK GRAPH NODE RULE REDUCT)` after a rule has reduced `NODE` to
+`REDUCT` and before `REDUCT` is recorded in `NODE`'s memo slot, so the
+graph the hook sees is still the graph the step is about to take.
+`tl-dpo-normalize` (`termlisp-dpo.el:416`) binds it to ask, at every
+step, whether the cut that step is about to take is local; the first
+verdict that is not is written to `tl-dpo-last-gluing`
+(`termlisp-dpo.el:408`) — `(dangling NODE)` for a redex a holder
+outside the match still reached, nil when every cut was local.
 
 ### The environment
 
@@ -1145,7 +1252,7 @@ termlisp-eval.el        ; lazy TCO evaluator, `do', top-level forms
 termlisp-load.el        ; load .tls files as elisp
 termlisp-graph.el       ; term-graph rewriting core
 termlisp-graph-unify.el ; graph unification (union-find)
-termlisp-graph-types.el ; graph <-> surface bridges (dev branch only)
+termlisp-dpo.el         ; Double-Pushout rewriting, simulated via SPO
 termlisp-case.el        ; compiled-pattern dispatch
 termlisp-nbe.el         ; normalization by evaluation
 termlisp-abn.el         ; Aldor ABN reader
@@ -1160,8 +1267,7 @@ termlisp-prelude.tls    ; the standard prelude
 ### Branches
 
 - `main` — the library only; no tests, no test-only support.
-- `dev` — `main` plus the ERT test suite (`test/aldor-test.el`) and the
-  graph <-> surface bridges it exercises (`termlisp-graph-types.el`).
+- `dev` — `main` plus the ERT test suite (`test/aldor-test.el`).
 
 This document is shared by both, and it cites `test/…` throughout as
 evidence — a quoted message means a test asserts it, which is the
@@ -1192,7 +1298,7 @@ make compile   ; byte-compile
 make clean     ; remove .elc files
 ```
 
-The ERT suite lives on `dev` (`make test` there runs it; 418 tests).
+The ERT suite lives on `dev` (`make test` there runs it; 462 tests).
 `cats` is expected on the load path; the Makefile defaults to the elpaca
 sources directory and honours `CATS_DIR`, e.g.
 `make test CATS_DIR=$HOME/src/emacs-cats`.
@@ -1211,10 +1317,13 @@ established. QTT is in any case orthogonal to the Curry–Howard reading this
 project is about: adding linearity moves it no closer, while costing the
 whole type layer.
 
-**`subst` and `rewrite` stay out of the core.** Both already hold as
-inference rules over `Eq`, `Refl`, `sym` and `trans`, so they need no
-universe, no new code and no library function — promoting them to
-primitives would buy nothing the checker does not already do.
+**`subst` and a primitive `rewrite` stay out of the core.** Both already
+hold as inference rules over `Eq`, `Refl`, `sym` and `trans`, so they
+need no universe, no new code and no library function — promoting them
+to primitives would buy nothing the checker does not already do. The
+top-level `rewrite` form does not change that: it extends a function's
+clause list and is refused unless `tl-preserve-check` accepts the new
+rule, so what it grows is definitions, not logic.
 
 ## License
 
