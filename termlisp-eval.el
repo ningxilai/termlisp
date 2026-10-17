@@ -92,13 +92,17 @@ part, so the line decides how the buffer looks and nothing else.")
 
 ;;; Lambda application ---------------------------------------------------
 
+(defun tl-bind-param-thunks (params thunks base-env)
+  "Extend BASE-ENV binding PARAMS to THUNKS in order."
+  (let ((new base-env) (params params) (thunks thunks))
+    (while params
+      (push (cons (car params) (car thunks)) new)
+      (setq params (cdr params) thunks (cdr thunks)))
+    new))
+
 (defun tl-bind-params (params args base-env caller-env)
   "Extend BASE-ENV binding PARAMS to thunks of ARGS evaluated in CALLER-ENV."
-  (let ((new base-env) (params params) (args args))
-    (while params
-      (push (cons (car params) (tl-make-thunk (car args) caller-env)) new)
-      (setq params (cdr params) args (cdr args)))
-    new))
+  (tl-bind-param-thunks params (tl-make-arg-thunks args caller-env) base-env))
 
 ;;; Clause selection -----------------------------------------------------
 
@@ -132,20 +136,82 @@ part, so the line decides how the buffer looks and nothing else.")
       (setq clauses (cdr clauses)))
     result))
 
-(defun tl-apply-step (fv args caller-env)
-  "Return `(BODY . ENV)' to continue applying FV to ARGS, or signal."
+(defun tl-clause-arity (clause)
+  "Return the number of arguments CLAUSE binds.
+That is its parameter count less any `rest' parameter, which
+absorbs whatever else the call supplies."
+  (cl-count-if-not (lambda (p) (eq (car p) 'rest)) (tl-clause-params clause)))
+
+(defun tl-clauses-min-arity (clauses)
+  "Return the smallest arity among CLAUSES."
+  (cl-loop for c in clauses minimize (tl-clause-arity c)))
+
+(defun tl-clauses-max-arity (clauses)
+  "Return the largest arity among CLAUSES."
+  (cl-loop for c in clauses maximize (tl-clause-arity c)))
+
+(defun tl-apply-clauses (clauses arg-thunks label)
+  "Return (BODY ENV SURPLUS) for the first CLAUSES member matching ARG-THUNKS.
+Fewer arguments than every clause binds yields the pending
+application itself, a `tl-partial' over the clause list; more
+arguments than any clause binds runs the clause that takes the
+leading ones and leaves the rest in SURPLUS, for the caller to
+apply to what the body produces.  LABEL names the callee in the
+error when no clause matches."
+  (let ((n (length arg-thunks))
+        (sel (tl-select-clause clauses arg-thunks)))
+    (cond
+     (sel (list (tl-clause-body (car sel)) (cdr sel) nil))
+     ((< n (tl-clauses-min-arity clauses))
+      (tl-make-partial (tl-make-function clauses) arg-thunks))
+     ((> n (tl-clauses-max-arity clauses))
+      (let ((lead (tl-select-clause
+                   clauses
+                   (cl-subseq arg-thunks 0 (tl-clauses-max-arity clauses)))))
+        (if lead
+            (list (tl-clause-body (car lead)) (cdr lead)
+                  (nthcdr (tl-clause-arity (car lead)) arg-thunks))
+          (signal 'termlisp-eval-error
+                  (list (format "No matching clause for %s" label))))))
+     (t (signal 'termlisp-eval-error
+                (list (format "No matching clause for %s" label)))))))
+
+(defun tl-apply-thunks (fv arg-thunks label)
+  "Return (BODY ENV SURPLUS) to continue applying FV to ARG-THUNKS, or signal.
+A callee that binds more arguments than arrived yields the
+`tl-partial' value itself, which remembers this call and continues
+it on the next application; SURPLUS holds the argument thunks FV
+did not consume, for the caller to apply to what the body
+produces.  LABEL names the callee in the no-clause error."
   (cond
+   ((tl-partial-p fv)
+    (tl-apply-thunks (tl-partial-fv fv)
+                     (append (tl-partial-args fv) arg-thunks)
+                     label))
    ((tl-closure-p fv)
-    (cons (tl-closure-body fv)
-          (tl-bind-params (tl-closure-params fv) args (tl-closure-env fv) caller-env)))
+    (let ((params (tl-closure-params fv)))
+      (if (< (length arg-thunks) (length params))
+          (tl-make-partial fv arg-thunks)
+        (list (tl-closure-body fv)
+              (tl-bind-param-thunks params arg-thunks (tl-closure-env fv))
+              (nthcdr (length params) arg-thunks)))))
    ((tl-function-p fv)
-    (let ((sel (tl-select-clause (tl-function-clauses fv)
-                                 (tl-make-arg-thunks args caller-env))))
-      (if sel
-          (cons (tl-clause-body (car sel)) (cdr sel))
-        (signal 'termlisp-eval-error '("No matching clause for function value")))))
+    (tl-apply-clauses (tl-function-clauses fv) arg-thunks label))
+   ((and (symbolp fv)
+         (gethash fv (tl-env-functions termlisp--current-env)))
+    (tl-apply-thunks
+     (tl-make-function (gethash fv (tl-env-functions termlisp--current-env)))
+     arg-thunks label))
    (t (signal 'termlisp-eval-error
               (list (format "Not a function: %S" fv))))))
+
+(defun tl-apply-step (fv args caller-env label)
+  "Return (BODY ENV SURPLUS) to continue applying FV to ARGS, or signal.
+CALLER-ENV is where ARGS are evaluated when their parameter is
+bound; see `tl-apply-thunks' for the pending application a partial
+one yields and the SURPLUS a caller must apply to the body's
+result.  LABEL names the callee in errors."
+  (tl-apply-thunks fv (tl-make-arg-thunks args caller-env) label))
 
 (defun tl-resolve-callable (fv)
   "Resolve FV to a closure/function object, or return it unchanged."
@@ -352,8 +418,14 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
             (let ((head (car control)) (args (cdr control)))
               (cond
                ((and (consp head) (eq (car head) 'lambda))
-                (setq cenv (tl-bind-params (cadr head) args cenv cenv))
-                (setq control (caddr head)))
+                (let ((step (tl-apply-step
+                             (tl-make-closure (cadr head) (caddr head) cenv)
+                             args cenv "lambda")))
+                  (if (tl-partial-p step)
+                      (setq value step mode 'ret)
+                    (when (caddr step)
+                      (push (list 'apply (caddr step)) kont))
+                    (setq control (car step) cenv (cadr step)))))
                ((eq head 'lambda)
                 (setq value (tl-make-closure (cadr control) (caddr control) cenv)
                       mode 'ret))
@@ -388,15 +460,21 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
                               (let ((tk (car arg-thunks)))
                                 (setq cenv (tl-thunk-env tk)
                                       control (tl-thunk-expr tk)))))
-                        (let ((step (tl-apply-step fv args cenv)))
-                          (setq control (car step) cenv (cdr step))))))
+                        (let ((step (tl-apply-step fv args cenv "value")))
+                          (if (tl-partial-p step)
+                              (setq value step mode 'ret)
+                            (when (caddr step)
+                              (push (list 'apply (caddr step)) kont))
+                            (setq control (car step) cenv (cadr step)))))))
                    (fns
-                    (let ((sel (tl-select-clause fns (tl-make-arg-thunks args cenv))))
-                      (if sel
-                          (progn (setq cenv (cdr sel))
-                                 (setq control (tl-clause-body (car sel))))
-                        (signal 'termlisp-eval-error
-                                (list (format "No matching clause for %S" head))))))
+                    (let ((step (tl-apply-clauses fns
+                                                  (tl-make-arg-thunks args cenv)
+                                                  (format "%S" head))))
+                      (if (tl-partial-p step)
+                          (setq value step mode 'ret)
+                        (when (caddr step)
+                          (push (list 'apply (caddr step)) kont))
+                        (setq cenv (cadr step) control (car step)))))
                    ((tl-builtin-p head)
                     (let ((fn (gethash head tl-builtins))
                           (arg-thunks (tl-make-arg-thunks args cenv)))
@@ -424,8 +502,12 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
                           (let ((tk (car arg-thunks)))
                             (setq cenv (tl-thunk-env tk)
                                   control (tl-thunk-expr tk)))))
-                    (let ((step (tl-apply-step fv args cenv)))
-                      (setq control (car step) cenv (cdr step))))))))))
+                    (let ((step (tl-apply-step fv args cenv "value")))
+                      (if (tl-partial-p step)
+                          (setq value step mode 'ret)
+                        (when (caddr step)
+                          (push (list 'apply (caddr step)) kont))
+                        (setq control (car step) cenv (cadr step)))))))))))
         ;; return mode
         (if (null kont)
             (setq done t)
@@ -447,6 +529,25 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
                      (setq cenv (tl-thunk-env tk)
                            control (tl-thunk-expr tk)
                            mode 'eval)))))
+              ('apply
+               ;; A surplus of arguments: apply what the body produced to
+               ;; the thunks the callee did not consume.
+               (let* ((extra (nth 1 frame))
+                      (fv (tl-resolve-callable
+                           (if (tl-thunk-p value) (tl-force value) value))))
+                 (if (tl-builtin-fn-p fv)
+                     (let ((fn (gethash (tl-builtin-fn-name fv) tl-builtins)))
+                       (push (list 'builtin fn nil (cdr extra)) kont)
+                       (let ((tk (car extra)))
+                         (setq cenv (tl-thunk-env tk)
+                               control (tl-thunk-expr tk)
+                               mode 'eval)))
+                   (let ((step (tl-apply-thunks fv extra "surplus")))
+                     (if (tl-partial-p step)
+                         (setq value step mode 'ret)
+                       (when (caddr step)
+                         (push (list 'apply (caddr step)) kont))
+                       (setq control (car step) cenv (cadr step) mode 'eval))))))
               (_ (signal 'termlisp-eval-error
                          (list (format "Unknown continuation frame: %S" frame)))))))))
     value))
@@ -477,6 +578,7 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
                     (when (> idx 0) (push " " stack))))))
              ((tl-closure-p x) (push "#<closure>" out))
              ((tl-function-p x) (push "#<function>" out))
+             ((tl-partial-p x) (push "#<partial>" out))
              (t (push (format "%s" x) out))))))))
     (apply #'concat (nreverse out))))
 

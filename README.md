@@ -131,7 +131,10 @@ The boundary the project is probing, concretely:
   with dependent kinds, and exhaustiveness checking — all in elisp.
 - An explicit CEK machine with memoized thunks, so forcing a
   variable-bound thunk and function application are both tail steps. Deep
-  tail recursion does not grow the Emacs stack.
+  tail recursion does not grow the Emacs stack. Applying a function to
+  fewer arguments than it binds yields the pending application itself,
+  the runtime matching the curried arrows of the type language; surplus
+  arguments run the callee and apply what comes out the rest.
 - Unification by union-find over the same nodes the evaluator rewrites.
 - An Aldor front end compiling down to elisp, with self tail calls turned
   into loops.
@@ -406,7 +409,11 @@ ride in the prelude: `ApplicativeMaybeDict` and friends, `MonoidIntDict`,
 a class method (`foldr`, `to-list`, `length`, `fold-map`, `lift-a2`,
 `fmap`, `ap`, `pure`, `bind`, `return`) need `:elaborate t` or an
 explicit dictionary; the Monoid and Traversable verbs take theirs
-explicitly and work in either mode.
+explicitly and work in either mode. `Ziplist` wraps a list as the
+applicative that zips — `ap` pairs element by element and truncates at
+the shortest side, and `pure` delivers one element, since eager lists
+carry no `repeat` to stand for the lawful identity — and it carries
+`Functor`, `Applicative` and `Foldable` instances, as cats gives it.
 
 Types are propositions and programs are proofs, so the prelude carries the
 constructive connectives:
@@ -634,8 +641,11 @@ The prelude defines the booleans, pairs, `Either`/`Void`, lists, `Nat`,
 `Vec`, `Fin`, `Eq`, monads and type classes, the categorical tower —
 `Monoid` (`mempty`, `mappend`, `mconcat`, the `Endo` monoid),
 `Foldable` (`foldr`, `to-list`, `length`, `fold-map`), `Traversable`
-(`traverse`, `mapm`, `sequence`, `sequence-a`) — the reader's
-`asks`/`local`, together with the operators
+(`traverse`, `mapm`, `sequence`, `sequence-a`), the reader's
+`asks`/`local`, the ziplist datatype and its `Functor`, `Applicative`
+and `Foldable` instances (`ziplist-pure`, `ziplist-ap`,
+`ziplist-lift-a2`, `ziplist-fmap`, `ziplist-foldr`), together with the
+operators
 `=`, `xor`, `null?`, `map`, `foldl`, `reverse` and `sort`, and an
 arithmetic library: `abs`, `signum`, `min`, `max`, `positive?`,
 `negative?`, `square`, `rem`, `div`, `gcd`, `lcm`, `sum` and `product`.

@@ -3,12 +3,14 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
-;; Two macros build the data-driven suites in `prelude-test' and
+;; Three macros build the data-driven suites in `prelude-test' and
 ;; `curry-howard-test': `tl-test-eval' asserts that a form renders as a
 ;; value, `tl-test-reject' that it fails with a message containing a
-;; given fragment.  Both evaluate in a *fresh* prelude environment, so no
-;; test can leak definitions or type bindings into the next one -- several
-;; cases deliberately define functions with the same name.
+;; given fragment, and `tl-test-sub' that a call renders as a value
+;; after a submission loaded.  All three evaluate in a *fresh* prelude
+;; environment, so no test can leak definitions or type bindings into
+;; the next one -- several cases deliberately define functions with the
+;; same name.
 
 ;;; Code:
 
@@ -48,6 +50,24 @@ may be nil to accept the defaults.  The failure must carry the
      (let ((got (tl-test--render ,form ,opts)))
        (should (string-prefix-p "ERR:" got))
        (should (string-match-p (regexp-quote ,needle) got)))))
+
+(defmacro tl-test-sub (name src call want &optional opts)
+  "Define ERT test NAME asserting that CALL renders as WANT after SRC.
+SRC is loaded into a fresh prelude environment built from OPTS
+through `termlisp-eval-submission', the way a REPL submission
+loads, and CALL is then evaluated in that environment.  WANT is
+compared against the rendering, `ERR:...' included when CALL
+signals."
+  `(ert-deftest ,name ()
+     ,(format "Assert %S renders as %S after %S." call want src)
+     (let ((env (termlisp-load-prelude (termlisp-make-env ,opts))))
+       (termlisp-eval-submission ,src env)
+       (should (equal (condition-case e
+                          (termlisp-value->string (termlisp-eval ,call env))
+                        (error (format "ERR:%s"
+                                       (if (stringp (cadr e)) (cadr e)
+                                         (error-message-string e)))))
+                      ,want)))))
 
 (defun tl-test--coverage (src opts)
   "Evaluate SRC in a fresh prelude environment built from OPTS, then check coverage.

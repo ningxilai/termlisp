@@ -383,8 +383,9 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
   joins the `Applicative' class under an infix `(a -> b -> c)' scheme
   with a third dictionary field, and every lift implementation
   uncurries the binary function itself: a partially applied
-  multi-parameter lambda silently fills its missing arguments with nil
-  at runtime (the S0 family), and `fmap' feeds one element at a time --
+  multi-parameter lambda silently filled its missing arguments with nil
+  at runtime (the S0 family, fixed in P1-15), and `fmap' feeds one
+  element at a time --
   traverse passes plain binary lambdas across the field boundary and
   the implementation does the wrapping.  `asks' and `local' arrive in
   the raw `reader-fmap' style the reader's transparent function type
@@ -445,6 +446,86 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     clean in isolation, checkdoc identical normalized multiset against
     a fresh `7a84068' worktree, parsecheck OK, `loaddefs-generate'
     prints no prefix warning.
+
+- [x] **P1-15 The runtime now matches the curried arrows: an
+  under-applied function is a value, and `Ziplist' joins the
+  applicative family** -- the S0 family, named in the engine rather
+  than worked around in the prelude.  `tl-bind-params' walked the
+  parameter list binding as it went, so a multi-parameter lambda
+  applied to fewer arguments filled the gaps with thunks over nil --
+  `((lambda (x y) (Cons x y)) 1)' answered `(Cons 1 nil)' while the
+  checker, which types the lambda as a right-nested arrow, had
+  accepted the program -- and surplus arguments were dropped the same
+  way in reverse, while a named function refused a short call
+  outright (`No matching clause') because `tl-match-seq' matches at
+  exact arity.  The fix is currying end to end: a `tl-partial'
+  machine value records the callee and the argument thunks supplied
+  so far -- thunks, so each argument keeps the environment it was
+  written in -- and the next application appends to them and
+  continues where the call stopped, a partial of a partial flattening
+  by construction.  The application core (`tl-apply-thunks' over
+  `tl-apply-clauses') answers `(BODY ENV SURPLUS)': a closure binds
+  its parameters to the leading thunks and hands the rest back, the
+  call sites push an `apply' continuation frame, and when the body's
+  value arrives the frame applies it to the surplus -- which is how a
+  nested `(lambda (x) (lambda (y) ...))' applied flat consumes its
+  trailing arguments instead of dropping them, and how a zero-arity
+  clause applied to anything still runs and gets its result applied.
+  Clause arity counts the parameters less any trailing `:list' rest
+  pattern, which still absorbs the whole supply; the pending
+  threshold is the smallest arity among the clauses and the surplus
+  split the largest, so a mixed-arity clause set dispatches the way
+  the exact matcher always did.  A class-method call missing its
+  elaborated dictionary -- `(fmap f x)' in phase B -- now waits for
+  it as a pending application instead of failing clause selection,
+  uniform with everything else, and `:type-check t' still names the
+  real error.  `Ziplist' takes the cats omission P1-14 recorded: a
+  list wrapper whose `pure' delivers one element and whose `ap' pairs
+  element-wise, truncating at the shortest side -- the eager ziplist
+  keeps the identity law only on one-element ziplists, cats itself
+  accepting the deviation, and termlisp has no infinite lists to
+  stand in -- with Functor, Applicative and Foldable instances as
+  cats gives the type, and no Traversable because cats has none.
+  - [x] The lift implementations keep their one-call wrappers and
+    only the comment that justified them changes: the S0 workaround
+    was retired, but a fixed-arity builtin has no curried form --
+    `(+ 1)' refuses with `+ expects 2 arguments, got 1' rather than
+    answering a pending application -- so `(+ x y)' in one call is
+    what makes `lift-a2 +' work at all (pinned through the ziplist
+    lift), while defined functions and constructors answer a pending
+    application like everything else (`(cons 1)' and
+    `(string-append "a")' are `#<partial>').
+  - [x] `ziplist-lift-a2' carries the family's wrapper and a
+    signature, the second after `state-lift-a2': loaded whole-file
+    its inferred scheme lost the element threading -- five
+    quantifiers with `mx' and the result detached from `f', probed
+    against `maybe-lift-a2' which infers the sound three -- exactly
+    the divergence the state lift documents, and the value oracle
+    caught it (`Cannot apply ziplist-ap to mx') before the signature
+    pinned the threading the body implements.
+  - [x] Oracles moved with the prelude and nothing pinned away:
+    kind-violated 30 -> 33, the three new reducts falling into the
+    families the docstrings already describe (`ziplist-ap-step'
+    applies the `f' its `(Cons f fs)' pattern bound,
+    `ziplist-lift-a2' joins the uncurrying wrappers, `ziplist-pure'
+    folds with `Ziplist' where the reading wants a `*');
+    preserve-cannot unchanged at 13; preserve-violated 0.
+  - [x] Tests: 29 new pins -- 19 application, 9 ziplist, the
+    dictionary-waiting pin -- every rendering probed, none
+    hand-computed; `tl-test-sub' joins test-support for the
+    define-then-call shape the single-form macros cannot express.
+  - [x] Red/green: with the tests kept and the engine, machine and
+    prelude reverted to `2d38cdc', 24 of the 29 round-matched pins
+    fail; the five that pass are behaviour-unchanged pins (exact and
+    zero-argument lambda application, the two `:list'-clause pins
+    whose rest binding still absorbs the supply, and
+    `((adder1 1) 2)', whose inner call was already exact).
+  - [x] Gates: suite 637/637, `make compile' 0 warnings and every
+    library file clean in isolation, checkdoc normalized multiset
+    against a fresh `2d38cdc' worktree identical but for one fewer
+    warning (the old `tl-apply-step' docstring never named
+    CALLER-ENV; the rewrite does), parsecheck OK,
+    `loaddefs-generate' prints no prefix warning (24 registrations).
 
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 

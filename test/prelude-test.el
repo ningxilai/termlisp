@@ -489,5 +489,72 @@
 (tl-test-reject tl-prelude-length-rejects-a-non-container
   "(length \"abc\")" "Cannot apply length to" '(:elaborate t))
 
+;;; Application: partial and surplus arguments
+
+(tl-test-eval tl-app-lambda-under-is-pending
+  "((lambda (x y) (Cons x y)) 1)" "#<partial>")
+(tl-test-eval tl-app-lambda-under-typechecked
+  "((lambda (x y) (Cons x y)) 1)" "#<partial>" '(:type-check t))
+(tl-test-eval tl-app-lambda-under-completes
+  "(((lambda (x y) (Cons x y)) 1) (Cons 2 Nil))" "(Cons 1 (Cons 2 Nil))")
+(tl-test-eval tl-app-lambda-under-arithmetic
+  "(((lambda (x y) (+ x y)) 1) 2)" "3")
+(tl-test-eval tl-app-pending-then-two-more
+  "(((lambda (x y z) (list x y z)) 1) 2 3)" "(Cons 1 (Cons 2 (Cons 3 Nil)))")
+(tl-test-eval tl-app-nested-lambda-flat
+  "((lambda (x) (lambda (y) (Cons x y))) 1 (Cons 2 Nil))" "(Cons 1 (Cons 2 Nil))")
+(tl-test-eval tl-app-exact-lambda-is-unchanged
+  "((lambda (x y) (Cons x y)) 1 (Cons 2 Nil))" "(Cons 1 (Cons 2 Nil))")
+(tl-test-eval tl-app-zero-arg-lambda-is-unchanged "((lambda () 1))" "1")
+(tl-test-reject tl-app-surplus-onto-a-value
+  "((lambda (x) x) 1 2)" "Not a function")
+(tl-test-eval tl-app-partial-inside-data
+  "(Cons ((lambda (x y) (Cons x y)) 1) Nil)" "(Cons #<partial> Nil)")
+(tl-test-eval tl-app-prelude-clause-under
+  "((map-list (lambda (x) (+ x 1))) (Cons 1 Nil))" "(Cons 2 Nil)")
+(tl-test-eval tl-app-state-get-flat "(state-get 5)" "(Pair 5 5)")
+(tl-test-sub tl-app-named-under-completes
+  "(define (add2 x y) (+ x y))" "((add2 1) 2)" "3")
+(tl-test-sub tl-app-named-under-pending
+  "(define (add2 x y) (+ x y))" "(add2 1)" "#<partial>")
+(tl-test-sub tl-app-named-flat-over
+  "(define (adder1 x) (lambda (y) (+ x y)))" "(adder1 1 2)" "3")
+(tl-test-sub tl-app-named-clause-flat-over
+  "(define (adder1 x) (lambda (y) (+ x y)))" "((adder1 1) 2)" "3")
+(tl-test-sub tl-app-named-zero-arity-surplus
+  "(define (get5) 5)" "(get5 1)" "ERR:Not a function: 5")
+(tl-test-sub tl-app-rest-clause-absorbs-surplus
+  "(define (resty x (:list xs)) (Pair x xs))" "(resty 1 2 3)" "(Pair 1 (2 3))")
+(tl-test-sub tl-app-rest-clause-exact
+  "(define (resty x (:list xs)) (Pair x xs))" "(resty 1)" "(Pair 1 nil)")
+
+;;; Ziplist
+
+(tl-test-eval tl-zip-pure "(ziplist-pure 5)" "(Ziplist (Cons 5 Nil))")
+(tl-test-eval tl-zip-fmap
+  "(fmap (lambda (x) (+ x 1)) (Ziplist (Cons 1 (Cons 2 Nil))))"
+  "(Ziplist (Cons 2 (Cons 3 Nil)))" '(:elaborate t))
+(tl-test-eval tl-zip-ap-zips
+  "(ap (Ziplist (Cons (lambda (x) (+ x 10)) (Cons (lambda (x) (* x 2)) Nil))) (Ziplist (Cons 1 (Cons 2 Nil))))"
+  "(Ziplist (Cons 11 (Cons 4 Nil)))" '(:elaborate t))
+(tl-test-eval tl-zip-ap-truncates
+  "(ap (Ziplist (Cons (lambda (x) (+ x 10)) Nil)) (Ziplist (Cons 1 (Cons 2 Nil))))"
+  "(Ziplist (Cons 11 Nil))" '(:elaborate t))
+(tl-test-eval tl-zip-lift-a2
+  "(lift-a2 (lambda (x y) (+ x y)) (Ziplist (Cons 1 (Cons 2 Nil))) (Ziplist (Cons 10 (Cons 20 (Cons 30 Nil)))))"
+  "(Ziplist (Cons 11 (Cons 22 Nil)))" '(:elaborate t))
+(tl-test-eval tl-zip-lift-a2-calls-builtins-once
+  "(lift-a2 + (Ziplist (Cons 1 (Cons 2 Nil))) (Ziplist (Cons 10 (Cons 20 Nil))))"
+  "(Ziplist (Cons 11 (Cons 22 Nil)))" '(:elaborate t))
+(tl-test-eval tl-zip-foldr
+  "(foldr (lambda (x acc) (+ x acc)) 0 (Ziplist (Cons 1 (Cons 2 Nil))))"
+  "3" '(:elaborate t))
+(tl-test-eval tl-zip-length
+  "(length (Ziplist (Cons 1 (Cons 2 Nil))))" "2" '(:elaborate t))
+(tl-test-eval tl-zip-to-list
+  "(to-list (Ziplist (Cons 1 (Cons 2 Nil))))" "(Cons 1 (Cons 2 Nil))" '(:elaborate t))
+(tl-test-eval tl-app-method-waiting-for-its-dictionary
+  "(fmap (lambda (x) (+ x 1)) (Ziplist (Cons 1 Nil)))" "#<partial>")
+
 (provide 'prelude-test)
 ;;; prelude-test.el ends here

@@ -223,14 +223,16 @@
 (define (reader-pure v) (lambda (r) v))
 (define (reader-ap mf mx) (lambda (r) ((mf r) (mx r))))
 
-;; The lift implementations uncurry the binary function themselves: a
-;; multi-parameter lambda partially applied is garbage in the current
-;; runtime, and `fmap' applies its function to one element at a time.
+;; The lift implementations call the binary function on both arguments
+;; at once.  A termlisp closure would answer a partial application,
+;; but a builtin like `+' has none -- `(+ x)' is elisp's unary `+' --
+;; and one call keeps both kinds of function value working.
 (define (maybe-lift-a2 f mf mx)
   (maybe-ap (maybe-fmap (lambda (x) (lambda (y) (f x y))) mf) mx))
 (define (list-lift-a2 f mf mx)
   (list-ap (list-fmap (lambda (x) (lambda (y) (f x y))) mf) mx))
-;; The one lift that carries its signature.  Loaded as part of the
+;; The first lift that carries its signature (the ziplist lift below is
+;; the second).  Loaded as part of the
 ;; whole file, this body's inferred scheme loses the state threading
 ;; -- `mx' comes out unconstrained and the result `s -> ?' carries no
 ;; Pair -- though the same body submitted on its own infers soundly.
@@ -395,6 +397,43 @@
 ;; transparent function type lives in.
 (define (asks f) (reader-fmap f (reader-ask)))
 (define (local f m) (lambda (r) (m (f r))))
+
+;; Ziplist: the applicative that zips.  `cats' wraps a list in
+;; `cats-data-ziplist', `pure' delivers a one-element ziplist, and
+;; `ap' pairs the two sides element by element, truncating at the
+;; shortest -- eager lists carry no `repeat' to stand for the lawful
+;; identity, so the identity law holds on one-element ziplists and
+;; nowhere else.  `cats' gives the type Functor, Applicative and
+;; Foldable instances; this does the same, over the wrapped list.
+(datatype Ziplist (Ziplist (List a)))
+(define (ziplist-pure v) (Ziplist (Cons v Nil)))
+(define (ziplist-fmap f (Ziplist xs)) (Ziplist (list-fmap f xs)))
+(define (ziplist-ap (Ziplist fs) (Ziplist xs))
+  (Ziplist (ziplist-ap-step fs xs)))
+(define (ziplist-ap-step Nil xs) Nil)
+(define (ziplist-ap-step (Cons f fs) Nil) Nil)
+(define (ziplist-ap-step (Cons f fs) (Cons x xs))
+  (Cons (f x) (ziplist-ap-step fs xs)))
+;; The second lift that carries its signature.  Loaded as part of the
+;; whole file, this body's inferred scheme loses the ziplist threading
+;; -- `mx' and the result come out at unconstrained element types --
+;; though the same body submitted on its own infers soundly, which is
+;; the divergence `state-lift-a2' above documents.  The signature
+;; states the threading the body implements.
+(: ziplist-lift-a2 (-> (a : *) (b : *) (c : *)
+                       (f : (-> a (-> b c)))
+                       (mf : (Ziplist a))
+                       (mx : (Ziplist b))
+                       (Ziplist c)))
+(define (ziplist-lift-a2 f mf mx)
+  (ziplist-ap (ziplist-fmap (lambda (x) (lambda (y) (f x y))) mf) mx))
+(define (ziplist-foldr f z (Ziplist xs)) (list-foldr f z xs))
+(define FunctorZiplistDict (FunctorDict ziplist-fmap))
+(define ApplicativeZiplistDict (ApplicativeDict ziplist-pure ziplist-ap ziplist-lift-a2))
+(define FoldableZiplistDict (FoldableDict ziplist-foldr))
+(instance (Functor Ziplist) FunctorZiplistDict)
+(instance (Applicative Ziplist) ApplicativeZiplistDict)
+(instance (Foldable Ziplist) FoldableZiplistDict)
 
 ;; Arithmetic.  The primitives carry the operator language the
 ;; interpreter reaches for directly: `quo' truncates toward zero,
