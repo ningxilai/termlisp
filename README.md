@@ -394,6 +394,20 @@ Type classes use dictionary passing:
 ;; (fmap (lambda (x) (+ x 1)) (Just 4)) => (Just 5)
 ```
 
+The prelude declares `Functor`, `Applicative` (whose `lift-a2` composes
+two effectful arguments with a binary function), `Monad` and `Foldable`,
+whose `foldr` turns one structure's fold into the generic verbs
+`to-list`, `length` and `fold-map`. `Monoid` and `Traversable` stay
+dictionary-passing like the `monad-*` accessors — a `mempty` is a value
+rather than a function, and `traverse` cannot be a class because a
+method scheme may only apply its own class parameters. The dictionaries
+ride in the prelude: `ApplicativeMaybeDict` and friends, `MonoidIntDict`,
+`FoldableListDict`, `TraversableListDict`. The verbs that route through
+a class method (`foldr`, `to-list`, `length`, `fold-map`, `lift-a2`,
+`fmap`, `ap`, `pure`, `bind`, `return`) need `:elaborate t` or an
+explicit dictionary; the Monoid and Traversable verbs take theirs
+explicitly and work in either mode.
+
 Types are propositions and programs are proofs, so the prelude carries the
 constructive connectives:
 
@@ -617,7 +631,11 @@ API:
   `string-join`, `string->list`, `list->string`.
 
 The prelude defines the booleans, pairs, `Either`/`Void`, lists, `Nat`,
-`Vec`, `Fin`, `Eq`, monads and type classes, together with the operators
+`Vec`, `Fin`, `Eq`, monads and type classes, the categorical tower —
+`Monoid` (`mempty`, `mappend`, `mconcat`, the `Endo` monoid),
+`Foldable` (`foldr`, `to-list`, `length`, `fold-map`), `Traversable`
+(`traverse`, `mapm`, `sequence`, `sequence-a`) — the reader's
+`asks`/`local`, together with the operators
 `=`, `xor`, `null?`, `map`, `foldl`, `reverse` and `sort`, and an
 arithmetic library: `abs`, `signum`, `min`, `max`, `positive?`,
 `negative?`, `square`, `rem`, `div`, `gcd`, `lcm`, `sum` and `product`.

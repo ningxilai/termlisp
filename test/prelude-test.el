@@ -54,11 +54,11 @@
 (tl-test-eval tl-prelude-reader-bind "((reader-bind (reader-ask) (lambda (r) (reader-return (+ r 1)))) 42)" "43")
 (tl-test-eval tl-prelude-head "(head (Cons 1 Nil))" "1")
 (tl-test-eval tl-prelude-tail "(tail (Cons 1 (Cons 2 Nil)))" "(Cons 2 Nil)")
-(tl-test-eval tl-prelude-length "(length (Cons 1 (Cons 2 Nil)))" "2")
+(tl-test-eval tl-prelude-length "(length (Cons 1 (Cons 2 Nil)))" "2" '(:elaborate t))
 (tl-test-eval tl-prelude-append "(append (Cons 1 Nil) (Cons 2 Nil))" "(Cons 1 (Cons 2 Nil))")
 (tl-test-eval tl-prelude-map-list "(map-list (lambda (x) (* x 2)) (Cons 1 (Cons 2 Nil)))" "(Cons 2 (Cons 4 Nil))")
 (tl-test-eval tl-prelude-filter "(filter (lambda (x) (< x 2)) (Cons 1 (Cons 2 (Cons 3 Nil))))" "(Cons 1 Nil)")
-(tl-test-eval tl-prelude-foldr "(foldr (lambda (x acc) (+ x acc)) 0 (Cons 1 (Cons 2 Nil)))" "3")
+(tl-test-eval tl-prelude-foldr "(foldr (lambda (x acc) (+ x acc)) 0 (Cons 1 (Cons 2 Nil)))" "3" '(:elaborate t))
 (tl-test-eval tl-prelude-foldl "(foldl (lambda (z x) (+ z x)) 0 (Cons 1 (Cons 2 Nil)))" "3")
 (tl-test-eval tl-prelude-foldl-with-builtin "(foldl + 0 (Cons 1 (Cons 2 Nil)))" "3")
 (tl-test-eval tl-prelude-reverse "(reverse (Cons 1 (Cons 2 Nil)))" "(Cons 2 (Cons 1 Nil))")
@@ -366,6 +366,128 @@
   "(class Toy (f : (-> * *)) nil (tof (-> Int Int)))"
   "Malformed parameter (-> * *) in class Toy; write it as (NAME : KIND)"
   '(:type-check t :elaborate t))
+
+;;; The categorical tower: Monoid, Foldable, Traversable, lift-a2
+
+;; Monoid: the identity rides in the record, so every verb takes the
+;; dictionary explicitly and nothing needs elaboration.
+(tl-test-eval tl-prelude-mempty-int "(mempty MonoidIntDict)" "0")
+(tl-test-eval tl-prelude-mempty-list "(mempty MonoidListDict)" "Nil")
+(tl-test-eval tl-prelude-mempty-string "(mempty MonoidStringDict)" "")
+(tl-test-eval tl-prelude-mappend-int "(mappend MonoidIntDict 3 4)" "7")
+(tl-test-eval tl-prelude-mappend-string "(mappend MonoidStringDict \"ab\" \"cd\")" "abcd")
+(tl-test-eval tl-prelude-mappend-list
+  "(mappend MonoidListDict (Cons 1 Nil) (Cons 2 Nil))" "(Cons 1 (Cons 2 Nil))")
+(tl-test-eval tl-prelude-mconcat-int
+  "(mconcat MonoidIntDict (Cons 1 (Cons 2 (Cons 3 Nil))))" "6")
+(tl-test-eval tl-prelude-mconcat-list
+  "(mconcat MonoidListDict (Cons (Cons 1 Nil) (Cons (Cons 2 Nil) Nil)))"
+  "(Cons 1 (Cons 2 Nil))")
+(tl-test-eval tl-prelude-mconcat-string
+  "(mconcat MonoidStringDict (Cons \"ab\" (Cons \"cd\" Nil)))" "abcd")
+(tl-test-eval tl-prelude-endo-composition
+  "(run-endo (mappend MonoidEndoDict (Endo (lambda (x) (+ x 1))) (Endo (lambda (x) (* x 2)))) 5)"
+  "11")
+(tl-test-eval tl-prelude-endo-mempty "(run-endo (mempty MonoidEndoDict) 42)" "42")
+
+;; Foldable: `foldr' is a method now, so its callers need the
+;; elaborator to find the dictionary.
+(tl-test-eval tl-prelude-foldr-maybe
+  "(foldr (lambda (x acc) (+ x acc)) 0 (Just 5))" "5" '(:elaborate t))
+(tl-test-eval tl-prelude-foldr-nothing
+  "(foldr (lambda (x acc) (+ x acc)) 0 Nothing)" "0" '(:elaborate t))
+(tl-test-eval tl-prelude-to-list-maybe "(to-list (Just 5))" "(Cons 5 Nil)" '(:elaborate t))
+(tl-test-eval tl-prelude-length-maybe "(length (Just 5))" "1" '(:elaborate t))
+(tl-test-eval tl-prelude-length-nil "(length Nil)" "0" '(:elaborate t))
+(tl-test-eval tl-prelude-fold-map-int
+  "(fold-map MonoidIntDict (lambda (x) (* x 2)) (Cons 1 (Cons 2 Nil)))" "6" '(:elaborate t))
+(tl-test-eval tl-prelude-fold-map-list-maybe
+  "(fold-map MonoidListDict (lambda (x) (Cons x Nil)) (Just 7))" "(Cons 7 Nil)" '(:elaborate t))
+(tl-test-eval tl-prelude-fold-map-endo
+  "(run-endo (fold-map MonoidEndoDict (lambda (x) (Endo (lambda (s) (string-append s x)))) (Cons \"a\" (Cons \"b\" Nil))) \"z\")"
+  "zba" '(:elaborate t))
+
+;; Traversable: the traversable dict matches the container, the
+;; effect dict the computation it walks into.
+(tl-test-eval tl-prelude-traverse-list-maybe
+  "(traverse TraversableListDict ApplicativeMaybeDict (lambda (x) (Just (+ x 1))) (Cons 1 (Cons 2 Nil)))"
+  "(Just (Cons 2 (Cons 3 Nil)))")
+(tl-test-eval tl-prelude-traverse-list-maybe-short-circuit
+  "(traverse TraversableListDict ApplicativeMaybeDict (lambda (x) (if (= x 2) Nothing (Just x))) (Cons 1 (Cons 2 Nil)))"
+  "Nothing")
+(tl-test-eval tl-prelude-traverse-list-list
+  "(traverse TraversableListDict ApplicativeListDict (lambda (x) (Cons x (Cons (* x 10) Nil))) (Cons 1 (Cons 2 Nil)))"
+  "(Cons (Cons 1 (Cons 2 Nil)) (Cons (Cons 1 (Cons 20 Nil)) (Cons (Cons 10 (Cons 2 Nil)) (Cons (Cons 10 (Cons 20 Nil)) Nil))))")
+(tl-test-eval tl-prelude-traverse-maybe-just
+  "(traverse TraversableMaybeDict ApplicativeMaybeDict (lambda (x) (Just x)) (Just 5))"
+  "(Just (Just 5))")
+(tl-test-eval tl-prelude-traverse-maybe-nothing
+  "(traverse TraversableMaybeDict ApplicativeMaybeDict (lambda (x) (Just x)) Nothing)"
+  "(Just Nothing)")
+(tl-test-eval tl-prelude-sequence-a
+  "(sequence-a TraversableListDict ApplicativeMaybeDict (Cons (Just 1) (Cons (Just 2) Nil)))"
+  "(Just (Cons 1 (Cons 2 Nil)))")
+(tl-test-eval tl-prelude-mapm-maybe-just
+  "(mapm TraversableMaybeDict MaybeDict (lambda (x) (Just (+ x 1))) (Just 5))"
+  "(Just (Just 6))")
+(tl-test-eval tl-prelude-mapm-maybe-nothing
+  "(mapm TraversableMaybeDict MaybeDict (lambda (x) (Just (+ x 1))) Nothing)"
+  "(Just Nothing)")
+(tl-test-eval tl-prelude-mapm-list
+  "(mapm TraversableListDict MaybeDict (lambda (x) (Just (+ x 1))) (Cons 1 (Cons 2 Nil)))"
+  "(Just (Cons 2 (Cons 3 Nil)))")
+(tl-test-eval tl-prelude-sequence
+  "(sequence TraversableListDict MaybeDict (Cons (Just 1) (Cons (Just 2) Nil)))"
+  "(Just (Cons 1 (Cons 2 Nil)))")
+(tl-test-eval tl-prelude-sequence-short-circuit
+  "(sequence TraversableListDict MaybeDict (Cons (Just 1) (Cons Nothing Nil)))"
+  "Nothing")
+
+;; lift-a2: the Applicative method, elaborated for the dict-shaped
+;; instances and called through its implementation where the
+;; arguments are functions the elaborator's unifier cannot place.
+(tl-test-eval tl-prelude-lift-a2-maybe
+  "(lift-a2 (lambda (x y) (+ x y)) (Just 1) (Just 2))" "(Just 3)" '(:elaborate t))
+(tl-test-eval tl-prelude-lift-a2-maybe-nothing
+  "(lift-a2 (lambda (x y) (+ x y)) (Just 1) Nothing)" "Nothing" '(:elaborate t))
+(tl-test-eval tl-prelude-lift-a2-list
+  "(lift-a2 (lambda (x y) (Cons x (Cons y Nil))) (Cons 1 Nil) (Cons 2 Nil))"
+  "(Cons (Cons 1 (Cons 2 Nil)) Nil)" '(:elaborate t))
+(tl-test-eval tl-prelude-state-lift-a2-explicit
+  "((state-lift-a2 (lambda (x y) (+ x y)) (state-return 1) (state-return 2)) 0)"
+  "(Pair 3 0)")
+(tl-test-eval tl-prelude-state-lift-a2-thread
+  "((state-lift-a2 (lambda (x y) (+ x y)) (state-return 1) (state-get)) 7)"
+  "(Pair 8 7)")
+(tl-test-eval tl-prelude-reader-lift-a2-explicit
+  "((reader-lift-a2 (lambda (x y) (+ x y)) (reader-return 1) (reader-return 2)) 5)"
+  "3")
+
+;; Reader verbs.
+(tl-test-eval tl-prelude-asks "((asks (lambda (r) (+ r 1))) 5)" "6")
+(tl-test-eval tl-prelude-local-asks
+  "((local (lambda (r) (* r 10)) (asks (lambda (x) (+ x 1)))) 5)" "51")
+
+;; The same tower with the default options: the explicit-dictionary
+;; verbs work, the elaborated ones name the method they miss.
+(tl-test-eval tl-prelude-tower-mappend-default "(mappend MonoidIntDict 3 4)" "7")
+(tl-test-eval tl-prelude-tower-mconcat-default
+  "(mconcat MonoidIntDict (Cons 1 (Cons 2 Nil)))" "3")
+(tl-test-eval tl-prelude-tower-foldr-explicit-dict
+  "(foldr FoldableListDict (lambda (x acc) (+ x acc)) 0 (Cons 1 (Cons 2 Nil)))" "3")
+(tl-test-eval tl-prelude-tower-traverse-explicit-dicts
+  "(traverse TraversableListDict ApplicativeMaybeDict (lambda (x) (Just x)) (Cons 1 Nil))"
+  "(Just (Cons 1 Nil))")
+(tl-test-eval tl-prelude-tower-asks-default "((asks (lambda (r) (+ r 1))) 5)" "6")
+
+;; The walls: a non-dictionary where one belongs, and the methods
+;; that need the elaborator's insertion.
+(tl-test-reject tl-prelude-mappend-rejects-a-non-dictionary
+  "(mappend Nil 1)" "Cannot apply mappend to Nil" '(:elaborate t))
+(tl-test-reject tl-prelude-foldr-rejects-mismatched-element-types
+  "(foldr (lambda (x acc) x) 0 (Just \"s\"))" "Cannot apply foldr" '(:elaborate t))
+(tl-test-reject tl-prelude-length-rejects-a-non-container
+  "(length \"abc\")" "Cannot apply length to" '(:elaborate t))
 
 (provide 'prelude-test)
 ;;; prelude-test.el ends here

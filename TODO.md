@@ -358,6 +358,94 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     (24 registrations; the sole diff against the base loaddefs is the
     deleted file's prefix entry).
 
+- [x] **P1-14 The category tower landed: `Monoid`, `Foldable`,
+  `Traversable` and `lift-a2`** -- cats pulled locally
+  (`~/.config/emacs/elpaca/sources/emacs-cats`) and its protocol
+  surface compared face by face before writing anything.  The design,
+  each piece pinned by a probe first: `Monoid' is dictionaries only --
+  `mempty' is a value in the record rather than a function, so its
+  three verbs take the dictionary explicitly and work in phase B, and
+  `string-append' is redefined through `string-join' under a signature
+  (elisp owns the bare name).  `Foldable' is a class: its `foldr'
+  scheme applies only the class parameter itself, which is what the
+  parse wall in `tl-type-head' lets through, and `to-list', `length'
+  and `fold-map' are three-line derivations over it; the old List-only
+  `length'/`foldr' are gone, so default-mode callers pass
+  `FoldableListDict' or switch `:elaborate' on (the two old pins got
+  the option, their renders unchanged).  `Traversable' is dictionaries
+  only -- a method scheme may not apply a free scheme variable in
+  argument position, where it parses as a rigid constructor and the
+  call site then refuses every dictionary -- with `traverse'/`mapm'
+  accessors and `sequence-a'/`sequence' on top; `maybe-traverse' goes
+  through the `lift' field so its pure appears at one type in both
+  clauses (the helper-split alternative died on the
+  monomorphic-across-clauses wall for bare parameters).  `lift-a2'
+  joins the `Applicative' class under an infix `(a -> b -> c)' scheme
+  with a third dictionary field, and every lift implementation
+  uncurries the binary function itself: a partially applied
+  multi-parameter lambda silently fills its missing arguments with nil
+  at runtime (the S0 family), and `fmap' feeds one element at a time --
+  traverse passes plain binary lambdas across the field boundary and
+  the implementation does the wrapping.  `asks' and `local' arrive in
+  the raw `reader-fmap' style the reader's transparent function type
+  lives in.
+  - [x] What cats ships that this round did not take, and why:
+    `cats-find' -- a convenience over `to-list' whose early exit a
+    strict `foldr' cannot express, and a First-style monoid was one
+    abstraction too far for this round; the ziplist datatype and its
+    applicative -- data, not protocol, nothing in the engine blocks
+    it; the Maybe extraction helpers `cats-just'/`cats-maybe'; the
+    State runners `eval-state'/`exec-state'/`run-state'/
+    `state-modify' -- a state is a plain function here, run by
+    applying and read by taking the `Pair'; `cats-seq' -- `do' and
+    `bind' say the same thing, and the prelude's `seq' builtin is
+    strict sequencing, a different animal; elisp-vector instances --
+    termlisp has no vector type to stand for one.  `cats-partial'
+    cannot be ported honestly at all: partial application is the
+    runtime wall above, which is also why cats composes its own
+    `lift-a2' through `cats-partial' while the prelude uncurries
+    instead.  Either gets no instances on either side -- cats ships
+    none either, and the compound constructor cannot stand in
+    class-parameter position here.
+  - [x] **New finding: the whole-file inference and the submission
+    inference diverge.**  The same `state-lift-a2' body, submitted
+    alone, infers the sound threading; loaded as part of the prelude
+    file it comes out with `mx' unconstrained and the result `s -> ?'
+    carrying no `Pair'.  The value preserve oracle caught it on the
+    spot ("Cannot apply state-ap to mx") -- the round's only genuine
+    `violated' verdict -- and an explicit signature pins what the body
+    implements (verdict `preserved', scheme sound on both paths).  The
+    batch-generalization divergence itself is left to the engine.
+  - [x] Two pre-existing walls confirmed while probing, recorded not
+    fixed: an applied type variable cannot unify with an arrow, so the
+    elided-dictionary `lift-a2' call cannot take State/Reader
+    arguments (their values are functions) -- the implementation-level
+    pins call `state-lift-a2'/`reader-lift-a2' directly; and a
+    successful elaboration zonks a dictionary value's stored type, so
+    the stock `monad-return MaybeDict' refuses its second type in the
+    same env -- probes and tests stay on the fresh-env-per-evaluation
+    model the suite already uses.
+  - [x] Oracle pins moved with the prelude and nothing was pinned
+    away: kind-violated 12 -> 30 in three shapes the reasons report
+    verbatim (a pattern variable declared a value and applied; a
+    constructor application where a proper type is required -- both
+    `Cons'-folding rules; the lift implementations' uncurrying lambda,
+    which has function kind), value-cannot 8 -> 13 (the dict-taking
+    patterns plus the two `Foldable'-constrained derived verbs), and
+    the docstrings rewritten to describe exactly the families the
+    checkers report.  `length' is the one asymmetry the new text
+    names: the kind side reads its reduct as a type that kinds.
+  - [x] Red/green: with the tests kept and only the prelude reverted
+    to `7a84068', 45 of the 49 selector-matched tower and oracle tests
+    fail; the three that pass are wall-pins whose rejection is
+    unchanged behaviour (`foldr'/`length' refusing a non-container,
+    `(length Nil)' answering 0 on the old implementation too).
+  - [x] Gates: suite 608/608 (46 new pins, two old pins switched to
+    `:elaborate t'), `make compile' 0 warnings and every library file
+    clean in isolation, checkdoc identical normalized multiset against
+    a fresh `7a84068' worktree, parsecheck OK, `loaddefs-generate'
+    prints no prefix warning.
+
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
 - [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open

@@ -88,20 +88,28 @@ the value side does."
 ;;; The oracle: the prelude's own type-level rules
 
 (defconst kind-preserve-test--violated
-  '(num-mul num-sub num-add maybe-ap ap pure return bind fmap
+  '(maybe-mapm list-mapm-bind list-mapm maybe-traverse list-traverse
+    mapm traverse fold-map to-list foldr endo-mappend run-endo mappend
+    num-mul num-sub num-add reader-lift-a2 state-lift-a2 list-lift-a2
+    maybe-lift-a2 maybe-ap lift-a2 ap pure return bind fmap
     monad-fmap monad-bind monad-return)
   "Prelude rules the kind checker refuses, by name.
-Each is the implementation of a class method, and each reduct applies
-a variable the pattern declared a value.  The pattern takes the
-method out of its dictionary -- `(num-add (NumDict add sub mul) a
-b)' -- and the dictionary constructor has already said what came out
-is a value: its fields are types, so the lifted kind of the
-constructor asks for `univ' of their types, the kind of the values it
-stores, and `univ(T)' is no `karr' that an application could consume.
-The reduct applies it anyway -- `(add a b)' -- and the reduct does not
-kind.  The value checker cannot decide this family at all, no scheme
-covering the dict-taking pattern, while the kind side can see it, and
-what it sees it refuses.")
+The kind side reads every reduct as a type with the pattern's
+variables shared, and these thirty reducts it refuses, in three
+shapes the reasons report verbatim.  A variable the pattern
+declared a value, applied: the dictionary-field family -- `num-add'
+applies its `add', `foldr' applies the `FoldableDict' field `fo',
+`traverse' and `mapm' apply their two dict fields, `mappend'
+applies the `MonoidDict' field `app', `run-endo' and `endo-mappend'
+apply the `Endo' field `f' -- and the four lift implementations,
+whose uncurrying wrapper leaves a `(lambda (y) (f x y))' of
+function kind where the reading wants `*'.  A constructor
+application where a proper type is required: `to-list' and
+`list-mapm-bind' both fold with `Cons', whose lifted kind asks for
+values and whose answer has kind `List', not `*'.  The value
+checker sees none of this -- the family it cannot decide is pinned
+separately in `preserve-test--cannot' -- and every other reduct is
+preserved.")
 
 (ert-deftest tl-kind-preserve-oracle-buckets-the-prelude-rules ()
   "Every prelude rule gets the verdict the findings above predict.

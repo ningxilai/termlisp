@@ -41,11 +41,23 @@
 (require 'termlisp)
 
 (defconst preserve-test--cannot
-  '(num-add num-sub num-mul ap pure return bind fmap)
+  '(fold-map length to-list foldr num-add num-sub num-mul ap pure
+    return bind fmap lift-a2)
   "Prelude rules the checker cannot decide at all.
-Each is the implementation of a class method: the type environment
-holds only the dict-erased method scheme, so the dict-taking pattern
-the rule matches has no scheme to be typed against.")
+Each pattern names a function whose stored scheme the pattern
+reading cannot instantiate.  For the class-method implementations
+and dictionary accessors -- `num-add', `ap', `pure', `return',
+`bind', `fmap', `lift-a2', `foldr', `fold-map' -- the pattern
+takes the dictionary apart itself and the type environment holds
+only the dict-erased method scheme with its class constraint
+unsolved, so the application does not type.  For the two verbs
+`Foldable' derives -- `length' and `to-list' -- the inferred
+scheme carries the same kind of unsolved constraint, a `Foldable'
+the reading has no instance to solve, and the pattern's plain
+variable argument is refused alongside it.  The kind side refuses
+all of these but `length', whose reduct it reads as a type that
+kinds; the names it refuses are pinned in
+`kind-preserve-test--violated'.")
 
 (defun preserve-test--env ()
   "Return an environment with the few definitions the synthetic rules use.
