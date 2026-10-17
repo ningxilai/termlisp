@@ -413,7 +413,8 @@ explicitly and work in either mode. `Ziplist` wraps a list as the
 applicative that zips — `ap` pairs element by element and truncates at
 the shortest side, and `pure` delivers one element, since eager lists
 carry no `repeat` to stand for the lawful identity — and it carries
-`Functor`, `Applicative` and `Foldable` instances, as cats gives it.
+`Functor`, `Applicative` and `Foldable` instances, as cats gives it,
+plus a `Traversable` walk cats does not ship.
 
 Types are propositions and programs are proofs, so the prelude carries the
 constructive connectives:
@@ -644,7 +645,9 @@ The prelude defines the booleans, pairs, `Either`/`Void`, lists, `Nat`,
 (`traverse`, `mapm`, `sequence`, `sequence-a`), the reader's
 `asks`/`local`, the ziplist datatype and its `Functor`, `Applicative`
 and `Foldable` instances (`ziplist-pure`, `ziplist-ap`,
-`ziplist-lift-a2`, `ziplist-fmap`, `ziplist-foldr`), together with the
+`ziplist-lift-a2`, `ziplist-fmap`, `ziplist-foldr`), its Traversable
+walk (`ziplist-traverse`, `ziplist-mapm`, `ziplist-cons`,
+`TraversableZiplistDict`), together with the
 operators
 `=`, `xor`, `null?`, `map`, `foldl`, `reverse` and `sort`, and an
 arithmetic library: `abs`, `signum`, `min`, `max`, `positive?`,

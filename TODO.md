@@ -527,6 +527,54 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     CALLER-ENV; the rewrite does), parsecheck OK,
     `loaddefs-generate' prints no prefix warning (24 registrations).
 
+- [x] **P1-16 Ziplist's Traversable, past what cats ships** -- asked
+  for by name after P1-15 recorded "no Traversable because cats has
+  none".  The omission is not a soundness finding: ZipList in Haskell's
+  base carries a Traversable instance, the wrap makes the walk lawful
+  -- identity at `Ziplist Nil', composition and left-to-right effect
+  order inherited from the list underneath -- and cats-data-ziplist
+  simply never grew one.  The walk mirrors `list-traverse'/`list-mapm'
+  one level down, `ziplist-ap' style: `ziplist-traverse' and
+  `ziplist-mapm' open the ziplist, the `-list' workers walk the inner
+  list and rebuild it under the effect, and `ziplist-cons' is what a
+  combining lambda reaches for because the tail arrives already
+  wrapped.  Three findings the probes forced out of the first
+  implementation, none visible by reading: the recursion passed the
+  bare inner `xs' and died at the second level with `No matching
+  clause'; the combining lambda wore `(Ziplist (Cons y zs))' with `zs'
+  already a Ziplist, nesting a ziplist inside every list tail; and the
+  nested `(Ziplist (Cons x xs))' pattern made the kind oracle return
+  cannot-check for both rules -- the pattern side reads `(Ziplist Nil)'
+  as a type and `Ziplist's parameter asks for a `*' where `Nil'
+  delivers a `List' -- which the kind gate forbids outright.  The
+  `ziplist-ap'/`ziplist-ap-step' split fixes all three at once: a flat
+  `(Ziplist xs)' pattern keeps the kind reader's variable, and the
+  workers' verdicts return to the families the oracle already speaks.
+  - [x] The entry points' printed schemes look detached (dict fields,
+    `g' and the result each their own quantifier), so soundness was
+    probed rather than assumed: under `:type-check t' a well-typed
+    call is accepted and both a non-function `g' and an element-type
+    mismatch are rejected at the call site (`Cannot apply
+    ziplist-traverse to 42'), the threading the scheme print hides
+    being enforced where it matters.
+  - [x] Oracles: kind-violated 33 -> 37 -- `ziplist-mapm-bind' joins
+    the dictionary-field family (applies the `b' its pattern bound),
+    the two `-list' workers fold `Ziplist' over a `List' beside
+    `ziplist-pure', `ziplist-cons' gets its own one-rule family
+    (`Cons' handed an element where its second field wants a `List');
+    `ziplist-traverse'/`ziplist-mapm' themselves come back preserved,
+    their reducts calling a named worker whose scheme kinds.
+    preserve-cannot unchanged at 13, preserve-violated 0.
+  - [x] Tests: 9 new ziplist pins -- traverse through Maybe (with the
+    short circuit), through the list applicative (the cartesian
+    product), at `Ziplist Nil', and through the ziplist applicative
+    itself where truncation leaves one branch; mapm with its short
+    circuit; `sequence-a' and `sequence'.  Every rendering probed,
+    none hand-computed.
+  - [x] Gates: suite 646/646, parsecheck OK, `make compile' 0
+    warnings, checkdoc and `loaddefs-generate' clean over the round's
+    single .el edit (the oracle test's name list and docstring).
+
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
 - [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open

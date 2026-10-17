@@ -88,30 +88,37 @@ the value side does."
 ;;; The oracle: the prelude's own type-level rules
 
 (defconst kind-preserve-test--violated
-  '(maybe-mapm list-mapm-bind list-mapm maybe-traverse list-traverse
-    mapm traverse fold-map to-list foldr endo-mappend run-endo mappend
-    num-mul num-sub num-add reader-lift-a2 state-lift-a2 list-lift-a2
-    maybe-lift-a2 ziplist-lift-a2 maybe-ap ziplist-ap-step lift-a2 ap
-    pure ziplist-pure return bind fmap monad-fmap monad-bind monad-return)
+  '(maybe-mapm list-mapm-bind ziplist-mapm-bind list-mapm maybe-traverse
+    list-traverse mapm traverse fold-map to-list foldr endo-mappend
+    run-endo mappend num-mul num-sub num-add reader-lift-a2
+    state-lift-a2 list-lift-a2 maybe-lift-a2 ziplist-lift-a2 maybe-ap
+    ziplist-ap-step lift-a2 ap pure ziplist-pure ziplist-cons
+    ziplist-traverse-list ziplist-mapm-list return bind fmap
+    monad-fmap monad-bind monad-return)
   "Prelude rules the kind checker refuses, by name.
 The kind side reads every reduct as a type with the pattern's
-variables shared, and these thirty-three reducts it refuses, in
+variables shared, and these thirty-seven reducts it refuses, in
 three shapes the reasons report verbatim.  A variable the pattern
 declared a value, applied: the dictionary-field family -- `num-add'
 applies its `add', `foldr' applies the `FoldableDict' field `fo',
 `traverse' and `mapm' apply their two dict fields, `mappend'
 applies the `MonoidDict' field `app', `run-endo' and `endo-mappend'
 apply the `Endo' field `f', `ziplist-ap-step' applies the `f' its
-`(Cons f fs)' pattern bound -- and the five lift implementations,
-whose uncurrying wrapper leaves a `(lambda (y) (f x y))' of
-function kind where the reading wants `*'.  A constructor
-application where a proper type is required: `to-list' and
-`list-mapm-bind' both fold with `Cons', whose lifted kind asks for
-values and whose answer has kind `List', not `*', and
+`(Cons f fs)' pattern bound, and `ziplist-mapm-bind' applies the
+`b' its `(MonadDict b r f)' pattern bound -- and the five lift
+implementations, whose uncurrying wrapper leaves a `(lambda (y) (f
+x y))' of function kind where the reading wants `*'.  A
+constructor application where a proper type is required: `to-list'
+and `list-mapm-bind' both fold with `Cons', whose lifted kind asks
+for values and whose answer has kind `List', not `*';
 `ziplist-pure' folds with `Ziplist' the same way, its argument a
-`List' where the reading wants a `*'.  The value checker sees none
-of this -- the family it cannot decide is pinned separately in
-`preserve-test--cannot' -- and every other reduct is preserved.")
+`List' where the reading wants a `*', as do the ziplist
+Traversable's two `-list' workers in their empty case; and
+`ziplist-cons' rebuilds `(Ziplist (Cons x xs))' with `Cons' handed
+an element where its second field wants a `List'.  The value
+checker sees none of this -- the family it cannot decide is pinned
+separately in `preserve-test--cannot' -- and every other reduct is
+preserved.")
 
 (ert-deftest tl-kind-preserve-oracle-buckets-the-prelude-rules ()
   "Every prelude rule gets the verdict the findings above predict.

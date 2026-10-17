@@ -553,6 +553,36 @@
   "(length (Ziplist (Cons 1 (Cons 2 Nil))))" "2" '(:elaborate t))
 (tl-test-eval tl-zip-to-list
   "(to-list (Ziplist (Cons 1 (Cons 2 Nil))))" "(Cons 1 (Cons 2 Nil))" '(:elaborate t))
+
+;;; Ziplist Traversable
+
+(tl-test-eval tl-zip-traverse-maybe
+  "(traverse TraversableZiplistDict ApplicativeMaybeDict (lambda (x) (Just (+ x 1))) (Ziplist (Cons 1 (Cons 2 Nil))))"
+  "(Just (Ziplist (Cons 2 (Cons 3 Nil))))")
+(tl-test-eval tl-zip-traverse-maybe-short-circuit
+  "(traverse TraversableZiplistDict ApplicativeMaybeDict (lambda (x) (if (= x 2) Nothing (Just x))) (Ziplist (Cons 1 (Cons 2 Nil))))"
+  "Nothing")
+(tl-test-eval tl-zip-traverse-list
+  "(traverse TraversableZiplistDict ApplicativeListDict (lambda (x) (Cons x (Cons (* x 10) Nil))) (Ziplist (Cons 1 (Cons 2 Nil))))"
+  "(Cons (Ziplist (Cons 1 (Cons 2 Nil))) (Cons (Ziplist (Cons 1 (Cons 20 Nil))) (Cons (Ziplist (Cons 10 (Cons 2 Nil))) (Cons (Ziplist (Cons 10 (Cons 20 Nil))) Nil))))")
+(tl-test-eval tl-zip-traverse-empty
+  "(traverse TraversableZiplistDict ApplicativeMaybeDict (lambda (x) (Just x)) (Ziplist Nil))"
+  "(Just (Ziplist Nil))")
+(tl-test-eval tl-zip-traverse-through-ziplist-truncates
+  "(traverse TraversableZiplistDict ApplicativeZiplistDict (lambda (x) (Ziplist (Cons x (Cons (* x 10) Nil)))) (Ziplist (Cons 1 (Cons 2 Nil))))"
+  "(Ziplist (Cons (Ziplist (Cons 1 (Cons 2 Nil))) Nil))")
+(tl-test-eval tl-zip-mapm-maybe
+  "(mapm TraversableZiplistDict MaybeDict (lambda (x) (Just (+ x 1))) (Ziplist (Cons 1 (Cons 2 Nil))))"
+  "(Just (Ziplist (Cons 2 (Cons 3 Nil))))")
+(tl-test-eval tl-zip-mapm-maybe-short-circuit
+  "(mapm TraversableZiplistDict MaybeDict (lambda (x) (if (= x 2) Nothing (Just x))) (Ziplist (Cons 1 (Cons 2 Nil))))"
+  "Nothing")
+(tl-test-eval tl-zip-sequence-a
+  "(sequence-a TraversableZiplistDict ApplicativeMaybeDict (Ziplist (Cons (Just 1) (Cons (Just 2) Nil))))"
+  "(Just (Ziplist (Cons 1 (Cons 2 Nil))))")
+(tl-test-eval tl-zip-sequence
+  "(sequence TraversableZiplistDict MaybeDict (Ziplist (Cons (Just 1) (Cons (Just 2) Nil))))"
+  "(Just (Ziplist (Cons 1 (Cons 2 Nil))))")
 (tl-test-eval tl-app-method-waiting-for-its-dictionary
   "(fmap (lambda (x) (+ x 1)) (Ziplist (Cons 1 Nil)))" "#<partial>")
 

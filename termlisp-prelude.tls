@@ -404,7 +404,8 @@
 ;; shortest -- eager lists carry no `repeat' to stand for the lawful
 ;; identity, so the identity law holds on one-element ziplists and
 ;; nowhere else.  `cats' gives the type Functor, Applicative and
-;; Foldable instances; this does the same, over the wrapped list.
+;; Foldable instances; this does the same, over the wrapped list, and
+;; adds the Traversable pair cats does not ship.
 (datatype Ziplist (Ziplist (List a)))
 (define (ziplist-pure v) (Ziplist (Cons v Nil)))
 (define (ziplist-fmap f (Ziplist xs)) (Ziplist (list-fmap f xs)))
@@ -428,9 +429,36 @@
 (define (ziplist-lift-a2 f mf mx)
   (ziplist-ap (ziplist-fmap (lambda (x) (lambda (y) (f x y))) mf) mx))
 (define (ziplist-foldr f z (Ziplist xs)) (list-foldr f z xs))
+;; The Traversable pair, past what cats ships.  The walk mirrors
+;; `list-traverse'/`list-mapm' one level down, `ziplist-ap' style:
+;; the entry point opens the ziplist and the `-list' workers rebuild
+;; the wrapped list under the effect, reaching for `ziplist-cons'
+;; when a combining lambda has only the wrapped tail in hand.  The
+;; opening is not only style: a nested `(Ziplist (Cons x xs))'
+;; pattern would hand the kind reader a `List' where Ziplist's
+;; parameter asks for a `*', and the rule would go undecided rather
+;; than violated.
+(define (ziplist-cons x (Ziplist xs)) (Ziplist (Cons x xs)))
+(define (ziplist-traverse (ApplicativeDict p ap l) g (Ziplist xs))
+  (ziplist-traverse-list (ApplicativeDict p ap l) g xs))
+(define (ziplist-traverse-list (ApplicativeDict p ap l) g Nil)
+  (p (Ziplist Nil)))
+(define (ziplist-traverse-list (ApplicativeDict p ap l) g (Cons x xs))
+  (l (lambda (y zs) (ziplist-cons y zs)) (g x)
+     (ziplist-traverse-list (ApplicativeDict p ap l) g xs)))
+(define (ziplist-mapm (MonadDict b r f) g (Ziplist xs))
+  (ziplist-mapm-list (MonadDict b r f) g xs))
+(define (ziplist-mapm-list (MonadDict b r f) g Nil)
+  (r (Ziplist Nil)))
+(define (ziplist-mapm-list (MonadDict b r f) g (Cons x xs))
+  (ziplist-mapm-bind (MonadDict b r f) g x
+                     (ziplist-mapm-list (MonadDict b r f) g xs)))
+(define (ziplist-mapm-bind (MonadDict b r f) g x acc)
+  (b (g x) (lambda (y) (f (lambda (zs) (ziplist-cons y zs)) acc))))
 (define FunctorZiplistDict (FunctorDict ziplist-fmap))
 (define ApplicativeZiplistDict (ApplicativeDict ziplist-pure ziplist-ap ziplist-lift-a2))
 (define FoldableZiplistDict (FoldableDict ziplist-foldr))
+(define TraversableZiplistDict (TraversableDict ziplist-traverse ziplist-mapm))
 (instance (Functor Ziplist) FunctorZiplistDict)
 (instance (Applicative Ziplist) ApplicativeZiplistDict)
 (instance (Foldable Ziplist) FoldableZiplistDict)
