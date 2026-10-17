@@ -327,6 +327,116 @@
 (tl-test-eval tl-do-fmap "(fmap (lambda (x) (+ x 1)) (Just 4))" "(Just 5)" '(:elaborate t))
 (tl-test-eval tl-do-num-add "(num-add 1 2)" "3" '(:elaborate t))
 
+;;; load: loading .tls definitions from a program
+
+;; `load' reads a `.tls' file and evaluates its forms into the running
+;; environment.  The evaluator already resolves a call head through the
+;; environment at the moment the call is applied, so definitions that
+;; arrive mid-run are visible to whatever runs next -- checker included:
+;; a later form of the same submission is typechecked against the names
+;; the loaded file declared.
+
+(defun tl-test--tls-file (content)
+  "Write CONTENT to a fresh temporary `.tls' file and return its name."
+  (let ((file (make-temp-file "tl-load-test" nil ".tls")))
+    (with-temp-file file (insert content))
+    file))
+
+(ert-deftest tl-load-defines-a-function ()
+  "A loaded definition answers calls made after the load runs."
+  (let ((file (tl-test--tls-file "(define (lib-double n) (* n 2))")))
+    (should (equal (tl-test--render
+                    (format "(seq (load %S) (lib-double 21))" file) nil)
+                   "42"))))
+
+(ert-deftest tl-load-visible-to-later-typechecked-forms ()
+  "A submission's later forms typecheck against the loaded definitions."
+  (let ((file (tl-test--tls-file "(define (lib-double n) (* n 2))")))
+    (should (equal (tl-test--render
+                    (format "(load %S)\n(lib-double 21)" file)
+                    '(:type-check t))
+                   "42"))))
+
+(ert-deftest tl-load-answers-unit ()
+  "The load itself renders as the unit value."
+  (let ((file (tl-test--tls-file "(define (lib-id x) x)")))
+    (should (equal (tl-test--render (format "(load %S)" file) nil)
+                   "Unit"))))
+
+(ert-deftest tl-load-relative-path-expands-against-default-directory ()
+  "A relative file name resolves against the host's `default-directory'."
+  (let* ((dir (make-temp-file "tl-load-test" t))
+         (default-directory dir))
+    (with-temp-file (expand-file-name "lib.tls" dir)
+      (insert "(define (lib-nine) 9)"))
+    (should (equal (tl-test--render
+                    "(seq (load \"lib.tls\") (lib-nine))" nil)
+                   "9"))))
+
+(ert-deftest tl-load-missing-file-errors ()
+  "An unreadable file is refused with the name in the message."
+  (let ((got (tl-test--render "(load \"/nonexistent/tl-load-no-such.tls\")"
+                              nil)))
+    (should (string-prefix-p "ERR:" got))
+    (should (string-match-p (regexp-quote "cannot read") got))))
+
+(ert-deftest tl-load-non-string-argument-errors ()
+  "A non-String argument is a type error naming the builtin."
+  (let ((got (tl-test--render "(load 42)" nil)))
+    (should (string-prefix-p "ERR:" got))
+    (should (string-match-p
+             (regexp-quote "load expects a String, got 42") got))))
+
+(ert-deftest tl-load-forward-reference-inside-file ()
+  "Inside the loaded file a definition may use a later one."
+  (let ((file (tl-test--tls-file
+               "(define (lib-a n) (lib-b n))\n(define (lib-b n) (+ n 10))")))
+    ;; The use is a later form, not part of the load's own form: a
+    ;; submission is checked before it runs, so only a form evaluated
+    ;; after the load can name what the load declared.
+    (should (equal (tl-test--render
+                    (format "(load %S)\n(lib-a 5)" file)
+                    '(:type-check t))
+                   "15"))))
+
+(ert-deftest tl-load-datatype-reaches-the-checker ()
+  "A loaded datatype's constructors are registered for later checking."
+  (let ((file (tl-test--tls-file
+               "(datatype Color (Red) (Green))\n(define (is-red c) (eq c Red))")))
+    (should (equal (tl-test--render
+                    (format "(load %S)\n(is-red Red)" file)
+                    '(:type-check t))
+                   "True"))))
+
+(ert-deftest tl-load-nested-file ()
+  "A loaded file may itself load another file."
+  (let* ((inner (tl-test--tls-file "(define (lib-inc n) (+ n 1))"))
+         (outer (tl-test--tls-file
+                 (format "(load %S)\n(define (lib-inc2 n) (lib-inc n))"
+                         inner))))
+    (should (equal (tl-test--render
+                    (format "(seq (load %S) (lib-inc2 41))" outer) nil)
+                   "42"))))
+
+(ert-deftest tl-load-parse-error-names-the-file ()
+  "A parse error inside the file carries the file's name."
+  (let* ((file (tl-test--tls-file "(define (oops"))
+         (got (tl-test--render (format "(load %S)" file) nil)))
+    (should (string-prefix-p "ERR:" got))
+    (should (string-match-p (regexp-quote file) got))))
+
+(ert-deftest tl-load-coverage-queue-waits-for-the-submission ()
+  "Loading mid-submission does not flush the submission's coverage queue."
+  (let ((file (tl-test--tls-file "(define (lib-id x) x)")))
+    (should (equal (tl-test--render
+                    (format (concat "(define (spread (Cons x xs)) x)\n"
+                                    "(load %S)\n"
+                                    "(define (spread Nil) Nil)\n"
+                                    "(spread Nil)")
+                            file)
+                    '(:type-check t :elaborate t :coverage t))
+                   "Nil"))))
+
 ;;; Examples quoted in the README
 
 (tl-test-eval tl-readme-and-implies-or "(define (and-implies-or (Pair a b)) (Left a)) (and-implies-or (Pair 1 2))" "(Left 1)" '(:type-check t :elaborate t))

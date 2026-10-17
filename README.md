@@ -315,6 +315,12 @@ They are fine everywhere else — the REPL, `termlisp-eval-file` and
 `termlisp-eval` all go through the reader instead. If you need either at
 the top level of a file, evaluate it through `termlisp-eval-file`.
 
+A termlisp program does not go through `termlisp-load` at all: the
+`load` builtin reads its file with the termlisp reader, so both of
+these forms load from inside termlisp — an extension of a
+`(datatype open ...)` and a top-level `do`, in checked and unchecked
+environments alike.
+
 ### Patterns
 
 `tl-pattern-parse` (`termlisp-pattern.el:55`) turns a surface pattern into
@@ -636,7 +642,11 @@ API:
   `zero?`, `even?`, `odd?`, `absurd`, `factorial`, `floor`, `ceiling`,
   `round`, `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`, `seq`, `first`,
   `rest`, `empty?`, `list`, `format`, `print`, `read-line`, `stdin`,
-  `string-join`, `string->list`, `list->string`.
+  `string-join`, `string->list`, `list->string`, `load`. `load` takes a
+  file name — a relative one expands against the host's
+  `default-directory` — and evaluates the file's forms into the running
+  environment as one batch, answering `Unit`; the definitions it makes
+  are visible to later forms and calls, the typechecker included.
 
 The prelude defines the booleans, pairs, `Either`/`Void`, lists, `Nat`,
 `Vec`, `Fin`, `Eq`, monads and type classes, the categorical tower —

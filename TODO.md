@@ -575,6 +575,63 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     warnings, checkdoc and `loaddefs-generate' clean over the round's
     single .el edit (the oracle test's name list and docstring).
 
+- [x] **P1-17 A `load` primitive: a termlisp program reaches its
+  libraries** -- asked for by name ("add a load primitive so .tls
+  definitions can be loaded").  Two properties the evaluator already
+  had made it cheap: a call head resolves through
+  `tl-env-functions'/`tl-env-globals' of `termlisp--current-env' at the
+  moment the call is applied (`tl-run'), and `tl-run' keeps that
+  variable dynamically bound for as long as it runs, thunk forcing
+  included -- so definitions installed mid-run are visible to whatever
+  runs next with no new plumbing.  The primitive therefore lives in
+  `termlisp-eval', not `termlisp-builtins': loading needs
+  `termlisp-parse-file' and the batch machinery, and builtins sit below
+  the reader.  It reads the file with the termlisp reader rather than
+  the elisp macros `termlisp-load' defines, so a `.tls' file is one
+  artifact whichever side loads it and a host that never required that
+  file can still load libraries -- the reader skips the magic-string
+  line as a comment, and load never writes the file (probed: content
+  and mtime unchanged).  The file is one batch, exactly as a
+  submission: its declarations are knowable forward inside it
+  (`termlisp-collect-forward-names' plus `tl-forward--link') and its
+  coverage is flushed once with the enclosing batch's queue set aside
+  and restored (`unwind-protect'), so loading mid-submission cannot
+  report the submission's half-written functions -- the queue-sharing
+  hazard the elisp-side `termlisp-load' never had, because there the
+  two batches are never nested.  One semantic boundary fell out of the
+  first test run rather than out of the design: a submission is
+  checked before it runs, so a same-form use like
+  `(seq (load F) (lib-a 5))' cannot typecheck -- the loaded names
+  belong to later forms, checker included -- and the pin that wanted
+  file-internal forward references became a two-form submission.  The
+  red run taught its own lesson: the isolated-compile gate's `.elc'
+  files survived the source stash, so the first red run loaded the new
+  compiled code and came back falsely green (263/263 in 4.6s instead
+  of 45s -- the timing gave it away); deleting every `.elc' produced
+  the honest red, exactly the 11 new pins failing.
+  - [x] Scheme `String -> Unit' registered beside the other bundled
+    primitives in `termlisp-ir-types'; the builtin answers the `Unit'
+    symbol, the prelude's nullary constructor, which is the runtime
+    representation a zero-argument constructor value always had.
+  - [x] Tests: 11 new pins -- a loaded definition answers later calls;
+    a submission's later forms typecheck against it (and against a
+    loaded datatype's constructors); the load answers `Unit'; a
+    relative name expands against `default-directory'; a missing file
+    and a non-String argument are refused naming the builtin; a file's
+    own forward references survive the load; a loaded file may load
+    another; a parse error carries the file's name; and a
+    mid-submission load leaves the submission's coverage queue for the
+    submission's own flush (`spread' split across the load boundary
+    reports nothing).  Every render probed.
+  - [x] Red/green: with only the two source files reverted, exactly
+    the 11 new tests fail (the other 252 in the file pass); restored,
+    all pass.
+  - [x] Gates: suite 657/657, `make compile' 0 warnings, per-file
+    isolated compile clean, parsecheck 36 files OK, checkdoc
+    multiset identical to a fresh `290b113' base (356),
+    `loaddefs-generate' clean (`termlisp--load-tls-file' is internal,
+    no prefix change).
+
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
 - [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open

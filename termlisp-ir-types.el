@@ -473,6 +473,11 @@ result is left unconstrained rather than aborting the whole program."
 (let ((a (tl-fresh-tvar)))
   (tl-register-builtin-type 'absurd
     (tl-tscheme (list a) (tl-tarrow (tl-tcon 'Void nil) a))))
+;; `load' reads a `.tls' file into the environment it runs in and
+;; answers `Unit', the prelude's unit datatype; its argument is the file
+;; name as a String.
+(tl-register-builtin-type 'load
+  (tl-tscheme nil (tl-tarrow (tl-tstring) (tl-tunit))))
 
 ;;; HM schemes for the exact-numeric IR helpers.
 ;;

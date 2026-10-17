@@ -985,5 +985,80 @@ Loading goes through `load', so `termlisp-load' must be required for the
       (tl-forward--link))
     termlisp--load-env))
 
+;;; load ----------------------------------------------------------------
+;; A termlisp program reaches its libraries through the `load' builtin:
+;; it reads a `.tls' file and evaluates the file's forms into the
+;; environment the call is running in, so the definitions the file makes
+;; are visible to whatever runs next -- a later form of the same
+;; submission, the rest of the calling function, or the REPL.  Two
+;; properties of the evaluator make that work without new plumbing: a
+;; call head resolves through `tl-env-functions'/`tl-env-globals' of
+;; `termlisp--current-env' at the moment the call is applied, and
+;; `tl-run' keeps that variable dynamically bound for as long as it
+;; runs, thunk forcing included.  The primitive therefore lives here and
+;; not in `termlisp-builtins', which sits below the reader: loading
+;; needs `termlisp-parse-file' and the batch machinery above it.  It
+;; reads the file with the termlisp reader rather than through the elisp
+;; `load' macros `termlisp-load' defines, so a host that never required
+;; that file can still load libraries, and a `.tls' file is one artifact
+;; whichever side loads it.
+
+(defun termlisp--load-tls-file (file env)
+  "Load the `.tls' FILE into ENV as one batch, answering `Unit'.
+FILE's forms run through `termlisp-eval-form', so ENV's `:type-check'
+and `:elaborate' options decide how each is checked and every name the
+file declares lands in ENV's own tables -- which is where the evaluator
+looks names up, so a later form sees them whether it belongs to the
+loading submission or arrives afterwards.  The file is one batch: its
+declarations are knowable forward inside it, by the same forward-name
+machinery a submission gets, and its coverage is flushed once with the
+enclosing batch's queue set aside and restored, so loading in the middle
+of a submission cannot report that submission's half-written functions.
+A parse error is re-signalled naming FILE, an unreadable file is
+refused before any form is evaluated, and the file itself is only read,
+never rewritten -- the `.tls' magic string is an editor convention the
+reader skips as a comment."
+  (unless (file-readable-p file)
+    (signal 'termlisp-eval-error
+            (list (format "load: cannot read %s" file))))
+  (let ((forms
+         (condition-case e
+             (termlisp-parse-file file)
+           (termlisp-parse-error
+            (signal 'termlisp-parse-error
+                    (list (format "%s: %s" file (cadr e))))))))
+    (let ((tl-infer-forward-names (termlisp-collect-forward-names forms))
+          (tl-infer-forward-vars (or tl-infer-forward-vars
+                                     (make-hash-table :test #'eq)))
+          (tl-infer-forward-order nil)
+          (tl-infer-forward-regen (or tl-infer-forward-regen
+                                      (make-hash-table :test #'eq)))
+          (outer-queue tl-coverage-announcements))
+      (unwind-protect
+          (let ((tl-coverage-announcements nil))
+            (dolist (form forms)
+              (termlisp-eval-form form env))
+            ;; The file is one batch, so this is the first moment every
+            ;; definition in it has all of its clauses.
+            (tl-forward--link)
+            (tl-run-post-batch))
+        (setq tl-coverage-announcements outer-queue))))
+  'Unit)
+
+(tl-register-builtin 'load
+  (lambda (args)
+    (unless (= (length args) 1)
+      (signal 'termlisp-type-error
+              (list (format "load expects 1 argument, got %d"
+                            (length args)))))
+    (let ((file (car args)))
+      (unless (stringp file)
+        (signal 'termlisp-type-error
+                (list (format "load expects a String, got %S" file))))
+      ;; A relative name expands against the host's `default-directory',
+      ;; the same rule `load' itself follows for its own files.
+      (termlisp--load-tls-file (expand-file-name file)
+                               termlisp--current-env))))
+
 (provide 'termlisp-eval)
 ;;; termlisp-eval.el ends here
