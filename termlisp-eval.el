@@ -55,8 +55,11 @@ Defined in `termlisp-load.el'; declared here so `termlisp-load-prelude'
 byte-compiles without a free-variable warning.")
 
 (defconst termlisp--magic-string
-  ";;; -*- lexical-binding: t; mode: emacs-lisp; -*-"
-  "First-line magic string marking a term-lisp (.tls) source file.")
+  ";;; -*- lexical-binding: t; mode: scheme; -*-"
+  "First-line magic string marking a term-lisp (.tls) source file.
+It names `scheme-mode' because that is the language the file is
+written in; it is only read as elisp.  `load' ignores the file-local
+part, so the line decides how the buffer looks and nothing else.")
 
 ;;; Thunks ---------------------------------------------------------------
 
@@ -89,13 +92,17 @@ byte-compiles without a free-variable warning.")
 
 ;;; Lambda application ---------------------------------------------------
 
+(defun tl-bind-param-thunks (params thunks base-env)
+  "Extend BASE-ENV binding PARAMS to THUNKS in order."
+  (let ((new base-env) (params params) (thunks thunks))
+    (while params
+      (push (cons (car params) (car thunks)) new)
+      (setq params (cdr params) thunks (cdr thunks)))
+    new))
+
 (defun tl-bind-params (params args base-env caller-env)
   "Extend BASE-ENV binding PARAMS to thunks of ARGS evaluated in CALLER-ENV."
-  (let ((new base-env) (params params) (args args))
-    (while params
-      (push (cons (car params) (tl-make-thunk (car args) caller-env)) new)
-      (setq params (cdr params) args (cdr args)))
-    new))
+  (tl-bind-param-thunks params (tl-make-arg-thunks args caller-env) base-env))
 
 ;;; Clause selection -----------------------------------------------------
 
@@ -129,20 +136,82 @@ byte-compiles without a free-variable warning.")
       (setq clauses (cdr clauses)))
     result))
 
-(defun tl-apply-step (fv args caller-env)
-  "Return `(BODY . ENV)' to continue applying FV to ARGS, or signal."
+(defun tl-clause-arity (clause)
+  "Return the number of arguments CLAUSE binds.
+That is its parameter count less any `rest' parameter, which
+absorbs whatever else the call supplies."
+  (cl-count-if-not (lambda (p) (eq (car p) 'rest)) (tl-clause-params clause)))
+
+(defun tl-clauses-min-arity (clauses)
+  "Return the smallest arity among CLAUSES."
+  (cl-loop for c in clauses minimize (tl-clause-arity c)))
+
+(defun tl-clauses-max-arity (clauses)
+  "Return the largest arity among CLAUSES."
+  (cl-loop for c in clauses maximize (tl-clause-arity c)))
+
+(defun tl-apply-clauses (clauses arg-thunks label)
+  "Return (BODY ENV SURPLUS) for the first CLAUSES member matching ARG-THUNKS.
+Fewer arguments than every clause binds yields the pending
+application itself, a `tl-partial' over the clause list; more
+arguments than any clause binds runs the clause that takes the
+leading ones and leaves the rest in SURPLUS, for the caller to
+apply to what the body produces.  LABEL names the callee in the
+error when no clause matches."
+  (let ((n (length arg-thunks))
+        (sel (tl-select-clause clauses arg-thunks)))
+    (cond
+     (sel (list (tl-clause-body (car sel)) (cdr sel) nil))
+     ((< n (tl-clauses-min-arity clauses))
+      (tl-make-partial (tl-make-function clauses) arg-thunks))
+     ((> n (tl-clauses-max-arity clauses))
+      (let ((lead (tl-select-clause
+                   clauses
+                   (cl-subseq arg-thunks 0 (tl-clauses-max-arity clauses)))))
+        (if lead
+            (list (tl-clause-body (car lead)) (cdr lead)
+                  (nthcdr (tl-clause-arity (car lead)) arg-thunks))
+          (signal 'termlisp-eval-error
+                  (list (format "No matching clause for %s" label))))))
+     (t (signal 'termlisp-eval-error
+                (list (format "No matching clause for %s" label)))))))
+
+(defun tl-apply-thunks (fv arg-thunks label)
+  "Return (BODY ENV SURPLUS) to continue applying FV to ARG-THUNKS, or signal.
+A callee that binds more arguments than arrived yields the
+`tl-partial' value itself, which remembers this call and continues
+it on the next application; SURPLUS holds the argument thunks FV
+did not consume, for the caller to apply to what the body
+produces.  LABEL names the callee in the no-clause error."
   (cond
+   ((tl-partial-p fv)
+    (tl-apply-thunks (tl-partial-fv fv)
+                     (append (tl-partial-args fv) arg-thunks)
+                     label))
    ((tl-closure-p fv)
-    (cons (tl-closure-body fv)
-          (tl-bind-params (tl-closure-params fv) args (tl-closure-env fv) caller-env)))
+    (let ((params (tl-closure-params fv)))
+      (if (< (length arg-thunks) (length params))
+          (tl-make-partial fv arg-thunks)
+        (list (tl-closure-body fv)
+              (tl-bind-param-thunks params arg-thunks (tl-closure-env fv))
+              (nthcdr (length params) arg-thunks)))))
    ((tl-function-p fv)
-    (let ((sel (tl-select-clause (tl-function-clauses fv)
-                                 (tl-make-arg-thunks args caller-env))))
-      (if sel
-          (cons (tl-clause-body (car sel)) (cdr sel))
-        (signal 'termlisp-eval-error '("No matching clause for function value")))))
+    (tl-apply-clauses (tl-function-clauses fv) arg-thunks label))
+   ((and (symbolp fv)
+         (gethash fv (tl-env-functions termlisp--current-env)))
+    (tl-apply-thunks
+     (tl-make-function (gethash fv (tl-env-functions termlisp--current-env)))
+     arg-thunks label))
    (t (signal 'termlisp-eval-error
               (list (format "Not a function: %S" fv))))))
+
+(defun tl-apply-step (fv args caller-env label)
+  "Return (BODY ENV SURPLUS) to continue applying FV to ARGS, or signal.
+CALLER-ENV is where ARGS are evaluated when their parameter is
+bound; see `tl-apply-thunks' for the pending application a partial
+one yields and the SURPLUS a caller must apply to the body's
+result.  LABEL names the callee in errors."
+  (tl-apply-thunks fv (tl-make-arg-thunks args caller-env) label))
 
 (defun tl-resolve-callable (fv)
   "Resolve FV to a closure/function object, or return it unchanged."
@@ -349,8 +418,14 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
             (let ((head (car control)) (args (cdr control)))
               (cond
                ((and (consp head) (eq (car head) 'lambda))
-                (setq cenv (tl-bind-params (cadr head) args cenv cenv))
-                (setq control (caddr head)))
+                (let ((step (tl-apply-step
+                             (tl-make-closure (cadr head) (caddr head) cenv)
+                             args cenv "lambda")))
+                  (if (tl-partial-p step)
+                      (setq value step mode 'ret)
+                    (when (caddr step)
+                      (push (list 'apply (caddr step)) kont))
+                    (setq control (car step) cenv (cadr step)))))
                ((eq head 'lambda)
                 (setq value (tl-make-closure (cadr control) (caddr control) cenv)
                       mode 'ret))
@@ -385,15 +460,21 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
                               (let ((tk (car arg-thunks)))
                                 (setq cenv (tl-thunk-env tk)
                                       control (tl-thunk-expr tk)))))
-                        (let ((step (tl-apply-step fv args cenv)))
-                          (setq control (car step) cenv (cdr step))))))
+                        (let ((step (tl-apply-step fv args cenv "value")))
+                          (if (tl-partial-p step)
+                              (setq value step mode 'ret)
+                            (when (caddr step)
+                              (push (list 'apply (caddr step)) kont))
+                            (setq control (car step) cenv (cadr step)))))))
                    (fns
-                    (let ((sel (tl-select-clause fns (tl-make-arg-thunks args cenv))))
-                      (if sel
-                          (progn (setq cenv (cdr sel))
-                                 (setq control (tl-clause-body (car sel))))
-                        (signal 'termlisp-eval-error
-                                (list (format "No matching clause for %S" head))))))
+                    (let ((step (tl-apply-clauses fns
+                                                  (tl-make-arg-thunks args cenv)
+                                                  (format "%S" head))))
+                      (if (tl-partial-p step)
+                          (setq value step mode 'ret)
+                        (when (caddr step)
+                          (push (list 'apply (caddr step)) kont))
+                        (setq cenv (cadr step) control (car step)))))
                    ((tl-builtin-p head)
                     (let ((fn (gethash head tl-builtins))
                           (arg-thunks (tl-make-arg-thunks args cenv)))
@@ -421,8 +502,12 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
                           (let ((tk (car arg-thunks)))
                             (setq cenv (tl-thunk-env tk)
                                   control (tl-thunk-expr tk)))))
-                    (let ((step (tl-apply-step fv args cenv)))
-                      (setq control (car step) cenv (cdr step))))))))))
+                    (let ((step (tl-apply-step fv args cenv "value")))
+                      (if (tl-partial-p step)
+                          (setq value step mode 'ret)
+                        (when (caddr step)
+                          (push (list 'apply (caddr step)) kont))
+                        (setq control (car step) cenv (cadr step)))))))))))
         ;; return mode
         (if (null kont)
             (setq done t)
@@ -444,6 +529,25 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
                      (setq cenv (tl-thunk-env tk)
                            control (tl-thunk-expr tk)
                            mode 'eval)))))
+              ('apply
+               ;; A surplus of arguments: apply what the body produced to
+               ;; the thunks the callee did not consume.
+               (let* ((extra (nth 1 frame))
+                      (fv (tl-resolve-callable
+                           (if (tl-thunk-p value) (tl-force value) value))))
+                 (if (tl-builtin-fn-p fv)
+                     (let ((fn (gethash (tl-builtin-fn-name fv) tl-builtins)))
+                       (push (list 'builtin fn nil (cdr extra)) kont)
+                       (let ((tk (car extra)))
+                         (setq cenv (tl-thunk-env tk)
+                               control (tl-thunk-expr tk)
+                               mode 'eval)))
+                   (let ((step (tl-apply-thunks fv extra "surplus")))
+                     (if (tl-partial-p step)
+                         (setq value step mode 'ret)
+                       (when (caddr step)
+                         (push (list 'apply (caddr step)) kont))
+                       (setq control (car step) cenv (cadr step) mode 'eval))))))
               (_ (signal 'termlisp-eval-error
                          (list (format "Unknown continuation frame: %S" frame)))))))))
     value))
@@ -459,18 +563,23 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
          ((stringp x) (push x out))
          (t
           (setq x (if (tl-thunk-p x) (tl-force x) x))
-          (cond
-           ((consp x)
-            (push "(" out)
-            (push ")" stack)
-            (let* ((vec (vconcat x)) (n (length vec)))
-              (dotimes (k n)
-                (let ((idx (- n 1 k)))
-                  (push (aref vec idx) stack)
-                  (when (> idx 0) (push " " stack))))))
-           ((tl-closure-p x) (push "#<closure>" out))
-           ((tl-function-p x) (push "#<function>" out))
-           (t (push (format "%s" x) out)))))))
+          (let ((foreign (tl-foreign-repr x)))
+            (cond
+             ;; A foreign representation renders in its own notation
+             ;; (see `tl-value-printers'), before the structural walk.
+             (foreign (push foreign out))
+             ((consp x)
+              (push "(" out)
+              (push ")" stack)
+              (let* ((vec (vconcat x)) (n (length vec)))
+                (dotimes (k n)
+                  (let ((idx (- n 1 k)))
+                    (push (aref vec idx) stack)
+                    (when (> idx 0) (push " " stack))))))
+             ((tl-closure-p x) (push "#<closure>" out))
+             ((tl-function-p x) (push "#<function>" out))
+             ((tl-partial-p x) (push "#<partial>" out))
+             (t (push (format "%s" x) out))))))))
     (apply #'concat (nreverse out))))
 
 ;;; Top-level forms ------------------------------------------------------
@@ -744,19 +853,14 @@ Handles top-level `do' desugaring like `termlisp-eval', and honors the
       (signal 'termlisp-hole (list (tl-goal-lines tl-infer-holes))))
     (tl-eval-top env form)))
 
-(defun termlisp-eval (string &optional env)
-  "Parse and evaluate STRING in ENV (creating a fresh env if nil).
-
-A top-level `do' is desugared before inference/elaboration so that a
-type-directed `(do ...)' exposes its `bind'/`return' class-method calls to
-the elaborator.  A `do' nested inside a larger expression is instead
-desugared at evaluation time by `tl-run' and is therefore not elaborated:
-nested type-directed `do' (without an explicit monad operand) remains a
-known limitation."
+(defun termlisp--eval-forms (forms env)
+  "Evaluate FORMS in ENV as one batch and return the last value.
+A name declared by a later form in FORMS is knowable while an earlier
+one is checked, and forward references are linked once the whole batch
+has run.  ENV defaults to a fresh environment."
   (let* ((env (or env (termlisp-make-env)))
-         (forms (termlisp-parse string))
-         ;; One input is one unit: a name declared by a later form in
-         ;; STRING is knowable here even though it is not yet in ENV.
+         ;; One input is one unit: a name declared by a later form is
+         ;; knowable here even though it is not yet in ENV.
          (tl-infer-forward-names (termlisp-collect-forward-names forms))
          (tl-infer-forward-vars (or tl-infer-forward-vars
                                     (make-hash-table :test #'eq)))
@@ -766,10 +870,45 @@ known limitation."
          (result nil))
     (prog1 (dolist (form forms result)
              (setq result (termlisp-eval-form form env)))
-      ;; The whole string is one unit, so every definition it declares
+      ;; The whole batch is one unit, so every definition it declares
       ;; is now in ENV and the references made to a forward name before
       ;; its definition arrived can be told what it really was.
       (tl-forward--link))))
+
+(defun termlisp-eval (string &optional env)
+  "Parse and evaluate STRING in ENV (creating a fresh env if nil).
+
+A top-level `do' is desugared before inference/elaboration so that a
+type-directed `(do ...)' exposes its `bind'/`return' class-method calls to
+the elaborator.  A `do' nested inside a larger expression is instead
+desugared at evaluation time by `tl-run' and is therefore not elaborated:
+nested type-directed `do' (without an explicit monad operand) remains a
+known limitation."
+  (termlisp--eval-forms (termlisp-parse string) env))
+
+(defun termlisp-eval-submission (string &optional env)
+  "Evaluate STRING in ENV as one submission and return its printed value.
+ENV defaults to a fresh environment.  This is the driver every
+front-end shares: STRING is parsed as one unit (so a name a later form
+declares is knowable while an earlier one is checked), every form runs
+through `termlisp-eval-form', forward references are linked, the
+post-batch coverage check runs once the submission succeeded -- the
+first moment every clause of a function typed across it is present --
+and a queue left behind by a submission that failed partway is dropped
+rather than reported at the next one.  Return nil when STRING holds no
+top-level forms.  A form the checker leaves with holes signals
+`termlisp-hole' with its goals from inside the batch."
+  (let ((forms (termlisp-parse string)))
+    (unwind-protect
+        (when forms
+          (prog1 (termlisp-value->string
+                  (termlisp--eval-forms forms env))
+            (tl-run-post-batch)))
+      ;; A submission that failed partway left a function holding only
+      ;; some of its clauses.  Reporting it now would name a clause the
+      ;; user has not typed yet, so the queue is dropped instead -- the
+      ;; same half-written state `tl-run-post-batch' refuses to report.
+      (setq tl-coverage-announcements nil))))
 
 (defun termlisp--ensure-magic-string (file)
   "Ensure FILE begins with `termlisp--magic-string', inserting it if absent.
@@ -845,6 +984,81 @@ Loading goes through `load', so `termlisp-load' must be required for the
       ;; they came out with depend on this.
       (tl-forward--link))
     termlisp--load-env))
+
+;;; load ----------------------------------------------------------------
+;; A termlisp program reaches its libraries through the `load' builtin:
+;; it reads a `.tls' file and evaluates the file's forms into the
+;; environment the call is running in, so the definitions the file makes
+;; are visible to whatever runs next -- a later form of the same
+;; submission, the rest of the calling function, or the REPL.  Two
+;; properties of the evaluator make that work without new plumbing: a
+;; call head resolves through `tl-env-functions'/`tl-env-globals' of
+;; `termlisp--current-env' at the moment the call is applied, and
+;; `tl-run' keeps that variable dynamically bound for as long as it
+;; runs, thunk forcing included.  The primitive therefore lives here and
+;; not in `termlisp-builtins', which sits below the reader: loading
+;; needs `termlisp-parse-file' and the batch machinery above it.  It
+;; reads the file with the termlisp reader rather than through the elisp
+;; `load' macros `termlisp-load' defines, so a host that never required
+;; that file can still load libraries, and a `.tls' file is one artifact
+;; whichever side loads it.
+
+(defun termlisp--load-tls-file (file env)
+  "Load the `.tls' FILE into ENV as one batch, answering `Unit'.
+FILE's forms run through `termlisp-eval-form', so ENV's `:type-check'
+and `:elaborate' options decide how each is checked and every name the
+file declares lands in ENV's own tables -- which is where the evaluator
+looks names up, so a later form sees them whether it belongs to the
+loading submission or arrives afterwards.  The file is one batch: its
+declarations are knowable forward inside it, by the same forward-name
+machinery a submission gets, and its coverage is flushed once with the
+enclosing batch's queue set aside and restored, so loading in the middle
+of a submission cannot report that submission's half-written functions.
+A parse error is re-signalled naming FILE, an unreadable file is
+refused before any form is evaluated, and the file itself is only read,
+never rewritten -- the `.tls' magic string is an editor convention the
+reader skips as a comment."
+  (unless (file-readable-p file)
+    (signal 'termlisp-eval-error
+            (list (format "load: cannot read %s" file))))
+  (let ((forms
+         (condition-case e
+             (termlisp-parse-file file)
+           (termlisp-parse-error
+            (signal 'termlisp-parse-error
+                    (list (format "%s: %s" file (cadr e))))))))
+    (let ((tl-infer-forward-names (termlisp-collect-forward-names forms))
+          (tl-infer-forward-vars (or tl-infer-forward-vars
+                                     (make-hash-table :test #'eq)))
+          (tl-infer-forward-order nil)
+          (tl-infer-forward-regen (or tl-infer-forward-regen
+                                      (make-hash-table :test #'eq)))
+          (outer-queue tl-coverage-announcements))
+      (unwind-protect
+          (let ((tl-coverage-announcements nil))
+            (dolist (form forms)
+              (termlisp-eval-form form env))
+            ;; The file is one batch, so this is the first moment every
+            ;; definition in it has all of its clauses.
+            (tl-forward--link)
+            (tl-run-post-batch))
+        (setq tl-coverage-announcements outer-queue))))
+  'Unit)
+
+(tl-register-builtin 'load
+  (lambda (args)
+    (unless (= (length args) 1)
+      (signal 'termlisp-type-error
+              (list (format "load expects 1 argument, got %d"
+                            (length args)))))
+    (let ((file (car args)))
+      (unless (stringp file)
+        (signal 'termlisp-type-error
+                (list (format "load expects a String, got %S" file))))
+      ;; A relative name expands against the host's `default-directory',
+      ;; the same rule `load' itself follows for its own files.
+      (termlisp--load-tls-file (expand-file-name file)
+                               termlisp--current-env))))
 
 (provide 'termlisp-eval)
 ;;; termlisp-eval.el ends here

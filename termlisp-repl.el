@@ -7,6 +7,13 @@
 ;; the running Emacs, so definitions made at the prompt stay in the session
 ;; and can be inspected from ordinary Emacs Lisp.
 ;;
+;; The buffer is the whole front-end: comint does the line editing, history
+;; and echo, and every question about term-lisp itself is answered through
+;; the library's API -- `termlisp-read-complete-p' says whether an input may
+;; be sent, `termlisp-eval-submission' evaluates it as one unit and returns
+;; the printed value.  No interpreter wiring lives in this file; it formats
+;; what comes back.
+;;
 ;; The buffer hosts a placeholder process: comint insists on one, but it never
 ;; receives input.  `comint-input-sender' is replaced by
 ;; `termlisp-repl--send', which evaluates the input comint just echoed and
@@ -25,6 +32,7 @@
 (require 'comint)
 (require 'termlisp-eval)
 (require 'termlisp-load)
+(require 'termlisp-reader)
 
 (defgroup termlisp-repl nil
   "Interactive REPL for term-lisp."
@@ -63,12 +71,16 @@ was created with; see `termlisp-repl-toggle-type-check' and
 
 (defvar termlisp-repl-mode-syntax-table
   (let ((table (make-syntax-table)))
-    (modify-syntax-entry ?\( "(" table)
-    (modify-syntax-entry ?\) ")" table)
-    (modify-syntax-entry ?\[ "(" table)
-    (modify-syntax-entry ?\] ")" table)
-    (modify-syntax-entry ?\{ "(" table)
-    (modify-syntax-entry ?\} ")" table)
+    ;; The second character of a descriptor names the partner, and it is
+    ;; from there that `matching-paren' answers -- electric-pair asks it
+    ;; what a typed opener should be paired with.  Classes alone pair
+    ;; nothing, and a nil answer pairs the character with itself.
+    (modify-syntax-entry ?\( "()" table)
+    (modify-syntax-entry ?\) ")(" table)
+    (modify-syntax-entry ?\[ "(]" table)
+    (modify-syntax-entry ?\] ")[" table)
+    (modify-syntax-entry ?\{ "(}" table)
+    (modify-syntax-entry ?\} "){" table)
     (modify-syntax-entry ?\; "<" table)
     (modify-syntax-entry ?\n ">" table)
     (modify-syntax-entry ?\" "\"" table)
@@ -130,26 +142,7 @@ was created with; see `termlisp-repl-toggle-type-check' and
       (set-process-query-on-exit-flag proc nil)
       (delete-process proc))))
 
-;;; Reading and evaluating
-
-(defun termlisp-repl--complete-p (input)
-  "Return non-nil when INPUT ends after a complete top-level form.
-Whitespace and comments are skipped.  Hitting the end of file while
-reading a form means more input is needed; any other read error does
-not, and is reported when the input is evaluated."
-  (with-temp-buffer
-    (insert input)
-    (goto-char (point-min))
-    (when (boundp 'read-eval)
-      (set (make-local-variable 'read-eval) nil))
-    (let ((read-circle nil))
-      (condition-case nil
-          (progn
-            (while (termlisp--skip-trivia)
-              (read (current-buffer)))
-            t)
-        (end-of-file nil)
-        (error t)))))
+;;; Input and output
 
 (defun termlisp-repl--pending-input ()
   "Return the input between the process mark and point, or nil.
@@ -164,43 +157,6 @@ to send."
 (defun termlisp-repl--exit-p (input)
   "Return non-nil if INPUT is the REPL `exit' or `quit' command."
   (string-match-p "\\`[ \t\n]*\\(?:exit\\|quit\\)[ \t\n]*\\'" input))
-
-(defun termlisp-repl--eval-string (input)
-  "Evaluate INPUT in the REPL environment and return its printed value.
-A form with holes never reaches here: the checker signals `termlisp-hole'
-with its goals before anything is run, and `termlisp-repl--send' shows
-them.  Return nil when INPUT holds no top-level forms."
-  (let* ((env termlisp-repl--env)
-         (value nil)
-         (forms (termlisp-parse input))
-         ;; One REPL submission is one unit, so a line may declare a
-         ;; name it uses earlier in that same line.
-         (tl-infer-forward-names (termlisp-collect-forward-names forms))
-         (tl-infer-forward-vars (or tl-infer-forward-vars
-                                    (make-hash-table :test #'eq)))
-         (tl-infer-forward-order nil)
-         (tl-infer-forward-regen (or tl-infer-forward-regen
-                                     (make-hash-table :test #'eq))))
-    (when forms
-      (unwind-protect
-          (prog1
-              (progn
-                (dolist (form forms value)
-                  (setq value (termlisp-eval-form form env)))
-                ;; The submission is one batch, so a use made of a
-                ;; forward name before its definition was read can now
-                ;; be told what it really was.
-                (tl-forward--link)
-                (termlisp-value->string value))
-            ;; A submission is this driver's batch, so this is the first
-            ;; moment every clause of a function typed in on this line is
-            ;; present and a coverage check can mean anything.
-            (tl-run-post-batch))
-        ;; A submission that failed partway left a function holding only
-        ;; some of its clauses.  Reporting it now would name a clause the
-        ;; user has not typed yet, so the queue is dropped instead -- the
-        ;; same half-written state `tl-run-post-batch' refuses to report.
-        (setq tl-coverage-announcements nil)))))
 
 (defun termlisp-repl--error-message (err)
   "Return a short display string for condition ERR."
@@ -223,7 +179,7 @@ INPUT and advanced the process mark."
       (termlisp-repl--write "Bye.\n")
     (unwind-protect
         (condition-case err
-            (let ((result (termlisp-repl--eval-string input)))
+            (let ((result (termlisp-eval-submission input termlisp-repl--env)))
               (when result
                 (termlisp-repl--write (concat result "\n"))))
           (quit (termlisp-repl--write "Quit\n"))
@@ -249,7 +205,7 @@ forms; otherwise a newline and an indentation are inserted."
      ((and input (termlisp-repl--exit-p input))
       (comint-send-input)
       (termlisp-repl-exit))
-     ((or (null input) (termlisp-repl--complete-p input))
+     ((or (null input) (termlisp-read-complete-p input))
       (comint-send-input))
      (t
       (newline-and-indent)))))

@@ -49,6 +49,25 @@
 ;; program's own comparisons run under.
 (defvar tl-nbe-reduce-env)
 
+;; Defined by termlisp-kinds, which requires this file and so cannot be
+;; required back.  A batch byte-compile meets this file after kinds has
+;; already been loaded into the image and never needs telling; native
+;; compilation compiles each file alone, in a fresh process, and there
+;; only the declarations below know the kind functions exist.  The
+;; `fboundp' guards at every call stay as they are -- they are what
+;; keeps a host that loaded `termlisp-types' by itself from calling a
+;; kind function nothing answers -- and the declarations are about the
+;; compiler knowing, not about the call being allowed.
+(declare-function tl-karr "termlisp-kinds" (a b))
+(declare-function tl-kind-freshen "termlisp-kinds" (&optional memo))
+(declare-function tl-kind-whnf "termlisp-kinds" (k))
+(declare-function tl-kind-unify "termlisp-kinds" (a b))
+(declare-function tl-kind->string "termlisp-kinds" (k))
+;; `tl-kind-star' is kinds' `defconst' for `*'; it is read here while
+;; building a datatype's early kind, inside the same `fboundp' guard as
+;; the calls above.
+(defvar tl-kind-star)
+
 ;;; Representation: a type is a `tl-node' from `termlisp-graph'.
 ;;; A constructor application `(C a b)' is a compound node, a bare
 ;;; constructor `Int' is a leaf node, and a type variable is a variable
@@ -809,6 +828,18 @@ which variables qualify."
   "Dynamically bound list of constraints collected during inference.
 Each element is a `tl-constraint'.  Entry points rebind this to nil so
 that constraints do not leak between top-level forms.")
+
+(defvar tl-type-lenient-clauses nil
+  "When non-nil, clauses of a definition that do not share one type are
+treated as an overloaded name with an unconstrained scheme rather than
+an error.  The lowering IR is full of overloaded primitives, and for a
+type oracle a lenient scheme is more useful than a hard failure.")
+
+(defvar tl-type-lenient nil
+  "When non-nil, unification failures are tolerated (the oracle mode).
+Used when typing the lowering IR, whose higher-order/tuple/overload
+shapes are broader than the HM core; a lenient result is preferred to
+a hard failure.")
 
 (defvar tl-elab-active nil
   "Non-nil while inference should record class-method call sites.
@@ -1721,18 +1752,6 @@ best-effort: an unreadable type is not worth losing the error over."
               (format "\n  this clause gives:  %s"
                       (tl-type-text (tl-type-to-datum got))))
     (error "")))
-
-(defvar tl-type-lenient-clauses nil
-  "When non-nil, clauses of a definition that do not share one type are
-treated as an overloaded name with an unconstrained scheme rather than
-an error.  The lowering IR is full of overloaded primitives, and for a
-type oracle a lenient scheme is more useful than a hard failure.")
-
-(defvar tl-type-lenient nil
-  "When non-nil, unification failures are tolerated (the oracle mode).
-Used when typing the lowering IR, whose higher-order/tuple/overload
-shapes are broader than the HM core; a lenient result is preferred to
-a hard failure.")
 
 (defun tl-clause--pattern-term (env pattern)
   "The term node PATTERN denotes in ENV, or nil when it denotes nothing to put.

@@ -426,6 +426,16 @@ result is left unconstrained rather than aborting the whole program."
 (dolist (n '(sin cos tan exp log sqrt))
   (tl-register-builtin-type n
     (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tint)))))
+;; The roundings take a number the checker reads as `Int' (a float
+;; literal included, per the literal rule) and hand back a whole one,
+;; so `Int -> Int' is both the convention and the truth here.
+(dolist (n '(floor ceiling round))
+  (tl-register-builtin-type n
+    (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tint)))))
+;; `factorial' is a builtin for the reason termlisp-builtins gives;
+;; its scheme is Integer all the way.
+(tl-register-builtin-type 'factorial
+  (tl-tscheme nil (tl-tarrow (tl-tint) (tl-tint))))
 ;; `format' takes the format string (the runtime only accepts "~a") and then
 ;; the value to render.
 (let ((a (tl-fresh-tvar)))
@@ -463,14 +473,19 @@ result is left unconstrained rather than aborting the whole program."
 (let ((a (tl-fresh-tvar)))
   (tl-register-builtin-type 'absurd
     (tl-tscheme (list a) (tl-tarrow (tl-tcon 'Void nil) a))))
+;; `load' reads a `.tls' file into the environment it runs in and
+;; answers `Unit', the prelude's unit datatype; its argument is the file
+;; name as a String.
+(tl-register-builtin-type 'load
+  (tl-tscheme nil (tl-tarrow (tl-tstring) (tl-tunit))))
 
 ;;; HM schemes for the exact-numeric IR helpers.
 ;;
 ;; These model Aldor's `Integer'/`DoubleFloat' tower, where an exact operand
-;; promotes the operation to Calc's `frac'/`cplx' representation.  The value
-;; universe has no `Fraction' or `Complex' constructor (see
+;; promotes the operation to Calc's `frac'/`cplx'/`float' representation.  The
+;; value universe has no `Fraction', `Complex' or `Bigfloat' constructor (see
 ;; `tl-ir-value-type-names'), so the operators are typed polymorphically over
-;; the tower and the two constructors answer an opaque result.
+;; the tower and the constructors answer an opaque result.
 (let ((a (tl-fresh-tvar)))
   (dolist (n '(tl-num-add tl-num-sub tl-num-mul tl-num-div tl-num-quo))
     (tl-register-builtin-type n
@@ -478,11 +493,19 @@ result is left unconstrained rather than aborting the whole program."
 (let ((a (tl-fresh-tvar)))
   (tl-register-builtin-type 'tl-num-zero?
     (tl-tscheme (list a) (tl-tarrow a (tl-tbool)))))
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type 'tl-num-less?
+    (tl-tscheme (list a) (tl-tarrow a (tl-tarrow a (tl-tbool))))))
 (let ((r (tl-fresh-tvar)))
   (dolist (n '(tl-fraction tl-complex))
     (tl-register-builtin-type n
       (tl-tscheme (list r)
                   (tl-tarrow (tl-tint) (tl-tarrow (tl-tint) r))))))
+;; `tl-bigfloat' carries its precision as the second argument; the
+;; result is a tower value again, so it answers the operand's type.
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type 'tl-bigfloat
+    (tl-tscheme (list a) (tl-tarrow a (tl-tarrow (tl-tint) a)))))
 
 ;;; Handle / reference types.
 

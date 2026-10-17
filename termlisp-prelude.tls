@@ -1,4 +1,4 @@
-;;; -*- lexical-binding: t; mode: emacs-lisp; -*-
+;;; -*- lexical-binding: t; mode: scheme; -*-
 ;;; term-lisp standard prelude
 
 ;; Booleans
@@ -180,13 +180,14 @@
 ;; above keep working unchanged (they receive the dictionary explicitly).
 
 (datatype FunctorDict (FunctorDict fmap))
-(datatype ApplicativeDict (ApplicativeDict pure ap))
+(datatype ApplicativeDict (ApplicativeDict pure ap lift))
 
 (class Functor (f) nil
   (fmap ((-> a b) -> (f a) -> (f b))))
 (class Applicative (f) nil
   (pure (a -> (f a)))
-  (ap ((f (-> a b)) -> (f a) -> (f b))))
+  (ap ((f (-> a b)) -> (f a) -> (f b)))
+  (lift-a2 ((a -> b -> c) -> (f a) -> (f b) -> (f c))))
 (class Monad (m) nil
   (bind ((m a) -> (-> a (m b)) -> (m b)))
   (return (a -> (m a))))
@@ -194,8 +195,9 @@
 (define (fmap (FunctorDict impl) g x) (impl g x))
 (define (bind (MonadDict b r f) m k) (b m k))
 (define (return (MonadDict b r f) x) (r x))
-(define (pure (ApplicativeDict p a) x) (p x))
-(define (ap (ApplicativeDict p a) mf mx) (a mf mx))
+(define (pure (ApplicativeDict p a l) x) (p x))
+(define (ap (ApplicativeDict p a l) mf mx) (a mf mx))
+(define (lift-a2 (ApplicativeDict p a l) f mx my) (l f mx my))
 
 (define FunctorMaybeDict (FunctorDict maybe-fmap))
 (define FunctorListDict (FunctorDict list-fmap))
@@ -221,10 +223,34 @@
 (define (reader-pure v) (lambda (r) v))
 (define (reader-ap mf mx) (lambda (r) ((mf r) (mx r))))
 
-(define ApplicativeMaybeDict (ApplicativeDict maybe-pure maybe-ap))
-(define ApplicativeListDict (ApplicativeDict list-pure list-ap))
-(define ApplicativeStateDict (ApplicativeDict state-pure state-ap))
-(define ApplicativeReaderDict (ApplicativeDict reader-pure reader-ap))
+;; The lift implementations call the binary function on both arguments
+;; at once.  A termlisp closure would answer a partial application,
+;; but a builtin like `+' has none -- `(+ x)' is elisp's unary `+' --
+;; and one call keeps both kinds of function value working.
+(define (maybe-lift-a2 f mf mx)
+  (maybe-ap (maybe-fmap (lambda (x) (lambda (y) (f x y))) mf) mx))
+(define (list-lift-a2 f mf mx)
+  (list-ap (list-fmap (lambda (x) (lambda (y) (f x y))) mf) mx))
+;; The first lift that carries its signature (the ziplist lift below is
+;; the second).  Loaded as part of the
+;; whole file, this body's inferred scheme loses the state threading
+;; -- `mx' comes out unconstrained and the result `s -> ?' carries no
+;; Pair -- though the same body submitted on its own infers soundly.
+;; The signature states the threading the body implements.
+(: state-lift-a2 (-> (a : *) (b : *) (c : *) (s : *) (s1 : *) (s2 : *)
+                     (f : (-> a (-> b c)))
+                     (mf : (-> s (Pair a s1)))
+                     (mx : (-> s1 (Pair b s2)))
+                     (-> s (Pair c s2))))
+(define (state-lift-a2 f mf mx)
+  (state-ap (state-fmap (lambda (x) (lambda (y) (f x y))) mf) mx))
+(define (reader-lift-a2 f mf mx)
+  (reader-ap (reader-fmap (lambda (x) (lambda (y) (f x y))) mf) mx))
+
+(define ApplicativeMaybeDict (ApplicativeDict maybe-pure maybe-ap maybe-lift-a2))
+(define ApplicativeListDict (ApplicativeDict list-pure list-ap list-lift-a2))
+(define ApplicativeStateDict (ApplicativeDict state-pure state-ap state-lift-a2))
+(define ApplicativeReaderDict (ApplicativeDict reader-pure reader-ap reader-lift-a2))
 
 (instance (Functor Maybe) FunctorMaybeDict)
 (instance (Functor List) FunctorListDict)
@@ -262,16 +288,12 @@
 ;; List library
 (define (head (Cons x xs)) x)
 (define (tail (Cons x xs)) xs)
-(define (length Nil) 0)
-(define (length (Cons x xs)) (+ 1 (length xs)))
 (define (append Nil ys) ys)
 (define (append (Cons x xs) ys) (Cons x (append xs ys)))
 (define (map-list f Nil) Nil)
 (define (map-list f (Cons x xs)) (Cons (f x) (map-list f xs)))
 (define (filter f Nil) Nil)
 (define (filter f (Cons x xs)) (if (f x) (Cons x (filter f xs)) (filter f xs)))
-(define (foldr f z Nil) z)
-(define (foldr f z (Cons x xs)) (f x (foldr f z xs)))
 (define (foldl f z Nil) z)
 (define (foldl f z (Cons x xs)) (foldl f (f z x) xs))
 (define (reverse-acc Nil acc) acc)
@@ -282,6 +304,191 @@
   (if (< x y) (Cons x (Cons y ys)) (Cons y (sort-insert x ys))))
 (define (sort Nil) Nil)
 (define (sort (Cons x xs)) (sort-insert x (sort xs)))
+
+;; The categorical tower: Monoid, Foldable, Traversable.  Monoid and
+;; Traversable keep their dictionaries explicit, like the `monad-*'
+;; accessors above: a `mempty' is a value rather than a function, and
+;; `traverse' cannot be a class because a method scheme may only apply
+;; its own class parameters -- an effect variable standing in argument
+;; position parses as a rigid constructor, and the call site then
+;; refuses every dictionary.  Foldable is a class: its scheme applies
+;; only the class parameter itself.
+
+(define (identity x) x)
+
+;; Monoid: the identity is a value in the record, so `mempty' takes
+;; the dictionary and nothing else.
+(datatype MonoidDict (MonoidDict mempty mappend))
+(define (mempty (MonoidDict e app)) e)
+(define (mappend (MonoidDict e app) x y) (app x y))
+(define (mconcat (MonoidDict e app) xs) (foldl app e xs))
+
+;; Strings concatenate by `string-join' over a two-element list --
+;; `string-append' itself is elisp's, and the prelude redefines what
+;; it can spell.
+(: string-append (-> String String String))
+(define (string-append x y) (string-join (Cons x (Cons y Nil))))
+
+(define MonoidListDict (MonoidDict Nil list-append))
+(define MonoidIntDict (MonoidDict 0 +))
+(define MonoidStringDict (MonoidDict "" string-append))
+
+;; Endo: the monoid of endomorphisms under composition.  The wrapped
+;; function is the record's value, so `run-endo' applies it and
+;; `endo-mappend' composes right-to-left: the second argument runs
+;; first.
+(datatype Endo (Endo (-> a a)))
+(define (run-endo (Endo f) x) (f x))
+(define (endo-mappend (Endo f) (Endo g)) (Endo (lambda (x) (f (g x)))))
+(define MonoidEndoDict (MonoidDict (Endo identity) endo-mappend))
+
+;; Foldable: the class turns one structure's fold into every
+;; structure-generic verb -- `to-list', `length' and `fold-map' are
+;; three lines each over `foldr'.
+(datatype FoldableDict (FoldableDict foldr))
+(class Foldable (t) nil
+  (foldr ((-> a b b) -> b -> (t a) -> b)))
+(define (foldr (FoldableDict fo) f z t) (fo f z t))
+(define (list-foldr f z Nil) z)
+(define (list-foldr f z (Cons x xs)) (f x (list-foldr f z xs)))
+(define (maybe-foldr f z Nothing) z)
+(define (maybe-foldr f z (Just v)) (f v z))
+(define FoldableListDict (FoldableDict list-foldr))
+(define FoldableMaybeDict (FoldableDict maybe-foldr))
+(instance (Foldable List) FoldableListDict)
+(instance (Foldable Maybe) FoldableMaybeDict)
+(define (to-list t) (foldr (lambda (x acc) (Cons x acc)) Nil t))
+(define (length t) (foldr (lambda (_ acc) (+ acc 1)) 0 t))
+(define (fold-map (MonoidDict e app) f t)
+  (foldr (lambda (it acc) (app (f it) acc)) e t))
+
+;; Traversable, dictionary-passing: the traversable's walk and the
+;; effect's composition are both passed in, `monad-bind'-style.  The
+;; applicative dictionary's `lift' field is the primitive traversal
+;; composes through -- a destructured field is monomorphic within one
+;; definition, and `ap' alone cannot spell the right fold.  Every
+;; function crossing a field boundary is a plain binary lambda; the
+;; lift implementations uncurry them.
+(datatype TraversableDict (TraversableDict tv tm))
+(define (traverse (TraversableDict tr mp) app g t) (tr app g t))
+(define (mapm (TraversableDict tr mp) md g t) (mp md g t))
+(define (list-traverse (ApplicativeDict p ap l) g Nil) (p Nil))
+(define (list-traverse (ApplicativeDict p ap l) g (Cons x xs))
+  (l (lambda (y zs) (Cons y zs)) (g x)
+     (list-traverse (ApplicativeDict p ap l) g xs)))
+(define (maybe-traverse (ApplicativeDict p ap l) g Nothing) (p Nothing))
+(define (maybe-traverse (ApplicativeDict p ap l) g (Just v))
+  (l (lambda (y mz) (Just y)) (g v) (p Nothing)))
+(define (list-mapm (MonadDict b r f) g Nil) (r Nil))
+(define (list-mapm (MonadDict b r f) g (Cons x xs))
+  (list-mapm-bind (MonadDict b r f) g x
+                  (list-mapm (MonadDict b r f) g xs)))
+(define (list-mapm-bind (MonadDict b r f) g x acc)
+  (b (g x) (lambda (y) (f (lambda (zs) (Cons y zs)) acc))))
+(define (maybe-mapm (MonadDict b r f) g Nothing) (r Nothing))
+(define (maybe-mapm (MonadDict b r f) g (Just v))
+  (b (g v) (lambda (x) (r (Just x)))))
+(define TraversableListDict (TraversableDict list-traverse list-mapm))
+(define TraversableMaybeDict (TraversableDict maybe-traverse maybe-mapm))
+(define (sequence-a td app t) (traverse td app (lambda (x) x) t))
+(define (sequence td md t) (mapm td md (lambda (x) x) t))
+
+;; Reader's two missing verbs, in the raw `reader-fmap' style its
+;; transparent function type lives in.
+(define (asks f) (reader-fmap f (reader-ask)))
+(define (local f m) (lambda (r) (m (f r))))
+
+;; Ziplist: the applicative that zips.  `cats' wraps a list in
+;; `cats-data-ziplist', `pure' delivers a one-element ziplist, and
+;; `ap' pairs the two sides element by element, truncating at the
+;; shortest -- eager lists carry no `repeat' to stand for the lawful
+;; identity, so the identity law holds on one-element ziplists and
+;; nowhere else.  `cats' gives the type Functor, Applicative and
+;; Foldable instances; this does the same, over the wrapped list, and
+;; adds the Traversable pair cats does not ship.
+(datatype Ziplist (Ziplist (List a)))
+(define (ziplist-pure v) (Ziplist (Cons v Nil)))
+(define (ziplist-fmap f (Ziplist xs)) (Ziplist (list-fmap f xs)))
+(define (ziplist-ap (Ziplist fs) (Ziplist xs))
+  (Ziplist (ziplist-ap-step fs xs)))
+(define (ziplist-ap-step Nil xs) Nil)
+(define (ziplist-ap-step (Cons f fs) Nil) Nil)
+(define (ziplist-ap-step (Cons f fs) (Cons x xs))
+  (Cons (f x) (ziplist-ap-step fs xs)))
+;; The second lift that carries its signature.  Loaded as part of the
+;; whole file, this body's inferred scheme loses the ziplist threading
+;; -- `mx' and the result come out at unconstrained element types --
+;; though the same body submitted on its own infers soundly, which is
+;; the divergence `state-lift-a2' above documents.  The signature
+;; states the threading the body implements.
+(: ziplist-lift-a2 (-> (a : *) (b : *) (c : *)
+                       (f : (-> a (-> b c)))
+                       (mf : (Ziplist a))
+                       (mx : (Ziplist b))
+                       (Ziplist c)))
+(define (ziplist-lift-a2 f mf mx)
+  (ziplist-ap (ziplist-fmap (lambda (x) (lambda (y) (f x y))) mf) mx))
+(define (ziplist-foldr f z (Ziplist xs)) (list-foldr f z xs))
+;; The Traversable pair, past what cats ships.  The walk mirrors
+;; `list-traverse'/`list-mapm' one level down, `ziplist-ap' style:
+;; the entry point opens the ziplist and the `-list' workers rebuild
+;; the wrapped list under the effect, reaching for `ziplist-cons'
+;; when a combining lambda has only the wrapped tail in hand.  The
+;; opening is not only style: a nested `(Ziplist (Cons x xs))'
+;; pattern would hand the kind reader a `List' where Ziplist's
+;; parameter asks for a `*', and the rule would go undecided rather
+;; than violated.
+(define (ziplist-cons x (Ziplist xs)) (Ziplist (Cons x xs)))
+(define (ziplist-traverse (ApplicativeDict p ap l) g (Ziplist xs))
+  (ziplist-traverse-list (ApplicativeDict p ap l) g xs))
+(define (ziplist-traverse-list (ApplicativeDict p ap l) g Nil)
+  (p (Ziplist Nil)))
+(define (ziplist-traverse-list (ApplicativeDict p ap l) g (Cons x xs))
+  (l (lambda (y zs) (ziplist-cons y zs)) (g x)
+     (ziplist-traverse-list (ApplicativeDict p ap l) g xs)))
+(define (ziplist-mapm (MonadDict b r f) g (Ziplist xs))
+  (ziplist-mapm-list (MonadDict b r f) g xs))
+(define (ziplist-mapm-list (MonadDict b r f) g Nil)
+  (r (Ziplist Nil)))
+(define (ziplist-mapm-list (MonadDict b r f) g (Cons x xs))
+  (ziplist-mapm-bind (MonadDict b r f) g x
+                     (ziplist-mapm-list (MonadDict b r f) g xs)))
+(define (ziplist-mapm-bind (MonadDict b r f) g x acc)
+  (b (g x) (lambda (y) (f (lambda (zs) (ziplist-cons y zs)) acc))))
+(define FunctorZiplistDict (FunctorDict ziplist-fmap))
+(define ApplicativeZiplistDict (ApplicativeDict ziplist-pure ziplist-ap ziplist-lift-a2))
+(define FoldableZiplistDict (FoldableDict ziplist-foldr))
+(define TraversableZiplistDict (TraversableDict ziplist-traverse ziplist-mapm))
+(instance (Functor Ziplist) FunctorZiplistDict)
+(instance (Applicative Ziplist) ApplicativeZiplistDict)
+(instance (Foldable Ziplist) FoldableZiplistDict)
+
+;; Arithmetic.  The primitives carry the operator language the
+;; interpreter reaches for directly: `quo' truncates toward zero,
+;; `mod' floors, `cl-gcd' is the gcd, `^' exponentiates, `zero?'
+;; `even?' `odd?' test a number, and `floor' `ceiling' `round' turn a
+;; float into an integer.  The rest of the library is written here
+;; over them, and both division families get their partner: `quo'
+;; pairs with `rem' (cutting toward zero -- Aldor's and C's) and
+;; `mod' with `div' (flooring -- Scheme's).  Each pair satisfies
+;; a = q * b + r for every sign of a and b; the two families give the
+;; same q exactly when a/b does not come out negative.  `gcd'/`lcm'
+;; are spelled over `cl-gcd', the name the Aldor operator table
+;; lowers to.
+
+(define (abs n) (if (< n 0) (- n) n))
+(define (signum n) (if (< n 0) (- 1) (if (> n 0) 1 0)))
+(define (min a b) (if (< a b) a b))
+(define (max a b) (if (> a b) a b))
+(define (positive? n) (> n 0))
+(define (negative? n) (< n 0))
+(define (square n) (* n n))
+(define (rem a b) (- a (* (quo a b) b)))
+(define (div a b) (/ (- a (mod a b)) b))
+(define (gcd a b) (cl-gcd a b))
+(define (lcm a b) (if (or (eq a 0) (eq b 0)) 0 (abs (/ (* a b) (gcd a b)))))
+(define (sum xs) (foldl + 0 xs))
+(define (product xs) (foldl * 1 xs))
 
 ;; Assertions
 (define (assertEqual a b) (if (eq a b) True False))

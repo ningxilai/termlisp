@@ -5,7 +5,8 @@
 ;;; Commentary:
 ;; Runtime values are: atoms (symbol/number/string), constructor values
 ;; (a symbol for nullary, or a list `(Con field...)'), closures, function
-;; objects, and thunks.  Constructor fields are stored as thunks (lazy).
+;; objects, partial applications, and thunks.  Constructor fields are
+;; stored as thunks (lazy).
 
 ;;; Code:
 
@@ -28,6 +29,9 @@ Defined in termlisp-eval.el.")
 
 (cl-defstruct (tl-function (:constructor tl-make-function (clauses)))
   clauses)
+
+(cl-defstruct (tl-partial (:constructor tl-make-partial (fv args)))
+  fv args)
 
 (defun tl-value-equal (a b force)
   "Compare runtime values A and B structurally, forcing thunks with FORCE."

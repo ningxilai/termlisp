@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026  The termlisp authors
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "27.1") (cats "0.0.1"))
+;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: languages, lisp, compilers
 
 ;; This file is part of termlisp.
@@ -77,9 +77,6 @@
 (require 'termlisp-emit)
 (require 'termlisp-aldor)
 (require 'termlisp-io)
-
-;; The Reader monad; it depends on `cats', declared in Package-Requires.
-(require 'termlisp-data-reader)
 
 ;;; Interactive REPL
 

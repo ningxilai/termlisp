@@ -131,7 +131,10 @@ The boundary the project is probing, concretely:
   with dependent kinds, and exhaustiveness checking — all in elisp.
 - An explicit CEK machine with memoized thunks, so forcing a
   variable-bound thunk and function application are both tail steps. Deep
-  tail recursion does not grow the Emacs stack.
+  tail recursion does not grow the Emacs stack. Applying a function to
+  fewer arguments than it binds yields the pending application itself,
+  the runtime matching the curried arrows of the type language; surplus
+  arguments run the callee and apply what comes out the rest.
 - Unification by union-find over the same nodes the evaluator rewrites.
 - An Aldor front end compiling down to elisp, with self tail calls turned
   into loops.
@@ -148,16 +151,13 @@ character literals such as `?a` and `?\n`, and symbols. Comments run from
 `;` to end of line.
 
 The reader accepts the elisp reader grammar — vectors, records, quoted
-forms, radix prefixes — with two things switched off. Binding
+forms, radix prefixes — with one thing switched off. Binding
 `read-circle` to nil rejects **every** `#1=` label, not just circular
 ones: a finite `#1=(a b)` fails exactly as a self-referential one would.
-Read-time evaluation is likewise off, so `#.` is not readable either.
-That is deliberate: this reader is for **trusted** term-lisp source, not
-arbitrary untrusted input.
-
-(The commentary in `termlisp-reader.el` says "`#1=` labels and so on" and
-then says they are rejected. The second half is the true one; the first
-is an artifact of the same sentence.)
+Read-time evaluation is not a switch at all: the Emacs Lisp reader has
+never had it, so `#.` has always been invalid read syntax and there was
+never a `read-eval` variable to turn off. That is deliberate: this reader
+is for **trusted** term-lisp source, not arbitrary untrusted input.
 
 One consequence is worth stating plainly: `?0` is a character literal, not
 a symbol. You cannot write a type variable called `?N`, and the test suite
@@ -315,6 +315,12 @@ They are fine everywhere else — the REPL, `termlisp-eval-file` and
 `termlisp-eval` all go through the reader instead. If you need either at
 the top level of a file, evaluate it through `termlisp-eval-file`.
 
+A termlisp program does not go through `termlisp-load` at all: the
+`load` builtin reads its file with the termlisp reader, so both of
+these forms load from inside termlisp — an extension of a
+`(datatype open ...)` and a top-level `do`, in checked and unchecked
+environments alike.
+
 ### Patterns
 
 `tl-pattern-parse` (`termlisp-pattern.el:55`) turns a surface pattern into
@@ -396,6 +402,25 @@ Type classes use dictionary passing:
 (instance (Functor Maybe) FunctorMaybeDict)
 ;; (fmap (lambda (x) (+ x 1)) (Just 4)) => (Just 5)
 ```
+
+The prelude declares `Functor`, `Applicative` (whose `lift-a2` composes
+two effectful arguments with a binary function), `Monad` and `Foldable`,
+whose `foldr` turns one structure's fold into the generic verbs
+`to-list`, `length` and `fold-map`. `Monoid` and `Traversable` stay
+dictionary-passing like the `monad-*` accessors — a `mempty` is a value
+rather than a function, and `traverse` cannot be a class because a
+method scheme may only apply its own class parameters. The dictionaries
+ride in the prelude: `ApplicativeMaybeDict` and friends, `MonoidIntDict`,
+`FoldableListDict`, `TraversableListDict`. The verbs that route through
+a class method (`foldr`, `to-list`, `length`, `fold-map`, `lift-a2`,
+`fmap`, `ap`, `pure`, `bind`, `return`) need `:elaborate t` or an
+explicit dictionary; the Monoid and Traversable verbs take theirs
+explicitly and work in either mode. `Ziplist` wraps a list as the
+applicative that zips — `ap` pairs element by element and truncates at
+the shortest side, and `pure` delivers one element, since eager lists
+carry no `repeat` to stand for the lawful identity — and it carries
+`Functor`, `Applicative` and `Foldable` instances, as cats gives it,
+plus a `Traversable` walk cats does not ship.
 
 Types are propositions and programs are proofs, so the prelude carries the
 constructive connectives:
@@ -574,8 +599,10 @@ to select anything.
 
 Numeric literals are inferred `Int` regardless of their runtime
 representation, so `sin`/`cos`/`tan`/`exp`/`log`/`sqrt` are typed
-`Int -> Int`. The exact numeric tower (`tl-fraction`, `tl-complex`,
-`tl-num-*`) is polymorphic underneath.
+`Int -> Int`, and so are the roundings `floor`/`ceiling`/`round`,
+which answer a whole number in any case. The exact numeric tower
+(`tl-fraction`, `tl-complex`, `tl-bigfloat`, `tl-num-*`) is polymorphic
+underneath.
 
 Variadic `list` has no fixed arity to express as a curried arrow, so it is
 expanded to nested `Cons` applications in both the evaluator and the type
@@ -598,21 +625,43 @@ API:
 - `termlisp-make-env` — create an environment from a plist (see Options).
 - `termlisp-parse` / `termlisp-parse-file` — read a string / file into a
   list of S-expressions.
+- `termlisp-read-complete-p` — say whether a string reads to its end as a
+  sequence of complete top-level forms.
 - `termlisp-eval` / `termlisp-eval-file` / `termlisp-eval-form` — parse and
   evaluate a string / file / already-read form.
+- `termlisp-eval-submission` — evaluate a string as one submission: forward
+  names linked, the post-batch coverage check run, and the answer already
+  rendered. This is what a REPL front end drives.
 - `termlisp-typecheck` / `termlisp-typecheck-file` — typecheck without
   evaluating; returns the environment and signals on error.
 - `termlisp-load` / `termlisp-load-prelude` — load a `.tls` file / the
   bundled prelude into an environment.
 - `termlisp-value->string` — render a value.
-- Builtins — the primitive functions term-lisp code can call: `eq`, `+`, `-`,
-  `*`, `/`, `<`, `<=`, `>`, `>=`, `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`,
-  `absurd`, `seq`, `first`, `rest`, `empty?`, `list`, `format`, `print`,
-  `read-line`, `stdin`, `string-join`, `string->list`, `list->string`.
+- Builtins — the primitive functions term-lisp code can call: `eq`, `neq`,
+  `+`, `-`, `*`, `/`, `quo`, `mod`, `cl-gcd`, `^`, `<`, `<=`, `>`, `>=`,
+  `zero?`, `even?`, `odd?`, `absurd`, `factorial`, `floor`, `ceiling`,
+  `round`, `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`, `seq`, `first`,
+  `rest`, `empty?`, `list`, `format`, `print`, `read-line`, `stdin`,
+  `string-join`, `string->list`, `list->string`, `load`. `load` takes a
+  file name — a relative one expands against the host's
+  `default-directory` — and evaluates the file's forms into the running
+  environment as one batch, answering `Unit`; the definitions it makes
+  are visible to later forms and calls, the typechecker included.
 
 The prelude defines the booleans, pairs, `Either`/`Void`, lists, `Nat`,
-`Vec`, `Fin`, `Eq`, monads and type classes, together with the operators
-`=`, `xor`, `null?`, `map`, `foldl`, `reverse` and `sort`.
+`Vec`, `Fin`, `Eq`, monads and type classes, the categorical tower —
+`Monoid` (`mempty`, `mappend`, `mconcat`, the `Endo` monoid),
+`Foldable` (`foldr`, `to-list`, `length`, `fold-map`), `Traversable`
+(`traverse`, `mapm`, `sequence`, `sequence-a`), the reader's
+`asks`/`local`, the ziplist datatype and its `Functor`, `Applicative`
+and `Foldable` instances (`ziplist-pure`, `ziplist-ap`,
+`ziplist-lift-a2`, `ziplist-fmap`, `ziplist-foldr`), its Traversable
+walk (`ziplist-traverse`, `ziplist-mapm`, `ziplist-cons`,
+`TraversableZiplistDict`), together with the
+operators
+`=`, `xor`, `null?`, `map`, `foldl`, `reverse` and `sort`, and an
+arithmetic library: `abs`, `signum`, `min`, `max`, `positive?`,
+`negative?`, `square`, `rem`, `div`, `gcd`, `lcm`, `sum` and `product`.
 
 Example:
 
@@ -634,6 +683,11 @@ the rest of the session. The environment starts from
 `termlisp-repl-load-prelude` is nil, the prelude is loaded into it. It
 greets you with `Welcome to term-lisp (prelude loaded).` followed by the
 options in force.
+
+The buffer is only the front end: whether an input may be sent is the
+reader's answer (`termlisp-read-complete-p`), and evaluation goes through
+`termlisp-eval-submission`, the driver the API list above documents —
+`termlisp-repl.el` itself holds no interpreter wiring.
 
 - `RET` sends the input when it reads as a sequence of complete top-level
   forms; an unfinished form moves to the next line and is indented, so a
@@ -815,10 +869,11 @@ declaration actually builds, not the arrow form used in prose.
   the checker must be on (the questions are announced from inside
   `tl-typecheck-define`), `termlisp-exhaust` must be loaded (its post-batch
   hook is a `setq`, a single global slot, not `add-hook`), and
-  **something must call `tl-run-post-batch`** — `termlisp-repl`,
-  `termlisp-load`, `tl-typecheck-def` and the tests all do;
-  `termlisp-eval` does not, so a plain caller with `:coverage t` waits
-  forever for a check that never comes.
+  **something must call `tl-run-post-batch`** — `termlisp-eval-submission`,
+  `termlisp-load` and `termlisp-typecheck-def` do; `termlisp-repl` and the
+  test suites reach it through the first of these rather than calling the
+  hook themselves, while `termlisp-eval` does not call it at all, so a plain
+  caller with `:coverage t` waits forever for a check that never comes.
 - `:fuel` (default `100000`) — bounds evaluation. Exhaustion is
   `fuel exhausted`, which usually means a rewrite rule loops rather than
   that the number is too small.
@@ -1218,10 +1273,7 @@ option plist:
 3. **The verbatim error message**, in full, including the
    `the signature says:` / `this clause gives:` lines if present. Message
    text is the diagnostic; paraphrasing it loses the part that matters.
-4. **`C-h v emacs-version`**, since the floor is Emacs 27.1 and the reader
-   behaves differently on Emacsen where `read-eval` is bound.
-5. **Whether `cats` is installed**, for anything touching
-   `termlisp-data-reader.el`.
+4. **`C-h v emacs-version`**, since the floor is Emacs 27.1.
 
 The macros in `test/test-support.el` — `tl-test-eval`, `tl-test-reject`,
 `tl-test-covers` — are the shortest encoding of items 1 and 2. If your
@@ -1240,7 +1292,7 @@ termlisp-reader.el      ; S-expression reader
 termlisp-machine.el     ; runtime objects (thunks, closures, functions)
 termlisp-pattern.el     ; pattern parsing and matching
 termlisp-builtins.el    ; primitive functions
-termlisp-numeric.el     ; exact Fraction/Complex arithmetic over Calc
+termlisp-numeric.el     ; Fraction/Complex/Bigfloat tower over Calc
 termlisp-types.el       ; HM inference over the term graph
 termlisp-kinds.el       ; kind inference
 termlisp-free-vars.el   ; free type variables of a type graph
@@ -1258,7 +1310,6 @@ termlisp-nbe.el         ; normalization by evaluation
 termlisp-abn.el         ; Aldor ABN reader
 termlisp-aldor.el       ; Aldor -> termlisp lowering
 termlisp-emit.el        ; termlisp IR -> Emacs Lisp
-termlisp-data-reader.el ; cats-based Reader monad
 termlisp-io.el          ; State-monad I/O runtime
 termlisp-repl.el        ; interactive REPL, `M-x termlisp-repl'
 termlisp-prelude.tls    ; the standard prelude
@@ -1277,17 +1328,13 @@ follow a citation, check out `dev`, or browse
 
 ### Dependencies
 
-The only external dependency is
-[cats](https://github.com/Fuco1/emacs-cats), used by the optional Reader
-monad (`termlisp-data-reader.el`). It is declared in `termlisp.el`'s
-`Package-Requires` and installed like any package; with elpaca:
+Termlisp has no external packages: `termlisp.el`'s `Package-Requires`
+names only Emacs itself (27.1). The exact numeric tower rides on Emacs
+Calc, which ships with Emacs. With elpaca:
 
 ```elisp
-(elpaca cats)
 (elpaca (termlisp :host github :repo "ningxilai/termlisp" :files (:defaults "*.tls")))
 ```
-
-The core language loads fine without it; only the Reader monad is skipped.
 
 ## Development
 
@@ -1298,10 +1345,7 @@ make compile   ; byte-compile
 make clean     ; remove .elc files
 ```
 
-The ERT suite lives on `dev` (`make test` there runs it; 462 tests).
-`cats` is expected on the load path; the Makefile defaults to the elpaca
-sources directory and honours `CATS_DIR`, e.g.
-`make test CATS_DIR=$HOME/src/emacs-cats`.
+The ERT suite lives on `dev` (`make test` there runs it; 562 tests).
 
 ## Scope
 
