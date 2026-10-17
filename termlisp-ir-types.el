@@ -477,10 +477,10 @@ result is left unconstrained rather than aborting the whole program."
 ;;; HM schemes for the exact-numeric IR helpers.
 ;;
 ;; These model Aldor's `Integer'/`DoubleFloat' tower, where an exact operand
-;; promotes the operation to Calc's `frac'/`cplx' representation.  The value
-;; universe has no `Fraction' or `Complex' constructor (see
+;; promotes the operation to Calc's `frac'/`cplx'/`float' representation.  The
+;; value universe has no `Fraction', `Complex' or `Bigfloat' constructor (see
 ;; `tl-ir-value-type-names'), so the operators are typed polymorphically over
-;; the tower and the two constructors answer an opaque result.
+;; the tower and the constructors answer an opaque result.
 (let ((a (tl-fresh-tvar)))
   (dolist (n '(tl-num-add tl-num-sub tl-num-mul tl-num-div tl-num-quo))
     (tl-register-builtin-type n
@@ -488,11 +488,19 @@ result is left unconstrained rather than aborting the whole program."
 (let ((a (tl-fresh-tvar)))
   (tl-register-builtin-type 'tl-num-zero?
     (tl-tscheme (list a) (tl-tarrow a (tl-tbool)))))
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type 'tl-num-less?
+    (tl-tscheme (list a) (tl-tarrow a (tl-tarrow a (tl-tbool))))))
 (let ((r (tl-fresh-tvar)))
   (dolist (n '(tl-fraction tl-complex))
     (tl-register-builtin-type n
       (tl-tscheme (list r)
                   (tl-tarrow (tl-tint) (tl-tarrow (tl-tint) r))))))
+;; `tl-bigfloat' carries its precision as the second argument; the
+;; result is a tower value again, so it answers the operand's type.
+(let ((a (tl-fresh-tvar)))
+  (tl-register-builtin-type 'tl-bigfloat
+    (tl-tscheme (list a) (tl-tarrow a (tl-tarrow (tl-tint) a)))))
 
 ;;; Handle / reference types.
 

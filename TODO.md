@@ -293,6 +293,70 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     per-file compile clean, checkdoc 366 = 366 with an empty normalized
     diff against `f7549e1', parsecheck OK (37 files), `loaddefs-generate'
     prints no prefix warning (25 registrations).
+- [x] **P1-13 The `cats` dependency went with its module, and the bigfloat
+  became a first-class tower member** -- two chores the calc plan owed.
+  On the dependency: `termlisp-data-reader.el' had zero callers and zero
+  tests, was the only consumer of `cats', and -- by requiring it at load
+  -- made `(require 'termlisp)' fail on any machine without it, so the
+  module was deleted outright and `cats' left `Package-Requires';
+  termlisp now names only Emacs itself and still loads Calc lazily
+  (proven: `featurep' is nil after load and after a native fast-path
+  add, and only the first tower operation pulls Calc in).  The
+  Makefile's `CATS_DIR' block and the comment above it are now stale,
+  and stay: the no-touch rule on the Makefile outranks cosmetics.
+  On the tower: Emacs 32's Calc is bigfloat-only -- an elisp float is
+  not a Calc number (`math-float 0.5' dies of `listp') -- so `Float'
+  lands as Calc's `(float MANT EXPT)' beside `frac' and `cplx', and
+  every entry point runs inside `tl-calc-pure', one macro pinning all
+  five session variables (chatter off, radians, exact preferred,
+  symbolic off, precision) so a tower operation is a function of its
+  arguments alone.  The first draft of that macro was wrong in a way
+  only the suite could tell: it re-read the precision from a *sibling*
+  binding of the same `let' (`(let ((p ...)) ... (or p ...))'), and
+  Emacs `let' binds in parallel, so every init form saw the unbound
+  gensym -- all tower paths died of a void variable the moment they ran
+  and the byte compiler warned `reference to free variable' at each
+  call site; the override now lives in `calc-internal-prec''s own init,
+  where the name reads the enclosing dynamic value.  A second quiet
+  lie: `infinitep', which Emacs 32 does not have, now `= 1.0e+INF'.
+  `tl-bigfloat (x prec)' takes an integer, double, fraction or
+  bigfloat at a chosen precision: doubles enter exactly through their
+  finite decimal expansion (`%.1769e' prints it; 0.1 at 25 digits is
+  `0.1000000000000000055511151'), fractions divide at prec, and
+  normalisation strips trailing zeros so equal values are `equal'
+  whatever precision built them.  The bigfloat owns its printed form
+  (`tl-bigfloat->string', exact, leading zero included) through a
+  printer hook both renderers consult -- whose first spelling was
+  Common Lisp's `cond' `=>' clause, which elisp's `cond' does not
+  have, so the renderer died on a void `=>' exactly when a printer
+  matched; it is a `let'-hoisted cond now.  The order is `tl-num-less?'
+  (`tl-num-less-p'): native `<' when both sides are native, else both
+  sides to exact fractions, because Calc's own mixed comparison calls
+  equal values unequal (`math-equal' of 0.1 and 1/10 is nil on Emacs
+  32) -- so 1/3 is placed exactly between its two neighbouring
+  12-digit bigfloats, and the same double at precisions 5 and 25
+  compares as the two decimals it then is.  Complex numbers signal:
+  the tower has no order for them.  `<'/`>' are deliberately untouched
+  -- Aldor's `<` belongs to OrderedSet, not to every numeric type, so
+  the prelude's `min'/`positive?' stay native-number operations and
+  the tower order is its own builtin.  `tl-fraction' hardened to
+  integer operands, `tl-complex' converts double parts through the
+  bridge, and the dead `math-big-p' branch went (not fbound on Emacs
+  32).  Every empirical claim in the docstrings was re-measured after
+  this round's output-corruption episode rather than carried over.
+  - [x] Red/green: the 14 new pins (5 elisp-level in aldor-test.el, 9
+    source-level under `:type-check t' in prelude-test.el) all fail at
+    this round's parent `b08a732' with the tests kept -- the source
+    pins through the checker's unknown-symbol path, the elisp pins
+    through void function -- and all 14 are green with the round
+    applied, with the 548 old tests green on both sides.
+  - [x] Suite 562/562, `make compile` 0 warnings (26 .elc for 26 .el,
+    the deleted module accounted for), checkdoc 179 = 179 with an
+    empty normalized diff against `b08a732' (test/ included, the
+    deleted file's 4 messages excluded from the base), parsecheck OK
+    (36 files, was 37), `loaddefs-generate' prints no prefix warning
+    (24 registrations; the sole diff against the base loaddefs is the
+    deleted file's prefix entry).
 
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 

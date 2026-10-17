@@ -194,6 +194,33 @@
 (tl-test-eval tl-arith-sum "(sum (list 1 2 3))" "6")
 (tl-test-eval tl-arith-product "(product (list 2 3 4))" "24")
 
+;; The Calc tower, first-class: a bigfloat is a value with a printed
+;; form of its own, a working precision chosen per construction, and a
+;; place in the cross-representation order.
+(tl-test-eval tl-arith-bigfloat-prints-exactly "(tl-bigfloat 0.1 25)"
+              "0.1000000000000000055511151" '(:type-check t))
+(tl-test-eval tl-arith-bigfloat-rounds-to-working-precision
+              "(tl-bigfloat 12345 2)" "12000" '(:type-check t))
+(tl-test-eval tl-arith-bigfloat-inexact-quotient
+              "(tl-num-div (tl-bigfloat 1 10) 3)" "0.333333333333" '(:type-check t))
+(tl-test-eval tl-arith-num-less-native "(tl-num-less? 1 2)" "True" '(:type-check t))
+;; 0.1 at 25 digits is the double's exact value, a hair above a tenth;
+;; the order sees what a rounded comparison would miss.
+(tl-test-eval tl-arith-num-less-cross-precision
+              "(tl-num-less? (tl-bigfloat 0.1 5) (tl-bigfloat 0.1 25))"
+              "True" '(:type-check t))
+(tl-test-eval tl-arith-num-less-cross-precision-mirror
+              "(tl-num-less? (tl-bigfloat 0.1 25) (tl-bigfloat 0.1 5))"
+              "False" '(:type-check t))
+;; Equal values normalise alike at any precision, so `=' holds.
+(tl-test-eval tl-arith-bigfloat-canonical-equality
+              "(= (tl-bigfloat 5 5) (tl-bigfloat 5 10))" "True" '(:type-check t))
+(tl-test-reject tl-arith-bigfloat-rejects-zero-precision
+                "(tl-bigfloat 2 0)" "bigfloat precision" '(:type-check t))
+(tl-test-reject tl-arith-num-less-complex
+                "(tl-num-less? (tl-complex 1 2) 1)" "Complex numbers have no order"
+                '(:type-check t))
+
 ;;; The aldor--.hs skeleton: six mutually recursive trees
 
 ;; `~/aldor--.hs' is the Haskell sketch of an Aldor interpreter's AST:

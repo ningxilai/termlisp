@@ -573,7 +573,8 @@ Numeric literals are inferred `Int` regardless of their runtime
 representation, so `sin`/`cos`/`tan`/`exp`/`log`/`sqrt` are typed
 `Int -> Int`, and so are the roundings `floor`/`ceiling`/`round`,
 which answer a whole number in any case. The exact numeric tower
-(`tl-fraction`, `tl-complex`, `tl-num-*`) is polymorphic underneath.
+(`tl-fraction`, `tl-complex`, `tl-bigfloat`, `tl-num-*`) is polymorphic
+underneath.
 
 Variadic `list` has no fixed arity to express as a curried arrow, so it is
 expanded to nested `Cons` applications in both the evaluator and the type
@@ -1232,8 +1233,6 @@ option plist:
    `the signature says:` / `this clause gives:` lines if present. Message
    text is the diagnostic; paraphrasing it loses the part that matters.
 4. **`C-h v emacs-version`**, since the floor is Emacs 27.1.
-5. **Whether `cats` is installed**, for anything touching
-   `termlisp-data-reader.el`.
 
 The macros in `test/test-support.el` — `tl-test-eval`, `tl-test-reject`,
 `tl-test-covers` — are the shortest encoding of items 1 and 2. If your
@@ -1252,7 +1251,7 @@ termlisp-reader.el      ; S-expression reader
 termlisp-machine.el     ; runtime objects (thunks, closures, functions)
 termlisp-pattern.el     ; pattern parsing and matching
 termlisp-builtins.el    ; primitive functions
-termlisp-numeric.el     ; exact Fraction/Complex arithmetic over Calc
+termlisp-numeric.el     ; Fraction/Complex/Bigfloat tower over Calc
 termlisp-types.el       ; HM inference over the term graph
 termlisp-kinds.el       ; kind inference
 termlisp-free-vars.el   ; free type variables of a type graph
@@ -1270,7 +1269,6 @@ termlisp-nbe.el         ; normalization by evaluation
 termlisp-abn.el         ; Aldor ABN reader
 termlisp-aldor.el       ; Aldor -> termlisp lowering
 termlisp-emit.el        ; termlisp IR -> Emacs Lisp
-termlisp-data-reader.el ; cats-based Reader monad
 termlisp-io.el          ; State-monad I/O runtime
 termlisp-repl.el        ; interactive REPL, `M-x termlisp-repl'
 termlisp-prelude.tls    ; the standard prelude
@@ -1289,17 +1287,13 @@ follow a citation, check out `dev`, or browse
 
 ### Dependencies
 
-The only external dependency is
-[cats](https://github.com/Fuco1/emacs-cats), used by the optional Reader
-monad (`termlisp-data-reader.el`). It is declared in `termlisp.el`'s
-`Package-Requires` and installed like any package; with elpaca:
+Termlisp has no external packages: `termlisp.el`'s `Package-Requires`
+names only Emacs itself (27.1). The exact numeric tower rides on Emacs
+Calc, which ships with Emacs. With elpaca:
 
 ```elisp
-(elpaca cats)
 (elpaca (termlisp :host github :repo "ningxilai/termlisp" :files (:defaults "*.tls")))
 ```
-
-The core language loads fine without it; only the Reader monad is skipped.
 
 ## Development
 
@@ -1310,10 +1304,7 @@ make compile   ; byte-compile
 make clean     ; remove .elc files
 ```
 
-The ERT suite lives on `dev` (`make test` there runs it; 462 tests).
-`cats` is expected on the load path; the Makefile defaults to the elpaca
-sources directory and honours `CATS_DIR`, e.g.
-`make test CATS_DIR=$HOME/src/emacs-cats`.
+The ERT suite lives on `dev` (`make test` there runs it; 562 tests).
 
 ## Scope
 

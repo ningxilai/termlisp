@@ -338,10 +338,34 @@ while walking."
       (setq l (tl-force-or-identity (caddr l))))
     (nreverse items)))
 
+;; A value's printed form belongs to the layer that owns its
+;; representation, not to the renderers: `tl-output--format' and
+;; `termlisp-value->string' consult this alist before falling back to
+;; structural printing, and `termlisp-numeric' registers the Calc
+;; bigfloat printer in it.
+(defvar tl-value-printers nil
+  "Alist of (PREDICATE . PRINTER) rendering foreign values as strings.
+Each entry maps a value predicate to a function rendering a value that
+satisfies it.  A renderer consults the alist before printing a value
+structurally, so a representation owned by another layer displays in
+its own notation.")
+
+(defun tl-foreign-repr (x)
+  "Return the registered textual form of X, or nil when none applies.
+See `tl-value-printers'."
+  (catch 'tl-foreign-repr
+    (dolist (entry tl-value-printers)
+      (when (funcall (car entry) x)
+        (throw 'tl-foreign-repr (funcall (cdr entry) x))))
+    nil))
+
 (defun tl-output--format (value)
   "Render VALUE the way Aldor's basic OutputType instances print."
   (setq value (tl-force-or-identity value))
-  (cond ((tl-list-cons-p value)
+  ;; A foreign representation (the Calc bigfloat) owns its printed
+  ;; form; the renderers only decide when to consult the owner.
+  (cond ((tl-foreign-repr value))
+        ((tl-list-cons-p value)
          (concat "[" (mapconcat #'tl-output--format
                                 (tl-output--list-items value) ",") "]"))
         ;; Arrays, records and unions are vectors; print them like

@@ -1190,7 +1190,7 @@ a ground method call resolves a concrete instance dictionary."
     (should (equal (termlisp-eval "(num-sub 9 4)" env) 5))
     (should (equal (termlisp-eval "(num-add 1.5 2.5)" env) 4.0))))
 
-;;; Exact arithmetic (Calc-backed Fraction/Complex)
+;;; Calc-backed tower arithmetic (Fraction/Complex/Bigfloat)
 
 (ert-deftest tl-numeric-exact ()
   "Native arithmetic is untouched; exact values go through Calc."
@@ -1209,6 +1209,79 @@ a ground method call resolves a concrete instance dictionary."
   (should (equal (tl-num-add (tl-complex 1 2) (tl-complex 3 -1)) '(cplx 4 1)))
   (should (equal (tl-num-mul (tl-complex 1 2) (tl-complex 3 -1)) '(cplx 5 5)))
   (should (equal (tl-num-zero-p (tl-complex 0 0)) t)))
+
+(ert-deftest tl-numeric-bigfloat-construction ()
+  "A bigfloat carries a working precision and normalises canonically."
+  (should (equal (tl-bigfloat 5 10) '(float 5 0)))
+  (should (equal (tl-bigfloat 0.1 5) '(float 1 -1)))
+  ;; A double enters exactly, through its finite decimal expansion:
+  ;; the double 0.1 is a hair above a tenth, and 25 digits show it.
+  (should (equal (tl-bigfloat 0.1 25) '(float 1000000000000000055511151 -25)))
+  (should (equal (tl-bigfloat (tl-bigfloat 0.1 25) 5) '(float 1 -1)))
+  (should (equal (tl-bigfloat 12345 2) '(float 12 3)))
+  ;; A fraction divides at the working precision.
+  (should (equal (tl-bigfloat (tl-fraction 1 3) 5) '(float 33333 -5)))
+  ;; Normalisation strips trailing zeros, so equal values normalise
+  ;; alike whatever the precision they were built at.
+  (should (equal (tl-bigfloat 100 5) (tl-bigfloat 100 10)))
+  (should (equal (tl-bigfloat 5 5) (tl-bigfloat 5 10))))
+
+(ert-deftest tl-numeric-bigfloat-construction-errors ()
+  "The constructor refuses what it cannot represent."
+  (should-error (tl-bigfloat 2 0) :type 'termlisp-eval-error)
+  (should-error (tl-bigfloat (tl-complex 1 2) 10) :type 'termlisp-eval-error)
+  (should-error (tl-bigfloat 1.0e+INF 10) :type 'termlisp-eval-error)
+  (should-error (tl-bigfloat 0.0e+NaN 10) :type 'termlisp-eval-error)
+  (should-error (tl-fraction 1 2.5) :type 'termlisp-eval-error)
+  (should-error (tl-num-div 1 0) :type 'termlisp-eval-error)
+  (should-error (tl-num-div (tl-bigfloat 1 10) 0) :type 'termlisp-eval-error))
+
+(ert-deftest tl-numeric-bigfloat-printing ()
+  "A bigfloat prints as the exact finite decimal it is."
+  (should (equal (tl-bigfloat->string (tl-bigfloat 0.1 25))
+                 "0.1000000000000000055511151"))
+  (should (equal (tl-bigfloat->string (tl-bigfloat (tl-fraction 1 3) 12))
+                 "0.333333333333"))
+  (should (equal (tl-bigfloat->string (tl-bigfloat 12000 5)) "12000"))
+  (should (equal (tl-bigfloat->string (tl-bigfloat -0.001 10)) "-0.001"))
+  (should (equal (tl-bigfloat->string (tl-bigfloat 0 10)) "0")))
+
+(ert-deftest tl-numeric-bigfloat-arithmetic ()
+  "Tower arithmetic is exact end to end.
+An inexact quotient carries the working precision and `quo' truncates
+to an integer."
+  (should (equal (tl-num-add (tl-bigfloat 1 10) (tl-bigfloat 2 10)) '(float 3 0)))
+  (should (equal (tl-num-mul (tl-bigfloat 3 10) (tl-bigfloat 3 10)) '(float 9 0)))
+  (should (equal (tl-num-add (tl-bigfloat 0.5 10) 1) '(float 15 -1)))
+  (should (equal (tl-num-add (tl-fraction 1 3) 0.5) '(float 833333333333 -12)))
+  (should (equal (tl-num-div (tl-bigfloat 1 10) 3) '(float 333333333333 -12)))
+  (should (equal (tl-num-quo (tl-bigfloat 10 3) 3) 3))
+  (should (equal (tl-num-zero-p (tl-bigfloat 0 10)) t)))
+
+(ert-deftest tl-numeric-less-cross-representation ()
+  "The order covers the whole tower by exact value, not by rounding."
+  (should (equal (tl-num-less-p 1 2) t))
+  ;; Calc's own mixed comparison rounds 1/10 toward the bigfloat 0.1
+  ;; and then calls the equal values unequal; converting both sides to
+  ;; exact fractions is what pins these to nil.
+  (should (equal (tl-num-less-p (tl-fraction 1 10) (tl-bigfloat 0.1 5)) nil))
+  (should (equal (tl-num-less-p (tl-bigfloat 0.1 5) (tl-fraction 1 10)) nil))
+  (should (equal (tl-num-less-p 0.5 (tl-fraction 1 3)) nil))
+  ;; The same double at two precisions differs, and the order sees it.
+  (should (equal (tl-num-less-p (tl-bigfloat 0.1 5) (tl-bigfloat 0.1 25)) t))
+  (should (equal (tl-num-less-p (tl-bigfloat 0.1 25) (tl-bigfloat 0.1 5)) nil))
+  ;; 1/3 sits strictly between two neighbouring 12-digit bigfloats.
+  (should (equal (tl-num-less-p
+                  (tl-fraction 1 3)
+                  (tl-bigfloat (tl-fraction 333333333333 1000000000000) 12))
+                 nil))
+  (should (equal (tl-num-less-p
+                  (tl-fraction 1 3)
+                  (tl-bigfloat (tl-fraction 333333333334 1000000000000) 12))
+                 t))
+  (should (equal (tl-num-less-p 0 (tl-bigfloat 1 10)) t))
+  (should (equal (tl-num-less-p 1 (tl-bigfloat 1 10)) nil))
+  (should-error (tl-num-less-p (tl-complex 1 2) 1) :type 'termlisp-eval-error))
 
 (ert-deftest tl-aldor-exact-op-target ()
   "Only the exact domains select the Calc-backed operators."

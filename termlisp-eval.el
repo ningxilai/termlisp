@@ -462,18 +462,22 @@ any cut along the way was not local, is left in `tl-dpo-last-gluing'."
          ((stringp x) (push x out))
          (t
           (setq x (if (tl-thunk-p x) (tl-force x) x))
-          (cond
-           ((consp x)
-            (push "(" out)
-            (push ")" stack)
-            (let* ((vec (vconcat x)) (n (length vec)))
-              (dotimes (k n)
-                (let ((idx (- n 1 k)))
-                  (push (aref vec idx) stack)
-                  (when (> idx 0) (push " " stack))))))
-           ((tl-closure-p x) (push "#<closure>" out))
-           ((tl-function-p x) (push "#<function>" out))
-           (t (push (format "%s" x) out)))))))
+          (let ((foreign (tl-foreign-repr x)))
+            (cond
+             ;; A foreign representation renders in its own notation
+             ;; (see `tl-value-printers'), before the structural walk.
+             (foreign (push foreign out))
+             ((consp x)
+              (push "(" out)
+              (push ")" stack)
+              (let* ((vec (vconcat x)) (n (length vec)))
+                (dotimes (k n)
+                  (let ((idx (- n 1 k)))
+                    (push (aref vec idx) stack)
+                    (when (> idx 0) (push " " stack))))))
+             ((tl-closure-p x) (push "#<closure>" out))
+             ((tl-function-p x) (push "#<function>" out))
+             (t (push (format "%s" x) out))))))))
     (apply #'concat (nreverse out))))
 
 ;;; Top-level forms ------------------------------------------------------
