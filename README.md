@@ -691,9 +691,15 @@ The prelude defines the booleans, pairs, `Either`/`Void`, lists, `Nat`,
 and `Foldable` instances (`ziplist-pure`, `ziplist-ap`,
 `ziplist-lift-a2`, `ziplist-fmap`, `ziplist-foldr`), its Traversable
 walk (`ziplist-traverse`, `ziplist-mapm`, `ziplist-cons`,
-`TraversableZiplistDict`), together with the
+`TraversableZiplistDict`), an insertion-ordered set library ported
+from Kisaragi Hiu's ordered-set.el (`Set`, `set-from-list`,
+`set-to-list`, `set-add`, `set-delete`, `set-contains?`,
+`set-union`, `set-intersection`, `set-difference`,
+`set-symmetric-difference`, `set-empty?`, `subset?`, `superset?`,
+`disjoint?`, the empty set `set-nil`, and the set's `Foldable`
+instance), together with the
 operators
-`=`, `xor`, `null?`, `map`, `foldl`, `reverse` and `sort`, and an
+`=`, `xor`, `null?`, `map`, `list-member?`, `foldl`, `reverse` and `sort`, and an
 arithmetic library: `abs`, `signum`, `min`, `max`, `positive?`,
 `negative?`, `square`, `rem`, `div`, `gcd`, `lcm`, `sum` and `product`.
 

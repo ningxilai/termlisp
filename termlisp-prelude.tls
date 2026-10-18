@@ -463,6 +463,76 @@
 (instance (Applicative Ziplist) ApplicativeZiplistDict)
 (instance (Foldable Ziplist) FoldableZiplistDict)
 
+;; Sets: insertion-ordered collections without duplicates -- the
+;; set-theoretic half of Kisaragi Hiu's ordered-set.el
+;; (https://github.com/kisaragi-hiu/ordered-set.el, GPL-3.0-or-later,
+;; the license this file carries) ported to a language with no
+;; mutation and no hashing primitive.  That library keeps a hash
+;; table beside the list for O(1) membership; here the representation
+;; IS the normalized list -- deduplicated, first-occurrence-wins, in
+;; order of first insertion -- and membership is linear, the cost the
+;; source's own opening note calls out.  Elements are compared with
+;; `eq', termlisp's equality, where elisp's sets use `equal'.  The order
+;; expectations below pin the library's documented semantics: union
+;; keeps the first sequence's order and then the second's new
+;; members, intersection and difference follow the first argument,
+;; and the symmetric difference is the union minus the intersection.
+(datatype Set (Set (List a)))
+;; The empty set is a constant rather than a `(Set Nil)' spelled out
+;; inside a function body: the kind oracle reads every rule as a type,
+;; `Set' is a known type head, and its `Nil' argument reads as the
+;; list it is -- the reading that already refuses `ziplist-pure'.  A
+;; constant carries no rule to read, so the fold below seeds from a
+;; name and the empty construction never enters the question.
+(define set-nil (Set Nil))
+(define (set-to-list (Set xs)) xs)
+;; Membership walks the list, and the list library gains the walk.
+;; It stands before the set asks for it: a name used before its
+;; definition arrives forward-declared, and the link step's
+;; regeneration appended `Bool' to this walk's quantifier list, with
+;; `set-intersection', which asked it, coming out with the element
+;; types of its two arguments no longer the same one.  Defining
+;; before asking cleared both.  A pattern on the list itself also
+;; keeps the nested `(Set (Cons ...))' the kind reading refuses.
+(define (list-member? Nil x) (False))
+(define (list-member? (Cons y ys) x)
+  (if (eq x y) (True) (list-member? ys x)))
+(define (set-contains? (Set xs) x) (list-member? xs x))
+(define (set-add (Set xs) x)
+  (if (list-member? xs x)
+      (Set xs)
+      (Set (append xs (Cons x Nil)))))
+(define (set-from-list xs) (foldl set-add set-nil xs))
+;; Deleting what is not there changes nothing: the set is the answer,
+;; where elisp's `ordered-set-delete' reported the deletion with t or
+;; nil.
+(define (set-delete (Set xs) x)
+  (Set (filter (lambda (y) (not (eq x y))) xs)))
+(define (set-union s1 s2)
+  (set-from-list (append (set-to-list s1) (set-to-list s2))))
+(define (set-intersection (Set xs) s2)
+  (Set (filter (lambda (y) (set-contains? s2 y)) xs)))
+(define (set-difference (Set xs) s2)
+  (Set (filter (lambda (y) (not (set-contains? s2 y))) xs)))
+(define (set-symmetric-difference s1 s2)
+  (set-difference (set-union s1 s2) (set-intersection s1 s2)))
+;; The three relations are the emptiness questions, defined the same
+;; way the elisp library defines them: subset by difference, disjoint
+;; by intersection.  `set-empty?' opens the set before asking -- the
+;; prelude's `null?' compares against `Nil' and so speaks only of
+;; lists, where a Set is not one.
+(define (set-empty? (Set xs)) (null? xs))
+(define (subset? s1 s2) (set-empty? (set-difference s1 s2)))
+(define (superset? s1 s2) (subset? s2 s1))
+(define (disjoint? s1 s2) (set-empty? (set-intersection s1 s2)))
+;; Foldable is the set's one tower registration, the analogue of the
+;; source's seq integration (`seq-length', `seq-do' over a set):
+;; `length', `to-list' and `fold-map' arrive through the class, and
+;; no Functor or Applicative is claimed the source does not claim.
+(define (set-foldr f z (Set xs)) (list-foldr f z xs))
+(define FoldableSetDict (FoldableDict set-foldr))
+(instance (Foldable Set) FoldableSetDict)
+
 ;; Arithmetic.  The primitives carry the operator language the
 ;; interpreter reaches for directly: `quo' truncates toward zero,
 ;; `mod' floors, `cl-gcd' is the gcd, `^' exponentiates, `zero?'
