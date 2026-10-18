@@ -632,6 +632,76 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     `loaddefs-generate' clean (`termlisp--load-tls-file' is internal,
     no prefix change).
 
+- [x] **P1-18 `remove`, and a banner that names what is loaded** --
+  asked for twice over: the REPL greeting should list the loaded
+  packages ("这里应该一并列出已经加载的包"), and since `load' exists
+  `remove' should too, "非常健壮".  Robustness got a design rather than
+  a special case: every load is a transaction.  `termlisp--env-snapshot'
+  copies the ten tables a load can write plus `tl-env-globals' before
+  any form runs, `termlisp--load-invoke' restores that snapshot unless
+  the file finished, and a finished load journals a `tl-load-record'
+  (file, snapshot) in a new `tl-env-loads' slot -- so `remove' is
+  exactly "put back the snapshot, drop the record", and the same
+  machinery one step earlier makes a failed load install nothing
+  (probed: a file whose second form type-errors leaves its first
+  `define' unknown, value tables and type tables alike).  The copy
+  discipline was read off the writers rather than assumed: clause
+  lists, instance lists, schemes and classes are only ever replaced
+  by fresh ones (`append'/`puthash'), so their values may be shared
+  -- except the datatype table, where `tl-eval-datatype-extension'
+  extends the stored plist with `plist-put', which overwrites the
+  value cell in place; those plists get a spine copy
+  (`copy-sequence'), pinned by a remove-then-re-extend test that
+  would see `Banana' resurrect had the snapshot shared the list.  The
+  journal is a tree, not a list: a load performed while another is
+  running is recorded under the running one (`termlisp--load-parent'),
+  so removing the outer load drops the inner records with it --
+  otherwise a later `(remove "b.tls")' would restore a
+  mid-transaction state no load owns any more.  That tree also fixed
+  a real trap the probe found: removing a nested file directly
+  restored its moment inside the parent's transaction, wiping the
+  parent's own later definitions -- so `remove' refuses a nested
+  record by name and points at the enclosing file instead ("was
+  loaded inside ...; remove that file to undo them both").  Top-level
+  records come out most-recent-first, so load, load, remove returns
+  to the first load's state, and matching is by expanded path with a
+  `file-equal-p' fallback guarded by existence checks (removing via a
+  symlink works; removing a file deleted since the load works).  The
+  boundary the docstring states was probed directly: a held
+  `tl-function' object still answers 42 after its file is removed,
+  while applying the same name signals "Not a function" -- remove
+  decides what a name resolves to afterwards, not retroactively.
+  - [x] The REPL's welcome line reads the journal instead of the
+    option flag: `termlisp-repl--banner' maps `tl-env-loads' to
+    nondirectory names ("(loaded: termlisp-prelude.tls, lib.tls)", or
+    "(empty environment)"), and the new `termlisp-repl-load-files'
+    defcustom loads extra libraries at startup so a fresh REPL can
+    greet with them.  All three loaders (`termlisp--load-tls-file',
+    `termlisp-load', `termlisp-load-prelude') journal through one
+    core; the prelude still drops its deliberate partial coverage and
+    `termlisp-load' still flushes its own file, each keeping its
+    policy inside the shared transaction.
+  - [x] Types: `remove' registered as `String -> Unit' beside `load'
+    in `termlisp-ir-types'.
+  - [x] Tests: 12 new pins -- undo (names unknown again, a
+    twice-removed file errors), extended-clause rollback (`tag' back
+    to its one original clause), datatype-extension rollback with
+    re-extend, LIFO double-load, failed-load rollback (nothing
+    installed, nothing journalled), nested refusal then both names
+    gone after removing the parent (and the child's record with it),
+    symlink matching, never-loaded error, journal order, and three
+    banner pins (journal listing, empty environment, `load-files' at
+    startup).  Every render probed before pinning.
+  - [x] Red/green: with only the four source files stashed, exactly
+    the 12 new tests fail and the 11 earlier `load' pins still pass
+    against the parent (the load refactor changes no behavior);
+    restored, the selector is 23/23.
+  - [x] Gates: suite 669/669, `make compile' 0 warnings, per-file
+    isolated compile clean, parsecheck 36 .el + 1 .tls OK, checkdoc
+    multiset identical to a fresh `61da076' base (47),
+    `loaddefs-generate' clean (prefix lines byte-identical to the
+    previous round's output).
+
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
 - [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open

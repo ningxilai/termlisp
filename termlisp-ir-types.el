@@ -478,6 +478,11 @@ result is left unconstrained rather than aborting the whole program."
 ;; name as a String.
 (tl-register-builtin-type 'load
   (tl-tscheme nil (tl-tarrow (tl-tstring) (tl-tunit))))
+;; `remove' undoes the most recent `load' of a file, taking the same
+;; String argument and giving the same `Unit' answer; a file that is
+;; not loaded is an error rather than a type-level no-op.
+(tl-register-builtin-type 'remove
+  (tl-tscheme nil (tl-tarrow (tl-tstring) (tl-tunit))))
 
 ;;; HM schemes for the exact-numeric IR helpers.
 ;;

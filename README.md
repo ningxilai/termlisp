@@ -319,7 +319,8 @@ A termlisp program does not go through `termlisp-load` at all: the
 `load` builtin reads its file with the termlisp reader, so both of
 these forms load from inside termlisp — an extension of a
 `(datatype open ...)` and a top-level `do`, in checked and unchecked
-environments alike.
+environments alike. That path also journalled each load, which is what
+the `remove` builtin restores.
 
 ### Patterns
 
@@ -642,11 +643,18 @@ API:
   `zero?`, `even?`, `odd?`, `absurd`, `factorial`, `floor`, `ceiling`,
   `round`, `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`, `seq`, `first`,
   `rest`, `empty?`, `list`, `format`, `print`, `read-line`, `stdin`,
-  `string-join`, `string->list`, `list->string`, `load`. `load` takes a
-  file name — a relative one expands against the host's
+  `string-join`, `string->list`, `list->string`, `load`, `remove`. `load`
+  takes a file name — a relative one expands against the host's
   `default-directory` — and evaluates the file's forms into the running
   environment as one batch, answering `Unit`; the definitions it makes
-  are visible to later forms and calls, the typechecker included.
+  are visible to later forms and calls, the typechecker included. The
+  load is a transaction: a file that fails partway is rolled back and
+  installs nothing, and a load that finishes is journalled, so `remove`
+  can undo it. `remove` takes the same kind of file name and restores
+  everything the most recent load of that file changed — values,
+  clauses, datatypes, types — so its names are unknown again; a file
+  loaded inside another load comes out with that load rather than on
+  its own.
 
 The prelude defines the booleans, pairs, `Either`/`Void`, lists, `Nat`,
 `Vec`, `Fin`, `Eq`, monads and type classes, the categorical tower —
@@ -679,10 +687,13 @@ Example:
 `M-x termlisp-repl` opens a comint buffer with a `λ>` prompt. Input is
 evaluated in the running Emacs, so definitions made at the prompt stay for
 the rest of the session. The environment starts from
-`termlisp-repl-options` (`:type-check` on by default) and, unless
-`termlisp-repl-load-prelude` is nil, the prelude is loaded into it. It
-greets you with `Welcome to term-lisp (prelude loaded).` followed by the
-options in force.
+`termlisp-repl-options` (`:type-check` on by default), the prelude is
+loaded into it unless `termlisp-repl-load-prelude` is nil, and every
+file in `termlisp-repl-load-files` is loaded after the prelude. It
+greets you with what the environment actually holds —
+`Welcome to term-lisp (loaded: termlisp-prelude.tls, lib.tls).` for a
+prelude plus one library, `(empty environment)` for neither — followed
+by the options in force.
 
 The buffer is only the front end: whether an input may be sent is the
 reader's answer (`termlisp-read-complete-p`), and evaluation goes through
@@ -705,9 +716,10 @@ reader's answer (`termlisp-read-complete-p`), and evaluation goes through
 - An input of `exit` (or `quit`) closes the REPL, after printing `Bye.`
 
 Errors are printed in the buffer as `error: ...` and the REPL keeps
-running, so the session survives a bad form. Four defcustoms shape it:
+running, so the session survives a bad form. Five defcustoms shape it:
 `termlisp-repl-buffer-name`, `termlisp-repl-prompt`,
-`termlisp-repl-options` and `termlisp-repl-load-prelude`. Every action is
+`termlisp-repl-options`, `termlisp-repl-load-prelude` and
+`termlisp-repl-load-files`. Every action is
 also an `M-x` command (`termlisp-repl-return`, `-newline`, `-exit`,
 `-restart`, `-toggle-type-check`), and `termlisp-repl` takes an optional
 buffer name, so two live REPLs can be open at once.

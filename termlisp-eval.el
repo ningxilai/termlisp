@@ -932,26 +932,32 @@ Writes the file back only when the magic string is missing."
 
 (defun termlisp-load (file &optional env)
   "Load a `.tls' FILE into ENV (or a fresh env), ensuring its magic string.
-Returns ENV."
+Returns ENV.  The load is a transaction (`termlisp--load-invoke'):
+success journals FILE so `remove' can undo it, and a failure restores
+the environment and installs nothing."
   (termlisp--ensure-magic-string file)
-  (let* ((termlisp--load-env (or env (termlisp-make-env)))
-         ;; The whole file is one unit, so a `define' may mention a name
-         ;; a later `define' declares.
-         (tl-infer-forward-names (termlisp-collect-file-forward-names file))
-         (tl-infer-forward-vars (or tl-infer-forward-vars
-                                    (make-hash-table :test #'eq)))
-         (tl-infer-forward-order nil)
-         (tl-infer-forward-regen (or tl-infer-forward-regen
-                                     (make-hash-table :test #'eq))))
-    (load (expand-file-name file) nil t)
-    ;; The file is one batch, so a use made of a forward name before
-    ;; its definition was read can now be told what it really was.
-    (tl-forward--link)
-    ;; A file is one batch, so this is the first moment every definition
-    ;; in it has all of its clauses and a coverage check can mean
-    ;; anything.
-    (tl-run-post-batch)
-    termlisp--load-env))
+  (let ((env (or env (termlisp-make-env))))
+    (termlisp--load-invoke
+     env file
+     (lambda ()
+       (let ((termlisp--load-env env)
+             ;; The whole file is one unit, so a `define' may mention a
+             ;; name a later `define' declares.
+             (tl-infer-forward-names (termlisp-collect-file-forward-names file))
+             (tl-infer-forward-vars (or tl-infer-forward-vars
+                                        (make-hash-table :test #'eq)))
+             (tl-infer-forward-order nil)
+             (tl-infer-forward-regen (or tl-infer-forward-regen
+                                         (make-hash-table :test #'eq))))
+         (load (expand-file-name file) nil t)
+         ;; The file is one batch, so a use made of a forward name before
+         ;; its definition was read can now be told what it really was.
+         (tl-forward--link)
+         ;; A file is one batch, so this is the first moment every
+         ;; definition in it has all of its clauses and a coverage
+         ;; check can mean anything.
+         (tl-run-post-batch))))
+    env))
 
 (defconst termlisp--directory
   (file-name-directory (or load-file-name buffer-file-name))
@@ -960,32 +966,37 @@ Returns ENV."
 (defun termlisp-load-prelude (&optional env)
   "Load the bundled prelude into ENV (or a fresh env) and return it.
 Loading goes through `load', so `termlisp-load' must be required for the
-`datatype'/`define'/`class'/`instance' macros to be defined."
-  (let ((termlisp--load-env (or env (termlisp-make-env)))
-        (file (expand-file-name "termlisp-prelude.tls" termlisp--directory))
-        ;; The prelude is a fixed library whose partial functions are
-        ;; deliberate -- `head' and `tail' match only `Cons', and `if' is
-        ;; written clause by clause -- so announcing into a throwaway
-        ;; queue drops them instead of reporting them.  Nothing here
-        ;; flushes, so the queue goes with this binding.
-        (tl-coverage-announcements nil))
+`datatype'/`define'/`class'/`instance' macros to be defined.  The load
+is a transaction (`termlisp--load-invoke'): success journals the
+prelude like any other library, so `remove' can undo it too, and a
+failure installs nothing."
+  (let ((env (or env (termlisp-make-env)))
+        (file (expand-file-name "termlisp-prelude.tls" termlisp--directory)))
     (termlisp--ensure-magic-string file)
-    (let ((tl-infer-forward-names
-           (termlisp-collect-file-forward-names file))
-          (tl-infer-forward-vars (or tl-infer-forward-vars
-                                     (make-hash-table :test #'eq)))
-          (tl-infer-forward-order nil)
-          (tl-infer-forward-regen (or tl-infer-forward-regen
-                                      (make-hash-table :test #'eq))))
-      (load file nil t)
-      ;; The file is one batch: a use made of a forward name before its
-      ;; definition was read can now be told what it really was.  The
-      ;; prelude has such uses -- the State functions -- and the schemes
-      ;; they came out with depend on this.
-      (tl-forward--link))
-    termlisp--load-env))
+    (termlisp--load-invoke
+     env file
+     (lambda ()
+       ;; The prelude is a fixed library whose partial functions are
+       ;; deliberate -- `head' and `tail' match only `Cons', and `if' is
+       ;; written clause by clause -- so announcing into the throwaway
+       ;; queue `termlisp--load-invoke' binds drops them instead of
+       ;; reporting them.  Nothing here flushes.
+       (let ((termlisp--load-env env)
+             (tl-infer-forward-names (termlisp-collect-file-forward-names file))
+             (tl-infer-forward-vars (or tl-infer-forward-vars
+                                        (make-hash-table :test #'eq)))
+             (tl-infer-forward-order nil)
+             (tl-infer-forward-regen (or tl-infer-forward-regen
+                                         (make-hash-table :test #'eq))))
+         (load file nil t)
+         ;; The file is one batch: a use made of a forward name before
+         ;; its definition was read can now be told what it really was.
+         ;; The prelude has such uses -- the State functions -- and the
+         ;; schemes they came out with depend on this.
+         (tl-forward--link))))
+    env))
 
-;;; load ----------------------------------------------------------------
+;;; load and remove ------------------------------------------------------
 ;; A termlisp program reaches its libraries through the `load' builtin:
 ;; it reads a `.tls' file and evaluates the file's forms into the
 ;; environment the call is running in, so the definitions the file makes
@@ -995,13 +1006,191 @@ Loading goes through `load', so `termlisp-load' must be required for the
 ;; call head resolves through `tl-env-functions'/`tl-env-globals' of
 ;; `termlisp--current-env' at the moment the call is applied, and
 ;; `tl-run' keeps that variable dynamically bound for as long as it
-;; runs, thunk forcing included.  The primitive therefore lives here and
+;; runs, thunk forcing included.  The primitives therefore live here and
 ;; not in `termlisp-builtins', which sits below the reader: loading
-;; needs `termlisp-parse-file' and the batch machinery above it.  It
-;; reads the file with the termlisp reader rather than through the elisp
-;; `load' macros `termlisp-load' defines, so a host that never required
-;; that file can still load libraries, and a `.tls' file is one artifact
-;; whichever side loads it.
+;; needs `termlisp-parse-file' and the batch machinery above it.
+;;
+;; Every load is a transaction over the environment's tables.  A load
+;; that finishes journals a `tl-load-record' -- the file and the
+;; snapshot `termlisp--env-snapshot' took before it ran -- so `remove'
+;; can put the environment back; a load that fails partway restores
+;; that snapshot itself and installs nothing, which is the same
+;; machinery one step earlier.  The journal is a tree rather than a
+;; list: a file loaded while another load is running is recorded under
+;; that load, because its definitions go back with the outer load's
+;; snapshot and a record left lying around would restore a state no
+;; load owns any more.  `remove' takes the most recently completed
+;; matching top-level load, so loading twice and removing once
+;; returns to the first load's state, and a file loaded inside
+;; another load comes out with that load rather than on its own.
+;;
+;; The file is read with the termlisp reader rather than through the
+;; elisp `load' macros `termlisp-load' defines, so a `.tls' file is one
+;; artifact whichever side loads it and a host that never required that
+;; file can still load libraries.
+
+(defvar termlisp--load-parent nil
+  "Load record whose transaction is open, or nil at top level.
+A load started while another is running journals itself under the
+running one instead of at the head of `tl-env-loads'.  The record
+tree is what `remove' walks, and it is what makes removing an outer
+load drop the records of everything that load pulled in.")
+
+(cl-defstruct (tl-load-record (:constructor tl-make-load-record (file)))
+  "One completed load: FILE, the snapshot to restore, nested loads.
+SNAPSHOT is what `termlisp--env-snapshot' took before FILE's forms
+ran, and restoring it is the whole of `remove'.  CHILDREN are the
+loads FILE itself performed, most recent first; they live here and
+not in `tl-env-loads' because they only exist as part of FILE's
+load -- removing FILE removes them with it, which is what stops a
+stale child record from restoring a state the parent already undid.
+`remove' refuses a nested record by name; the tree exists for the
+parent's sake.  FILE is the expanded file name, recorded the way
+`remove' expands its own argument."
+  file snapshot children)
+
+(defconst termlisp--snapshot-tables
+  '((tl-env-functions . identity)
+    (tl-env-datatypes . copy-sequence)
+    (tl-env-constructors . identity)
+    (tl-env-type-env . identity)
+    (tl-env-sig-env . identity)
+    (tl-env-kind-env . identity)
+    (tl-env-class-env . identity)
+    (tl-env-instance-env . identity)
+    (tl-env-method-env . identity)
+    (tl-env-clauses . identity))
+  "The env tables a load can write, paired with the copier for their values.
+`copy-sequence' earns its place in one row: `tl-eval-datatype-extension'
+extends a datatype with `plist-put', which overwrites the value cell
+of the stored plist in place, so a snapshot sharing that plist would
+grow its constructors back on restore.  Every other table is written
+only by replacing its value with a fresh one -- clause lists and
+instance lists by `append', schemes and classes by `puthash' -- so
+sharing those values is sound.")
+
+(defun termlisp--env-snapshot (env)
+  "Copy every part of ENV a load can change, for `termlisp--env-restore'.
+The result is (TABLES . GLOBALS), where TABLES is an alist of
+\(ACCESSOR . COPY) and GLOBALS a fresh copy of `tl-env-globals'.
+`options' and `current' are not copied: no load form can reach
+either, and `current' has no writer at all."
+  (cons (mapcar (lambda (cell)
+                  (let ((copy (make-hash-table :test #'eq)))
+                    (maphash (lambda (k v)
+                               (puthash k (funcall (cdr cell) v) copy))
+                             (funcall (car cell) env))
+                    (cons (car cell) copy)))
+                termlisp--snapshot-tables)
+        (copy-sequence (tl-env-globals env))))
+
+(defun termlisp--env-restore (env snapshot)
+  "Restore the tables of ENV from SNAPSHOT.
+The live hash tables are cleared and refilled in place rather than
+replaced, so anything already holding one keeps seeing the truth."
+  (dolist (cell (car snapshot))
+    (let ((live (funcall (car cell) env))
+          (copy (cdr cell)))
+      (clrhash live)
+      (maphash (lambda (k v) (puthash k v live)) copy)))
+  (setf (tl-env-globals env) (copy-sequence (cdr snapshot))))
+
+(defun termlisp--load-invoke (env file run-forms)
+  "Run FILE's load into ENV by evaluating RUN-FORMS, transactionally.
+The environment is snapshotted before RUN-FORMS runs.  A run that
+finishes journals its record -- at the head of `tl-env-loads' for a
+top-level load, under `termlisp--load-parent' for a load FILE itself
+started -- and a run that signals restores the snapshot and journals
+nothing, so a failed load leaves the environment exactly as it was.
+RUN-FORMS is called for effect; whatever it returns is ignored, and
+it is responsible for its own forward-name machinery and for
+flushing coverage (`tl-run-post-batch') if the load's file is to be
+checked.  FILE is expanded against `default-directory' and recorded
+expanded, which is also the rule `remove' expands its argument by."
+  (let ((snapshot (termlisp--env-snapshot env))
+        (record (tl-make-load-record (expand-file-name file)))
+        (outer-parent termlisp--load-parent)
+        (outer-queue tl-coverage-announcements)
+        (loaded nil))
+    (unwind-protect
+        (let ((tl-coverage-announcements nil)
+              (termlisp--load-parent record))
+          (funcall run-forms)
+          (setf (tl-load-record-snapshot record) snapshot)
+          (if outer-parent
+              (push record (tl-load-record-children outer-parent))
+            (push record (tl-env-loads env)))
+          (setq loaded t))
+      (setq tl-coverage-announcements outer-queue)
+      (unless loaded (termlisp--env-restore env snapshot)))))
+
+(defun termlisp--load-match-p (record file)
+  "Say whether RECORD is the load of FILE, an already-expanded name.
+Recorded names are compared as strings first; a file reached through
+a different spelling -- a symlink, another relative path -- still
+matches when both files exist and `file-equal-p' says they are the
+same one.  `file-equal-p' needs both files present and signals about
+one that is gone, which is why the existence guards come first:
+removing a library whose file has since been deleted must work."
+  (or (string-equal (tl-load-record-file record) file)
+      (and (file-exists-p (tl-load-record-file record))
+           (file-exists-p file)
+           (file-equal-p (tl-load-record-file record) file))))
+
+(defun termlisp--find-load (records file top)
+  "Find the most recent load of FILE among RECORDS or below one of them.
+TOP is the top-level record a search has descended under, nil while it
+is still at the top.  Return the record and its top-level ancestor as
+\(RECORD . TOP), or nil.  A record is examined before its children
+because a nested load finishes before the load that started it, so
+parent-after-children is completion order and the first match is the
+most recent one."
+  (catch 'termlisp--found
+    (dolist (record records)
+      (when (termlisp--load-match-p record file)
+        (throw 'termlisp--found (cons record top)))
+      (let ((found (termlisp--find-load
+                    (tl-load-record-children record)
+                    file
+                    (or top record))))
+        (when found (throw 'termlisp--found found))))
+    nil))
+
+(defun termlisp--remove-load (file env)
+  "Undo the most recent top-level load of FILE into ENV, answering `Unit'.
+The snapshot taken before that load ran goes back over ENV's tables,
+so every name the load declared becomes unknown again, every name it
+extended returns to the clauses it had before, and the type layer's
+tables return with the rest -- a later submission checks against the
+same environment the value tables show.  The record is dropped with
+the records of every load FILE itself performed: their definitions
+went back with the snapshot, and a record left behind would restore
+that state a second time from a load that no longer exists.
+A file loaded as part of another load is refused rather than undone
+on its own: its snapshot is a moment inside the enclosing
+transaction, and restoring that moment would take the enclosing
+load's later work with it, which is not what naming this file means.
+What a remove cannot reach is a value already in hand -- a function
+value carries its clauses, not its name -- so what a name resolves to
+afterwards is decided here and not retroactively.
+FILE expands against `default-directory' exactly as it did for
+`load', and a file that is not loaded is an error rather than a
+silently accepted no-op."
+  (let* ((want (expand-file-name file))
+         (found (termlisp--find-load (tl-env-loads env) want nil)))
+    (unless found
+      (signal 'termlisp-eval-error
+              (list (format "remove: %s is not loaded" file))))
+    (when (cdr found)
+      (signal 'termlisp-eval-error
+              (list (format "remove: %s was loaded inside %s; remove that file to undo them both"
+                            file
+                            (tl-load-record-file (cdr found))))))
+    (let ((record (car found)))
+      (setf (tl-env-loads env)
+            (delq record (tl-env-loads env)))
+      (termlisp--env-restore env (tl-load-record-snapshot record)))
+    'Unit))
 
 (defun termlisp--load-tls-file (file env)
   "Load the `.tls' FILE into ENV as one batch, answering `Unit'.
@@ -1011,13 +1200,16 @@ file declares lands in ENV's own tables -- which is where the evaluator
 looks names up, so a later form sees them whether it belongs to the
 loading submission or arrives afterwards.  The file is one batch: its
 declarations are knowable forward inside it, by the same forward-name
-machinery a submission gets, and its coverage is flushed once with the
-enclosing batch's queue set aside and restored, so loading in the middle
-of a submission cannot report that submission's half-written functions.
-A parse error is re-signalled naming FILE, an unreadable file is
-refused before any form is evaluated, and the file itself is only read,
-never rewritten -- the `.tls' magic string is an editor convention the
-reader skips as a comment."
+machinery a submission gets, and its coverage is flushed once, so
+loading in the middle of a submission cannot report that submission's
+half-written functions -- the enclosing batch's queue is set aside and
+restored by `termlisp--load-invoke', which also makes the load a
+transaction: success journals FILE for `remove', failure restores the
+environment and installs nothing.  A parse error is re-signalling
+naming FILE, an unreadable file is refused before any form is
+evaluated, and the file itself is only read, never rewritten -- the
+`.tls' magic string is an editor convention the reader skips as a
+comment."
   (unless (file-readable-p file)
     (signal 'termlisp-eval-error
             (list (format "load: cannot read %s" file))))
@@ -1027,22 +1219,21 @@ reader skips as a comment."
            (termlisp-parse-error
             (signal 'termlisp-parse-error
                     (list (format "%s: %s" file (cadr e))))))))
-    (let ((tl-infer-forward-names (termlisp-collect-forward-names forms))
-          (tl-infer-forward-vars (or tl-infer-forward-vars
-                                     (make-hash-table :test #'eq)))
-          (tl-infer-forward-order nil)
-          (tl-infer-forward-regen (or tl-infer-forward-regen
-                                      (make-hash-table :test #'eq)))
-          (outer-queue tl-coverage-announcements))
-      (unwind-protect
-          (let ((tl-coverage-announcements nil))
-            (dolist (form forms)
-              (termlisp-eval-form form env))
-            ;; The file is one batch, so this is the first moment every
-            ;; definition in it has all of its clauses.
-            (tl-forward--link)
-            (tl-run-post-batch))
-        (setq tl-coverage-announcements outer-queue))))
+    (termlisp--load-invoke
+     env file
+     (lambda ()
+       (let ((tl-infer-forward-names (termlisp-collect-forward-names forms))
+             (tl-infer-forward-vars (or tl-infer-forward-vars
+                                        (make-hash-table :test #'eq)))
+             (tl-infer-forward-order nil)
+             (tl-infer-forward-regen (or tl-infer-forward-regen
+                                         (make-hash-table :test #'eq))))
+         (dolist (form forms)
+           (termlisp-eval-form form env))
+         ;; The file is one batch, so this is the first moment every
+         ;; definition in it has all of its clauses.
+         (tl-forward--link)
+         (tl-run-post-batch)))))
   'Unit)
 
 (tl-register-builtin 'load
@@ -1059,6 +1250,18 @@ reader skips as a comment."
       ;; the same rule `load' itself follows for its own files.
       (termlisp--load-tls-file (expand-file-name file)
                                termlisp--current-env))))
+
+(tl-register-builtin 'remove
+  (lambda (args)
+    (unless (= (length args) 1)
+      (signal 'termlisp-type-error
+              (list (format "remove expects 1 argument, got %d"
+                            (length args)))))
+    (let ((file (car args)))
+      (unless (stringp file)
+        (signal 'termlisp-type-error
+                (list (format "remove expects a String, got %S" file))))
+      (termlisp--remove-load file termlisp--current-env))))
 
 (provide 'termlisp-eval)
 ;;; termlisp-eval.el ends here

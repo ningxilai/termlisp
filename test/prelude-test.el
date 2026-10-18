@@ -437,6 +437,205 @@
                     '(:type-check t :elaborate t :coverage t))
                    "Nil"))))
 
+;;; remove: loading is undoable
+
+;; `remove' restores the snapshot `load' took before its file ran, so
+;; every table the load touched -- values, clauses, datatypes, types --
+;; goes back at once.  The tests watch names disappear through the
+;; checker, because an unchecked unknown head renders as itself rather
+;; than signalling: the environment is built with `:type-check t'.
+
+(defun tl-test--load-env ()
+  "Return a fresh prelude environment with `:type-check' on."
+  (let ((env (termlisp-make-env '(:type-check t))))
+    (termlisp-load-prelude env)
+    env))
+
+(defun tl-test--eval-render (string env)
+  "Evaluate STRING in ENV and render it, or \"ERR:...\" when it signals."
+  (condition-case e
+      (termlisp-value->string (termlisp-eval string env))
+    (error (format "ERR:%s" (error-message-string e)))))
+
+(ert-deftest tl-remove-undoes-a-load ()
+  "A removed load's names are unknown again, and removing twice fails."
+  (let* ((file (tl-test--tls-file "(define (lib-double n) (* n 2))"))
+         (env (tl-test--load-env)))
+    (should (equal (tl-test--eval-render (format "(load %S)" file) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(lib-double 21)" env) "42"))
+    (should (equal (tl-test--eval-render (format "(remove %S)" file) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(lib-double 21)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: lib-double\""))
+    (should (equal (tl-test--eval-render (format "(remove %S)" file) env)
+                   (format "ERR:Term-lisp evaluation error: \"remove: %s is not loaded\""
+                           (expand-file-name file))))))
+
+(ert-deftest tl-remove-restores-an-extended-clause ()
+  "A load that extended a function gives its clauses back on remove."
+  (let* ((file (tl-test--tls-file "(define (tag (False)) 2)"))
+         (env (tl-test--load-env)))
+    (termlisp-eval "(define (tag (True)) 1)" env)
+    (should (equal (tl-test--eval-render (format "(load %S)" file) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(tag False)" env) "2"))
+    (should (equal (tl-test--eval-render (format "(remove %S)" file) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(tag False)" env)
+                   "ERR:Term-lisp evaluation error: \"No matching clause for tag\""))
+    (should (equal (tl-test--eval-render "(tag True)" env) "1"))))
+
+(ert-deftest tl-remove-restores-a-datatype-extension ()
+  "Extending a datatype is undone, and the datatype stays extendable."
+  (let* ((file (tl-test--tls-file "(datatype-extension Fruit (Banana))"))
+         (env (tl-test--load-env)))
+    (termlisp-eval "(datatype open Fruit (Apple))" env)
+    (should (equal (tl-test--eval-render (format "(load %S)" file) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(eq Banana Banana)" env) "True"))
+    (should (equal (tl-test--eval-render (format "(remove %S)" file) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(eq Banana Banana)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: Banana\""))
+    ;; The plist itself was restored, so extending again finds the
+    ;; open datatype with its original constructors.
+    (should (equal (tl-test--eval-render (format "(load %S)" file) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(eq Banana Banana)" env) "True"))))
+
+(ert-deftest tl-remove-lifo-loads-of-one-file ()
+  "Loading twice and removing once returns to the first load's state."
+  (let* ((file (tl-test--tls-file "(define (lib-double n) (* n 2))"))
+         (env (tl-test--load-env)))
+    (termlisp-eval (format "(load %S)" file) env)
+    (termlisp-eval (format "(load %S)" file) env)
+    (should (equal (tl-test--eval-render (format "(remove %S)" file) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(lib-double 2)" env) "4"))
+    (should (equal (tl-test--eval-render (format "(remove %S)" file) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(lib-double 2)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: lib-double\""))))
+
+(ert-deftest tl-load-failure-installs-nothing ()
+  "A load that fails partway leaves the environment exactly as it was."
+  (let* ((file (tl-test--tls-file "(define (keep x) x)\n(+ 1 True)"))
+         (env (tl-test--load-env)))
+    (should (equal (tl-test--eval-render (format "(load %S)" file) env)
+                   "ERR:Term-lisp type error: \"Cannot apply + to True\""))
+    (should (equal (tl-test--eval-render "(keep 1)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: keep\""))
+    ;; A failed load journals nothing, so there is nothing to remove.
+    (should (equal (tl-test--eval-render (format "(remove %S)" file) env)
+                   (format "ERR:Term-lisp evaluation error: \"remove: %s is not loaded\""
+                           (expand-file-name file))))))
+
+(ert-deftest tl-remove-nested-loads-come-out-with-their-parent ()
+  "A nested load is refused by name and disappears with its parent."
+  (let* ((dir (make-temp-file "tl-remove-nest" t))
+         (inner (expand-file-name "b.tls" dir))
+         (outer (expand-file-name "a.tls" dir))
+         (env (tl-test--load-env)))
+    (with-temp-file inner (insert "(define (lib-b x) x)"))
+    (with-temp-file outer
+      (insert (format "(load %S)\n(define (lib-a x) x)" inner)))
+    (termlisp-eval (format "(load %S)" outer) env)
+    (should (equal (tl-test--eval-render "(lib-a (lib-b 1))" env) "1"))
+    ;; The child's snapshot is a moment inside the parent's load, so
+    ;; naming it points at the parent instead of restoring that moment.
+    (should (equal (tl-test--eval-render (format "(remove %S)" inner) env)
+                   (format
+                    "ERR:Term-lisp evaluation error: \"remove: %s was loaded inside %s; remove that file to undo them both\""
+                    inner outer)))
+    (should (equal (tl-test--eval-render "(lib-a 1)" env) "1"))
+    (should (equal (tl-test--eval-render (format "(remove %S)" outer) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(lib-a 1)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: lib-a\""))
+    (should (equal (tl-test--eval-render "(lib-b 2)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: lib-b\""))
+    ;; The child's record went out with the parent's record.
+    (should (equal (tl-test--eval-render (format "(remove %S)" inner) env)
+                   (format "ERR:Term-lisp evaluation error: \"remove: %s is not loaded\""
+                           inner)))))
+
+(ert-deftest tl-remove-matches-through-a-symlink ()
+  "A remove may spell the loaded file differently than the load did."
+  (let* ((file (tl-test--tls-file "(define (lib-s x) x)"))
+         (link (concat file "-link.tls"))
+         (env (tl-test--load-env)))
+    (when (file-exists-p link) (delete-file link))
+    (make-symbolic-link file link)
+    (termlisp-eval (format "(load %S)" file) env)
+    (should (equal (tl-test--eval-render (format "(remove %S)" link) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(lib-s 1)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: lib-s\""))))
+
+(ert-deftest tl-remove-a-file-that-was-never-loaded ()
+  "Removing an unknown file is an error naming the expansion."
+  (let ((env (tl-test--load-env)))
+    (should (equal (tl-test--eval-render
+                    "(remove \"/nonexistent/tl-remove-no-such.tls\")" env)
+                   "ERR:Term-lisp evaluation error: \"remove: /nonexistent/tl-remove-no-such.tls is not loaded\""))))
+
+(ert-deftest tl-load-journal-is-most-recent-first ()
+  "The environment's journal lists loads most recent first."
+  (let* ((one (tl-test--tls-file "(define (lib-one x) x)"))
+         (two (tl-test--tls-file "(define (lib-two x) x)"))
+         (env (termlisp-make-env nil)))
+    (termlisp-load-prelude env)
+    (termlisp-load one env)
+    (termlisp-load two env)
+    (should (equal (mapcar (lambda (record)
+                             (file-name-nondirectory
+                              (tl-load-record-file record)))
+                           (tl-env-loads env))
+                   (list (file-name-nondirectory two)
+                         (file-name-nondirectory one)
+                         "termlisp-prelude.tls")))))
+
+;;; REPL banner: the welcome line reads the journal
+
+(ert-deftest tl-repl-banner-lists-the-journal ()
+  "The banner names the files the environment actually holds."
+  (let* ((file (tl-test--tls-file "(define (lib-id x) x)"))
+         (env (termlisp-make-env nil)))
+    (termlisp-load-prelude env)
+    (termlisp-load file env)
+    (with-temp-buffer
+      (setq-local termlisp-repl--env env)
+      (setq-local termlisp-repl--options '(:type-check t))
+      (should (string-match-p
+               (format "(loaded: termlisp-prelude\\.tls, %s)"
+                       (regexp-quote (file-name-nondirectory file)))
+               (termlisp-repl--banner))))))
+
+(ert-deftest tl-repl-banner-says-empty ()
+  "A banner over an untouched environment says so."
+  (with-temp-buffer
+    (setq-local termlisp-repl--env (termlisp-make-env nil))
+    (setq-local termlisp-repl--options '(:type-check t))
+    (should (string-match-p "(empty environment)"
+                            (termlisp-repl--banner)))))
+
+(ert-deftest tl-repl-load-files-are-loaded-at-startup ()
+  "`termlisp-repl-load-files' is loaded at startup and listed."
+  (let* ((file (tl-test--tls-file "(define (lib-id x) x)"))
+         (termlisp-repl-load-prelude t)
+         (termlisp-repl-load-files (list file)))
+    (with-temp-buffer
+      (setq-local termlisp-repl--options '(:type-check t))
+      (termlisp-repl--reset-env)
+      (should (equal (tl-test--eval-render
+                      "(lib-id 7)" termlisp-repl--env)
+                     "7"))
+      (should (string-match-p
+               (format "(loaded: termlisp-prelude\\.tls, %s)"
+                       (regexp-quote (file-name-nondirectory file)))
+               (termlisp-repl--banner))))))
+
 ;;; Examples quoted in the README
 
 (tl-test-eval tl-readme-and-implies-or "(define (and-implies-or (Pair a b)) (Left a)) (and-implies-or (Pair 1 2))" "(Left 1)" '(:type-check t :elaborate t))
