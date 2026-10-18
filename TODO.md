@@ -702,6 +702,69 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     `loaddefs-generate' clean (prefix lines byte-identical to the
     previous round's output).
 
+- [ ] **P1-19 Library manifest and lock for `.tls' files (Akku-style
+  packaging)** -- 立项, following the namespace discussion
+  ("我是指 .tls 文件的 namespace 问题... 有类似cl的nickname或者部分
+  scheme实现的约定么", answered no, then "参考akku的实现，立项").
+  termlisp has no library declaration, no qualified name and no
+  import; a file's only identity is its expanded path, and
+  collisions resolve by load order (both orders probed: the earlier
+  function's clause wins, a constant's later binding wins).  Akku.scm
+  (Weinholt's R6RS package manager, "Introduction to Akku.scm")
+  structures exactly this problem in three artifacts -- manifest
+  (human-declared package names + npm-style version ranges), lock
+  (resolved versions plus cryptographic checksums: "the lockfile
+  will always contain some cryptographic checksums", git sha1 now,
+  sha256 planned), and install (project-local, verified against the
+  lock) -- with a repository scanner that recovers each library's
+  identity by reading the files themselves, and with library-name
+  prefixing listed among its lock-level extensions: even Akku keeps
+  naming at the packaging layer, not in the language.  termlisp has
+  no index and no downloads, so the portable core of that design is
+  three sentences: names in a declaration, content pinned by digest,
+  resolution project-local.  The scanner is the strongest lesson --
+  identity comes from the file, so termlisp's analogue is a header
+  the `.tls' file carries, not a side table mapping names to paths.
+  - [ ] Design sketch, to be settled before any code: a `.tls' file
+    may open with a library declaration -- the first form
+    `(library (acme geometry) [VERSION])', a hierarchical
+    R7RS-style name, everything after it the body.  Files without
+    the header stay exactly what they are: unnamed, loadable, every
+    current semantic untouched, the prelude included.
+  - [ ] `tls.manifest' names dependencies the Akku way (library
+    name plus optional version range per entry); `tls.lock' pins
+    each name to a file path and its sha256.  A new
+    `termlisp-lock' entry point writes the lock by scanning a
+    search path (project `lib/' first), reading each file's
+    declaration, and refusing two files that claim one name.
+    File names open for bikeshedding.
+  - [ ] `load' gains name resolution: a declared name resolves
+    through the lock before the filesystem; a locked file whose
+    digest no longer matches is refused, naming both the library
+    and the file, before any form runs.  Path-based loading keeps
+    working and journals the declared name when there is one, so
+    `remove' and the REPL banner can list libraries by name.
+  - [ ] Collision policy upgrades with it: two files declaring one
+    name become an error at lock time and at load time; the silent
+    first-loaded-wins merge stays for unnamed files only.
+  - [ ] Investigate before commitment: whether `(library ...)' is a
+    load-layer header recognized by the batch loader (the
+    magic-string route: invisible to `tl-eval-top', evaluator
+    vocabulary stays closed) or a real top-level form (submissions
+    could declare libraries too).  The load-layer option is the
+    conservative one.
+  - [ ] Explicitly out of scope for this round, each its own node
+    later: a package index, version solving (Akku's aptitude port
+    is the NP-complete part; local files need digests, not a
+    solver), qualified access forms (`geometry:area'), and
+    prefixing instructions.
+  - [ ] Gates when built: the standing battery plus -- unnamed
+    files byte-identical in behavior (the prelude loads through
+    the same path), a digest mismatch refuses before any form runs
+    (the snapshot transaction gives atomicity for free), `remove'
+    undoes a named load by name and by path, and the journal's
+    names are what the REPL banner shows.
+
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
 - [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open
