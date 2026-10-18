@@ -67,7 +67,11 @@ constructor."
         (cons (cl-subseq items 0 at) (nth (1+ at) items))))))
 
 (cl-defstruct (tl-env (:constructor tl-env--make))
-  "Term-lisp evaluation context."
+  "Term-lisp evaluation context.
+The `loads' slot is the journal of libraries loaded into this
+environment, most recent first, as `tl-load-record' objects (defined
+in `termlisp-eval'); the `load' and `remove' primitives write it, and
+the REPL banner reads it."
   (functions (make-hash-table :test #'eq))
   (datatypes (make-hash-table :test #'eq))
   (constructors (make-hash-table :test #'eq))
@@ -79,6 +83,7 @@ constructor."
   (method-env (make-hash-table :test #'eq))
   (clauses (make-hash-table :test #'eq))
   (globals nil)
+  (loads nil)
   (options termlisp-default-options)
   (current nil))
 

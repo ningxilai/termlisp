@@ -25,7 +25,9 @@
 ;; `exit' or `quit' closes the REPL.
 ;;
 ;; The environment starts from `termlisp-repl-options', plus the prelude when
-;; `termlisp-repl-load-prelude' is non-nil.
+;; `termlisp-repl-load-prelude' is non-nil, plus every file named by
+;; `termlisp-repl-load-files'.  The banner lists the journal of loads the
+;; environment kept, so it names what is actually loaded.
 
 ;;; Code:
 
@@ -60,6 +62,16 @@ was created with; see `termlisp-repl-toggle-type-check' and
 (defcustom termlisp-repl-load-prelude t
   "When non-nil, load `termlisp-prelude.tls' into a fresh environment."
   :type 'boolean
+  :group 'termlisp-repl)
+
+(defcustom termlisp-repl-load-files nil
+  "Files loaded into a fresh REPL environment after the prelude.
+Each entry goes through `termlisp-load'; a file that fails to load
+signals, so a typo in this list is loud rather than silently absent
+from the banner.  The banner names what the environment actually
+holds -- its `tl-env-loads' journal, these files included -- not what
+was asked for."
+  :type '(repeat file)
   :group 'termlisp-repl)
 
 (defconst termlisp-repl-font-lock-keywords
@@ -104,16 +116,28 @@ was created with; see `termlisp-repl-toggle-type-check' and
   "Give the current REPL buffer a fresh environment."
   (setq termlisp-repl--env (termlisp-make-env termlisp-repl--options))
   (when termlisp-repl-load-prelude
-    (termlisp-load-prelude termlisp-repl--env)))
+    (termlisp-load-prelude termlisp-repl--env))
+  (dolist (file termlisp-repl-load-files)
+    (termlisp-load file termlisp-repl--env)))
 
 (defun termlisp-repl--banner ()
-  "Return the text written when a REPL buffer is created."
-  (concat
-   (format "Welcome to term-lisp%s.\n"
-           (if termlisp-repl-load-prelude " (prelude loaded)" " (empty environment)"))
-   (format "Options: %S.  Type `exit' to quit, %s to continue a form on the next line.\n"
-           termlisp-repl--options
-           (substitute-command-keys "\\[termlisp-repl-newline]"))))
+  "Return the text written when a REPL buffer is created.
+The welcome line names what the environment holds -- the journal of
+loads in `tl-env-loads', in the order they were loaded -- rather
+than what the options asked for, so what is listed and what is
+loaded cannot disagree."
+  (let ((loads (mapcar (lambda (record)
+                         (file-name-nondirectory
+                          (tl-load-record-file record)))
+                       (reverse (tl-env-loads termlisp-repl--env)))))
+    (concat
+     (format "Welcome to term-lisp%s.\n"
+             (if loads
+                 (format " (loaded: %s)" (string-join loads ", "))
+               " (empty environment)"))
+     (format "Options: %S.  Type `exit' to quit, %s to continue a form on the next line.\n"
+             termlisp-repl--options
+             (substitute-command-keys "\\[termlisp-repl-newline]")))))
 
 (defun termlisp-repl--start ()
   "Create the placeholder process, environment, banner and prompt."
@@ -254,8 +278,9 @@ The change takes effect immediately; it is kept by
 (define-derived-mode termlisp-repl-mode comint-mode "term-lisp REPL"
   "Major mode for interactively evaluating term-lisp expressions.
 
-The environment is created by `termlisp-repl', which loads the prelude
-and applies `termlisp-repl-options'.  Definitions made at the prompt are
+The environment is created by `termlisp-repl', which loads the prelude,
+every file in `termlisp-repl-load-files', and applies
+`termlisp-repl-options'.  Definitions made at the prompt are
 kept until `termlisp-repl-restart' rebuilds the environment.
 
 \\{termlisp-repl-mode-map}"
