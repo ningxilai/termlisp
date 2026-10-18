@@ -702,68 +702,65 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     `loaddefs-generate' clean (prefix lines byte-identical to the
     previous round's output).
 
-- [ ] **P1-19 Library manifest and lock for `.tls' files (Akku-style
-  packaging)** -- 立项, following the namespace discussion
-  ("我是指 .tls 文件的 namespace 问题... 有类似cl的nickname或者部分
-  scheme实现的约定么", answered no, then "参考akku的实现，立项").
-  termlisp has no library declaration, no qualified name and no
-  import; a file's only identity is its expanded path, and
-  collisions resolve by load order (both orders probed: the earlier
-  function's clause wins, a constant's later binding wins).  Akku.scm
-  (Weinholt's R6RS package manager, "Introduction to Akku.scm")
-  structures exactly this problem in three artifacts -- manifest
-  (human-declared package names + npm-style version ranges), lock
-  (resolved versions plus cryptographic checksums: "the lockfile
-  will always contain some cryptographic checksums", git sha1 now,
-  sha256 planned), and install (project-local, verified against the
-  lock) -- with a repository scanner that recovers each library's
-  identity by reading the files themselves, and with library-name
-  prefixing listed among its lock-level extensions: even Akku keeps
-  naming at the packaging layer, not in the language.  termlisp has
-  no index and no downloads, so the portable core of that design is
-  three sentences: names in a declaration, content pinned by digest,
-  resolution project-local.  The scanner is the strongest lesson --
-  identity comes from the file, so termlisp's analogue is a header
-  the `.tls' file carries, not a side table mapping names to paths.
-  - [ ] Design sketch, to be settled before any code: a `.tls' file
-    may open with a library declaration -- the first form
-    `(library (acme geometry) [VERSION])', a hierarchical
-    R7RS-style name, everything after it the body.  Files without
-    the header stay exactly what they are: unnamed, loadable, every
-    current semantic untouched, the prelude included.
-  - [ ] `tls.manifest' names dependencies the Akku way (library
-    name plus optional version range per entry); `tls.lock' pins
-    each name to a file path and its sha256.  A new
-    `termlisp-lock' entry point writes the lock by scanning a
-    search path (project `lib/' first), reading each file's
-    declaration, and refusing two files that claim one name.
-    File names open for bikeshedding.
-  - [ ] `load' gains name resolution: a declared name resolves
-    through the lock before the filesystem; a locked file whose
-    digest no longer matches is refused, naming both the library
-    and the file, before any form runs.  Path-based loading keeps
-    working and journals the declared name when there is one, so
-    `remove' and the REPL banner can list libraries by name.
-  - [ ] Collision policy upgrades with it: two files declaring one
-    name become an error at lock time and at load time; the silent
-    first-loaded-wins merge stays for unnamed files only.
-  - [ ] Investigate before commitment: whether `(library ...)' is a
-    load-layer header recognized by the batch loader (the
-    magic-string route: invisible to `tl-eval-top', evaluator
-    vocabulary stays closed) or a real top-level form (submissions
-    could declare libraries too).  The load-layer option is the
-    conservative one.
-  - [ ] Explicitly out of scope for this round, each its own node
-    later: a package index, version solving (Akku's aptitude port
-    is the NP-complete part; local files need digests, not a
-    solver), qualified access forms (`geometry:area'), and
-    prefixing instructions.
-  - [ ] Gates when built: the standing battery plus -- unnamed
-    files byte-identical in behavior (the prelude loads through
-    the same path), a digest mismatch refuses before any form runs
-    (the snapshot transaction gives atomicity for free), `remove'
-    undoes a named load by name and by path, and the journal's
-    names are what the REPL banner shows.
+- [ ] **P1-19 `provide'/`require': elisp-style library names for
+  `.tls' files** -- the namespace 立项 was redirected
+  ("namespace采用类似elisp的方案，复用基础设施，（provide and
+  require）"), superseding the Akku manifest/lock sketch kept in
+  commit `03007c6'.  Elisp answers exactly this problem with two
+  functions and one list: a file ends with `(provide 'FEATURE)',
+  `require' checks `features' first and otherwise searches
+  `load-path' for `<feature>.el', and names are plain symbols -- no
+  qualified names, no exports; the file-naming convention IS the
+  namespace.  termlisp reuses its load apparatus rather than build a
+  packaging layer: the per-env `tl-env-loads' journal is already
+  `features' with better properties (per-environment, a tree that
+  survives nested loads, and its records are what `remove' deletes --
+  so unload comes free, where elisp needs a separate
+  `unload-feature').  One load slot, two builtins, one defcustom.
+  - [ ] `tl-load-record' gains a `features' slot (a list -- elisp
+    lets one file provide several).  A new builtin
+    `(provide NAME : String -> Unit)' stamps NAME onto the record
+    whose transaction is open -- `termlisp--load-parent' is already
+    bound during any load, builtin or elisp-side, so this is one
+    append.  Provide outside any load is an error: a feature
+    outside a load has nothing `remove' could ever take away.  A
+    name another live record already carries is an error naming
+    both files -- silent ambiguity is what namespaces exist to
+    prevent; re-providing inside the same file is a no-op, as in
+    elisp.  Strings, not symbols: `load' takes Strings, a String
+    typechecks under `:type-check t' where a bare unknown name
+    does not, and the family stays `String -> Unit'.
+  - [ ] `(require NAME : String -> Unit)' -- if the env's journal
+    tree already carries NAME (top-level record or nested one; a
+    nested load did put its definitions in this env), it answers
+    Unit and loads nothing: idempotence, per environment.  Otherwise
+    it searches `termlisp-load-path' (new defcustom; nil means the
+    host's `default-directory'; one entry per directory, no
+    recursion, as `load-path') for `<NAME>.tls' and loads it
+    through `termlisp--load-tls-file' -- transaction, journal tree,
+    coverage isolation, remove support and atomic failure all
+    arrive without new code.  A file that loads without providing
+    the feature is an error, after the transaction has already
+    rolled it back; no file on the path is an error naming the
+    path.  The suffix is appended blindly, as elisp does.
+  - [ ] `remove' learns to match feature names as well as expanded
+    paths: its journal walk gains one comparison, so
+    `(remove "geometry")' undoes whichever file provided it --
+    snapshot restored, record (and with it the feature) gone.
+  - [ ] The REPL banner says a record's feature when it has one and
+    its file name otherwise: what is loaded, the way `features'
+    says it and the way this project's journal says it.
+  - [ ] Orthogonal and parked: versions, digests, a manifest and a
+    lock -- the Akku layer (`03007c6') stays a later node; names
+    come first, and the journal they stamp is the mount point that
+    layer would use when it comes.
+  - [ ] Gates when built: the standing battery plus -- require is
+    idempotent (two requires, one record: the journal length is the
+    proof), require finds and loads through the search path,
+    double-provide errors naming both files, provide-outside-load
+    errors, a loaded-but-providing-nothing file leaves nothing
+    behind, remove by feature restores like remove by path, and the
+    prelude (which provides nothing) is untouched.
 
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
