@@ -1028,16 +1028,42 @@ failure installs nothing."
 ;; elisp `load' macros `termlisp-load' defines, so a `.tls' file is one
 ;; artifact whichever side loads it and a host that never required that
 ;; file can still load libraries.
+;;
+;; A library also has a name.  `provide' stamps a feature onto the
+;; record of the load it runs inside, and `require' reads those stamps:
+;; the journal is elisp's `features' kept per environment, as part of
+;; the load machinery instead of beside it, so requiring a name runs
+;; the same transaction `load' runs and `remove' undoes the one with
+;; the other.  A record joins the journal when its load finishes, but
+;; a feature is stamped and read while loads are still running --
+;; elisp's `features' is readable the moment `provide' runs -- which
+;; is why `termlisp--open-loads' holds the records whose transaction
+;; has not closed and the feature lookups walk it together with the
+;; journal.  `remove' alone stays with the journal: an open record has
+;; no snapshot yet, so there is no earlier moment for it to restore.
 
-(defvar termlisp--load-parent nil
-  "Load record whose transaction is open, or nil at top level.
-A load started while another is running journals itself under the
-running one instead of at the head of `tl-env-loads'.  The record
-tree is what `remove' walks, and it is what makes removing an outer
-load drop the records of everything that load pulled in.")
+(defcustom termlisp-load-path nil
+  "Directories `require' searches for the file that provides a feature.
+Each entry is a directory holding `<NAME>.tls' files; nil means only
+the host's `default-directory' is searched.  Like elisp's
+`load-path', entries are not walked recursively -- a library in a
+subdirectory is named with slashes in its feature.  The suffix is
+appended blindly, as elisp appends `.el'."
+  :type '(repeat directory)
+  :group 'termlisp)
+
+(defvar termlisp--open-loads nil
+  "Load records whose transaction is still open, outermost first.
+`termlisp--load-invoke' binds it around a load's forms, so its last
+element is the record whose forms are running now -- what `provide'
+stamps.  A record joins `tl-env-loads' or its parent's children only
+when its load finishes, but `provide' and `require' work while a load
+is still running: elisp's `features' is readable the moment `provide'
+runs, so those lookups walk the journal together with this chain.
+Nil at top level.")
 
 (cl-defstruct (tl-load-record (:constructor tl-make-load-record (file)))
-  "One completed load: FILE, the snapshot to restore, nested loads.
+  "One completed load: FILE, the snapshot to restore, nested loads, features.
 SNAPSHOT is what `termlisp--env-snapshot' took before FILE's forms
 ran, and restoring it is the whole of `remove'.  CHILDREN are the
 loads FILE itself performed, most recent first; they live here and
@@ -1046,8 +1072,10 @@ load -- removing FILE removes them with it, which is what stops a
 stale child record from restoring a state the parent already undid.
 `remove' refuses a nested record by name; the tree exists for the
 parent's sake.  FILE is the expanded file name, recorded the way
-`remove' expands its own argument."
-  file snapshot children)
+`remove' expands its own argument.  FEATURES is the list of names
+the load stamped with `provide', most recent first; `require'
+answers from them and the REPL banner prefers them to FILE."
+  file snapshot children (features nil))
 
 (defconst termlisp--snapshot-tables
   '((tl-env-functions . identity)
@@ -1099,26 +1127,29 @@ replaced, so anything already holding one keeps seeing the truth."
   "Run FILE's load into ENV by evaluating RUN-FORMS, transactionally.
 The environment is snapshotted before RUN-FORMS runs.  A run that
 finishes journals its record -- at the head of `tl-env-loads' for a
-top-level load, under `termlisp--load-parent' for a load FILE itself
-started -- and a run that signals restores the snapshot and journals
+top-level load, under the record of the load FILE ran inside
+otherwise -- and a run that signals restores the snapshot and journals
 nothing, so a failed load leaves the environment exactly as it was.
 RUN-FORMS is called for effect; whatever it returns is ignored, and
 it is responsible for its own forward-name machinery and for
 flushing coverage (`tl-run-post-batch') if the load's file is to be
-checked.  FILE is expanded against `default-directory' and recorded
-expanded, which is also the rule `remove' expands its argument by."
+checked.  While it runs the new record is the last element of
+`termlisp--open-loads', which is what `provide' stamps.  FILE is
+expanded against `default-directory' and recorded expanded, which is
+also the rule `remove' expands its argument by."
   (let ((snapshot (termlisp--env-snapshot env))
         (record (tl-make-load-record (expand-file-name file)))
-        (outer-parent termlisp--load-parent)
+        (outer-opens termlisp--open-loads)
         (outer-queue tl-coverage-announcements)
         (loaded nil))
     (unwind-protect
         (let ((tl-coverage-announcements nil)
-              (termlisp--load-parent record))
+              (termlisp--open-loads (append outer-opens (list record))))
           (funcall run-forms)
           (setf (tl-load-record-snapshot record) snapshot)
-          (if outer-parent
-              (push record (tl-load-record-children outer-parent))
+          (if outer-opens
+              (push record
+                    (tl-load-record-children (car (last outer-opens))))
             (push record (tl-env-loads env)))
           (setq loaded t))
       (setq tl-coverage-announcements outer-queue)
@@ -1137,24 +1168,86 @@ removing a library whose file has since been deleted must work."
            (file-exists-p file)
            (file-equal-p (tl-load-record-file record) file))))
 
-(defun termlisp--find-load (records file top)
-  "Find the most recent load of FILE among RECORDS or below one of them.
-TOP is the top-level record a search has descended under, nil while it
-is still at the top.  Return the record and its top-level ancestor as
-\(RECORD . TOP), or nil.  A record is examined before its children
-because a nested load finishes before the load that started it, so
-parent-after-children is completion order and the first match is the
-most recent one."
+(defun termlisp--find-record (records match top)
+  "Find the most recent record among RECORDS or below one MATCH likes.
+MATCH is called with each record and the search descends under every
+record it answers non-nil for.  TOP is the top-level record the
+search has descended under so far, nil while it is still at the top.
+Return the record and its top-level ancestor as \(RECORD . TOP), or
+nil.  A record is examined before its children because a nested load
+finishes before the load that started it, so parent-after-children is
+completion order and the first match is the most recent one."
   (catch 'termlisp--found
     (dolist (record records)
-      (when (termlisp--load-match-p record file)
+      (when (funcall match record)
         (throw 'termlisp--found (cons record top)))
-      (let ((found (termlisp--find-load
+      (let ((found (termlisp--find-record
                     (tl-load-record-children record)
-                    file
+                    match
                     (or top record))))
         (when found (throw 'termlisp--found found))))
     nil))
+
+(defun termlisp--find-load (records file top)
+  "Find the most recent load of FILE among RECORDS or below one of them.
+FILE is an already-expanded name and `termlisp--load-match-p' decides
+which record is its load.  TOP and the answer are as in
+`termlisp--find-record': the top-level ancestor comes with the
+record, or nil when FILE is not loaded anywhere below."
+  (termlisp--find-record
+   records (lambda (record) (termlisp--load-match-p record file)) top))
+
+(defun termlisp--feature-member-p (record name)
+  "Say whether RECORD carries the feature NAME.
+`string-equal' decides, so what a program required and what its
+library provided need only be equal."
+  (and (cl-find name (tl-load-record-features record) :test #'string-equal)
+       t))
+
+(defun termlisp--find-feature (records name top)
+  "Find the most recent record providing the feature NAME below RECORDS.
+TOP and the answer are as in `termlisp--find-load': the top-level
+ancestor comes with the record, or nil when no record carries NAME."
+  (termlisp--find-record
+   records (lambda (record) (termlisp--feature-member-p record name)) top))
+
+(defun termlisp--record-universe (env)
+  "Return every load record of ENV that `provide' and `require' see.
+A record joins `tl-env-loads' when its load finishes, but a feature
+is stamped and read while loads are still running, so the records of
+loads still open -- the `termlisp--open-loads' chain, with the
+children of each -- are part of the answer.  `remove' never comes
+here: an open record has no snapshot yet, so there is no earlier
+moment for it to restore."
+  (append (tl-env-loads env) termlisp--open-loads))
+
+(defun termlisp--provide (name env)
+  "Stamp the feature NAME onto the load that is running, answering `Unit'.
+That load is the last element of `termlisp--open-loads', the record
+`termlisp--load-invoke' made for the file whose forms are running
+into ENV; stamping it is all `provide' does -- the journal of ENV
+takes the record when the load finishes.  A file may stamp the same
+name twice: the second time answers without doing it again, as in
+elisp.  A feature some other record already carries is an error
+naming both that file and this one, because two libraries claiming
+one name is what a namespace exists to prevent.  NAME outside any
+load is an error: a feature with no record behind it would be one
+`remove' could never take away."
+  (let ((record (car (last termlisp--open-loads))))
+    (unless record
+      (signal 'termlisp-eval-error
+              (list (format "provide: %s: no load in progress" name))))
+    (if (termlisp--feature-member-p record name)
+        'Unit
+      (let ((other (termlisp--find-feature
+                    (termlisp--record-universe env) name nil)))
+        (when other
+          (signal 'termlisp-eval-error
+                  (list (format "provide: %s is already provided by %s"
+                                name
+                                (tl-load-record-file (car other))))))
+        (push name (tl-load-record-features record))
+        'Unit))))
 
 (defun termlisp--remove-load (file env)
   "Undo the most recent top-level load of FILE into ENV, answering `Unit'.
@@ -1174,10 +1267,14 @@ What a remove cannot reach is a value already in hand -- a function
 value carries its clauses, not its name -- so what a name resolves to
 afterwards is decided here and not retroactively.
 FILE expands against `default-directory' exactly as it did for
-`load', and a file that is not loaded is an error rather than a
-silently accepted no-op."
+`load'.  FILE may also be a feature name some load provided, found
+after the path search fails, so a library goes by whichever of its
+two names its user knows -- and a name that is neither a loaded file
+nor a live feature is an error rather than a silently accepted
+no-op."
   (let* ((want (expand-file-name file))
-         (found (termlisp--find-load (tl-env-loads env) want nil)))
+         (found (or (termlisp--find-load (tl-env-loads env) want nil)
+                    (termlisp--find-feature (tl-env-loads env) file nil))))
     (unless found
       (signal 'termlisp-eval-error
               (list (format "remove: %s is not loaded" file))))
@@ -1192,7 +1289,7 @@ silently accepted no-op."
       (termlisp--env-restore env (tl-load-record-snapshot record)))
     'Unit))
 
-(defun termlisp--load-tls-file (file env)
+(defun termlisp--load-tls-file (file env &optional feature)
   "Load the `.tls' FILE into ENV as one batch, answering `Unit'.
 FILE's forms run through `termlisp-eval-form', so ENV's `:type-check'
 and `:elaborate' options decide how each is checked and every name the
@@ -1205,10 +1302,14 @@ loading in the middle of a submission cannot report that submission's
 half-written functions -- the enclosing batch's queue is set aside and
 restored by `termlisp--load-invoke', which also makes the load a
 transaction: success journals FILE for `remove', failure restores the
-environment and installs nothing.  A parse error is re-signalling
-naming FILE, an unreadable file is refused before any form is
-evaluated, and the file itself is only read, never rewritten -- the
-`.tls' magic string is an editor convention the reader skips as a
+environment and installs nothing.  When FEATURE is non-nil the load
+must leave that feature provided -- by FILE itself or by a file FILE
+pulled in -- and the check runs before the record is journalled, so a
+file that never provides it fails the transaction like any other
+failure; `require' is the caller that passes FEATURE.  A parse error
+is re-signalling naming FILE, an unreadable file is refused before any
+form is evaluated, and the file itself is only read, never rewritten --
+the `.tls' magic string is an editor convention the reader skips as a
 comment."
   (unless (file-readable-p file)
     (signal 'termlisp-eval-error
@@ -1233,8 +1334,62 @@ comment."
          ;; The file is one batch, so this is the first moment every
          ;; definition in it has all of its clauses.
          (tl-forward--link)
-         (tl-run-post-batch)))))
+         (tl-run-post-batch)
+         (when feature
+           (unless (termlisp--find-feature
+                    (list (car (last termlisp--open-loads))) feature nil)
+             (signal 'termlisp-eval-error
+                     (list (format "require: %s loaded without providing %s"
+                                   file feature)))))))))
   'Unit)
+
+(defvar termlisp--requiring nil
+  "Features `require' is loading right now, most recent first.
+A file that requires the feature it is itself being loaded to
+provide would otherwise load itself forever; elisp's `load' refuses
+the same recursion by name, and this list is how `require' knows it.
+Nil outside a require.")
+
+(defun termlisp--require-library (name env)
+  "Load into ENV whatever provides the feature NAME, answering `Unit'.
+If a record of ENV -- or one whose load is still open -- already
+carries NAME the answer is immediate and nothing loads: requiring is
+idempotent per environment, and a file another load pulled in
+satisfies a require made anywhere, because its definitions went into
+this same environment.  Otherwise NAME with `.tls' appended is
+searched for in `termlisp-load-path', `default-directory' alone when
+that is nil, and the first readable candidate is loaded through
+`termlisp--load-tls-file' with NAME to verify: the feature must be
+provided by the time the load would journal, so a file that loads
+without providing it is refused with the environment restored.  A
+name no file provides is an error listing the directories searched,
+and requiring a name whose file is already being loaded to provide
+it is refused rather than loaded a second time -- though once such a
+file has stamped the feature, its own require is the satisfied kind."
+  (if (termlisp--find-feature (termlisp--record-universe env) name nil)
+      'Unit
+    (when (member name termlisp--requiring)
+      (signal 'termlisp-eval-error
+              (list (format "require: recursive load of %s" name))))
+    (let* ((file (concat name ".tls"))
+           (dirs (or termlisp-load-path (list default-directory)))
+           (hit (catch 'termlisp--found
+                  (dolist (dir dirs)
+                    (let ((candidate (expand-file-name file dir)))
+                      (when (file-readable-p candidate)
+                        (throw 'termlisp--found candidate))))
+                  nil)))
+      (unless hit
+        (signal 'termlisp-eval-error
+                (list (format "require: nothing provides %s (searched: %s)"
+                              name
+                              (mapconcat
+                               (lambda (dir)
+                                 (directory-file-name (expand-file-name dir)))
+                               dirs ", ")))))
+      (let ((termlisp--requiring (cons name termlisp--requiring)))
+        (termlisp--load-tls-file hit env name))
+      'Unit)))
 
 (tl-register-builtin 'load
   (lambda (args)
@@ -1262,6 +1417,30 @@ comment."
         (signal 'termlisp-type-error
                 (list (format "remove expects a String, got %S" file))))
       (termlisp--remove-load file termlisp--current-env))))
+
+(tl-register-builtin 'provide
+  (lambda (args)
+    (unless (= (length args) 1)
+      (signal 'termlisp-type-error
+              (list (format "provide expects 1 argument, got %d"
+                            (length args)))))
+    (let ((name (car args)))
+      (unless (stringp name)
+        (signal 'termlisp-type-error
+                (list (format "provide expects a String, got %S" name))))
+      (termlisp--provide name termlisp--current-env))))
+
+(tl-register-builtin 'require
+  (lambda (args)
+    (unless (= (length args) 1)
+      (signal 'termlisp-type-error
+              (list (format "require expects 1 argument, got %d"
+                            (length args)))))
+    (let ((name (car args)))
+      (unless (stringp name)
+        (signal 'termlisp-type-error
+                (list (format "require expects a String, got %S" name))))
+      (termlisp--require-library name termlisp--current-env))))
 
 (provide 'termlisp-eval)
 ;;; termlisp-eval.el ends here

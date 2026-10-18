@@ -125,10 +125,13 @@ was asked for."
 The welcome line names what the environment holds -- the journal of
 loads in `tl-env-loads', in the order they were loaded -- rather
 than what the options asked for, so what is listed and what is
-loaded cannot disagree."
+loaded cannot disagree.  A load that provided a feature is listed by
+the most recently stamped one, its file name otherwise."
   (let ((loads (mapcar (lambda (record)
-                         (file-name-nondirectory
-                          (tl-load-record-file record)))
+                         (if (tl-load-record-features record)
+                             (car (tl-load-record-features record))
+                           (file-name-nondirectory
+                            (tl-load-record-file record))))
                        (reverse (tl-env-loads termlisp-repl--env)))))
     (concat
      (format "Welcome to term-lisp%s.\n"

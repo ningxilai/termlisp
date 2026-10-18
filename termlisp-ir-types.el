@@ -483,6 +483,16 @@ result is left unconstrained rather than aborting the whole program."
 ;; not loaded is an error rather than a type-level no-op.
 (tl-register-builtin-type 'remove
   (tl-tscheme nil (tl-tarrow (tl-tstring) (tl-tunit))))
+;; `provide' and `require' are the library-name layer over the same
+;; machinery: a file stamps the load it runs inside with a feature,
+;; and `require' loads whatever file provides a feature the
+;; environment does not yet hold.  Both take the name as a String --
+;; the family `load' began -- and answer `Unit', so a require may sit
+;; anywhere a load may, checked submissions included.
+(tl-register-builtin-type 'provide
+  (tl-tscheme nil (tl-tarrow (tl-tstring) (tl-tunit))))
+(tl-register-builtin-type 'require
+  (tl-tscheme nil (tl-tarrow (tl-tstring) (tl-tunit))))
 
 ;;; HM schemes for the exact-numeric IR helpers.
 ;;
