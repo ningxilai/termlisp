@@ -1098,5 +1098,78 @@ file called NAME."
 (tl-test-eval tl-app-method-waiting-for-its-dictionary
   "(fmap (lambda (x) (+ x 1)) (Ziplist (Cons 1 Nil)))" "#<partial>")
 
+;;; Set: insertion-ordered set theory (ported from ordered-set.el)
+
+;; The set-theory layer of Kisaragi Hiu's ordered-set.el, over a
+;; normalized list: deduplicated, first-occurrence-wins, in insertion
+;; order.  The order pins follow the source's documented semantics --
+;; union keeps the first sequence's order and then the second's new
+;; members, intersection and difference follow the first argument,
+;; the symmetric difference is the union minus the intersection --
+;; and the three relations are the emptiness questions the elisp
+;; library answers inline.
+
+(tl-test-eval tl-set-from-list-dedups-keeping-first
+  "(set-to-list (set-from-list (list 1 2 1 3 2)))"
+  "(Cons 1 (Cons 2 (Cons 3 Nil)))")
+(tl-test-eval tl-set-from-list-nothing-is-empty
+  "(set-to-list (set-from-list Nil))" "Nil")
+(tl-test-eval tl-set-nil-is-the-empty-set
+  "(set-to-list set-nil)" "Nil")
+;; The list walk behind `set-contains?', pinned on its own now that
+;; the list library carries it.
+(tl-test-eval tl-list-member-finds-a-present-element
+  "(list-member? (list 1 2 3) 2)" "True")
+(tl-test-eval tl-list-member-rejects-an-absent-element
+  "(list-member? (list 1 2 3) 5)" "False")
+(tl-test-eval tl-set-add-appends-in-insertion-order
+  "(set-to-list (set-add (set-from-list (list 1 2)) 3))"
+  "(Cons 1 (Cons 2 (Cons 3 Nil)))")
+(tl-test-eval tl-set-add-of-a-member-changes-nothing
+  "(set-to-list (set-add (set-from-list (list 1 2)) 2))"
+  "(Cons 1 (Cons 2 Nil))")
+(tl-test-eval tl-set-contains-a-member
+  "(set-contains? (set-from-list (list 1 2)) 2)" "True")
+(tl-test-eval tl-set-contains-a-stranger
+  "(set-contains? (set-from-list (list 1 2)) 3)" "False")
+(tl-test-eval tl-set-union-first-order-then-new-members
+  "(set-to-list (set-union (set-from-list (list 1 2 3)) (set-from-list (list 2 3 4))))"
+  "(Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil))))")
+(tl-test-eval tl-set-intersection-follows-the-first
+  "(set-to-list (set-intersection (set-from-list (list 3 1 2)) (set-from-list (list 2 1))))"
+  "(Cons 1 (Cons 2 Nil))")
+(tl-test-eval tl-set-difference-follows-the-first
+  "(set-to-list (set-difference (set-from-list (list 1 2 3)) (set-from-list (list 2 3 4))))"
+  "(Cons 1 Nil)")
+(tl-test-eval tl-set-symmetric-difference-unions-then-subtracts
+  "(set-to-list (set-symmetric-difference (set-from-list (list 1 2)) (set-from-list (list 2 3 4))))"
+  "(Cons 1 (Cons 3 (Cons 4 Nil)))")
+(tl-test-eval tl-set-delete-removes-its-element
+  "(set-to-list (set-delete (set-from-list (list 1 2 3)) 2))"
+  "(Cons 1 (Cons 3 Nil))")
+(tl-test-eval tl-set-delete-tolerates-absence
+  "(set-to-list (set-delete (set-from-list (list 1 2)) 5))"
+  "(Cons 1 (Cons 2 Nil))")
+(tl-test-eval tl-set-subset-of-itself-and-larger
+  "(subset? (set-from-list (list 1 2)) (set-from-list (list 1 2 3)))" "True")
+(tl-test-eval tl-set-subset-rejects-a-stranger
+  "(subset? (set-from-list (list 1 4)) (set-from-list (list 1 2 3)))" "False")
+(tl-test-eval tl-set-superset-flips-the-question
+  "(superset? (set-from-list (list 1 2 3)) (set-from-list (list 1 2)))" "True")
+(tl-test-eval tl-set-disjoint-with-nothing-in-common
+  "(disjoint? (set-from-list (list 1 2)) (set-from-list (list 3 4)))" "True")
+(tl-test-eval tl-set-disjoint-rejects-an-overlap
+  "(disjoint? (set-from-list (list 1 2)) (set-from-list (list 2 3)))" "False")
+;; Foldable is the one tower registration; like every method call it
+;; needs the elaborator to find the dictionary.
+(tl-test-eval tl-set-foldable-length
+  "(length (set-from-list (list 1 2 1 2 3)))" "3" '(:elaborate t))
+(tl-test-eval tl-set-foldable-to-list
+  "(to-list (set-from-list (list 3 1 3)))"
+  "(Cons 3 (Cons 1 Nil))" '(:elaborate t))
+(tl-test-eval tl-set-operations-under-type-check
+  "(set-to-list (set-symmetric-difference (set-from-list (list 1 2)) (set-from-list (list 2 3 4))))"
+  "(Cons 1 (Cons 3 (Cons 4 Nil)))" '(:type-check t))
+
 (provide 'prelude-test)
 ;;; prelude-test.el ends here

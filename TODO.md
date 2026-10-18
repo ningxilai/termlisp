@@ -791,6 +791,80 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     feature and a fresh require re-resolves through the path, and
     a two-feature file answers `remove' by either name.
 
+- [x] **P1-20 `Set': the ordered-set.el set theory, ported** -- the
+  user pointed at `/home/iris/Downloads/ordered-set-20250616.1432'
+  (Kisaragi Hiu's ordered-set.el, GPL-3.0-or-later, the license the
+  prelude carries) and asked for its set-theoretic abstractions in
+  the prelude.  What ports is the abstraction, not the
+  representation: the library keeps a hash table beside an
+  insertion-ordered list for O(1) membership, and termlisp has
+  neither mutation nor a hashing primitive, so a Set IS its
+  normalized list -- deduplicated, first-occurrence-wins, in order
+  of first insertion -- with linear membership, the cost the
+  source's own opening note calls out; elements compare with `eq'
+  where elisp's sets use `equal'.  The tc39 layer (the library's
+  "Set methods" section) is the core: union keeps the first
+  sequence's order and then the second's new members, intersection
+  and difference follow the first argument, the symmetric
+  difference is the union minus the intersection, and
+  subset/superset/disjoint are the emptiness questions -- difference,
+  flipped difference, intersection -- defined exactly the way the
+  elisp library defines them.  The port adds `set-empty?' beside
+  `subset?'/`disjoint?': the prelude's `null?' compares against
+  `Nil' and so speaks only of lists, which the `:type-check t'
+  prelude load proved the moment it refused
+  `(null? (set-difference ...))' -- the first probe draft hit it,
+  and the fix is the predicate the relations were waiting for.
+  `set-add' appends at the tail (insertion order), `set-from-list'
+  folds with `set-add' over the constant empty set `set-nil', and
+  `set-delete' returns the set
+  rather than reporting the deletion as elisp's t/nil: the set is
+  the answer, in this language's currency.  The one tower
+  registration is Foldable over the wrapped list, the analogue of
+  the source's seq integration (`seq-length', `seq-do'); no Functor
+  or Applicative the source does not claim.  Set lands after the
+  ziplist section, after the classes it registers with.
+  - [x] What the committed draft hid: the oracles read the section
+    and found three things, fixed before the round was called done.
+    The prelude load's value oracle failed with `set-union'
+    violated -- reduct at `(Set sk2610)', pattern at `(Set sk2609)'
+    -- and the kind oracle failed with `set-contains?' undecided and
+    `set-from-list' refused ("Set argument 1 is a List where a * is
+    required").  The value failure was a real scheme, not a checker
+    quirk: `set-union' had been inferred as `Set a -> Set a ->
+    Set b', its result element disconnected.  The section caused
+    it -- `set-from-list' asked for the forward-declared `set-add',
+    and forward uses are regenerated at link time; reproducing the
+    same forward pattern on `list-member?' had the regeneration
+    append `Bool' to its quantifier list while `set-intersection',
+    which asked it, came out with the two argument element types no
+    longer the same one.  Defining every name before its askers
+    threaded every scheme in the section: `set-union' now infers
+    `forall a. Set a -> Set a -> Set a' with no signature, which is
+    why none ships.  The two kind failures are the kind oracle
+    reading rules as types: `Set' is a known type head whose `Nil'
+    argument reads as the list it is -- the reading that already
+    refuses `ziplist-pure' -- so the empty set became the constant
+    `set-nil', which carries no rule to read, and `set-contains?'s
+    nested `(Set (Cons ...))' pattern, where a finding cannot be
+    documented away since the kind oracle's cannot bucket must stay
+    empty, became `list-member?' on the list itself, a walk the
+    list library keeps.
+  - [x] Gates (final): 23 new pins; red proven with the parent
+    prelude -- all 23 fail there; green 23/23, full suite 708/708
+    (685 old + 23 new), both oracles inside it.  The draft's own
+    red is the finding above: on the committed tree the suite ran
+    703/705 with the two oracle failures, and the fixed tree is the
+    708.  `make compile' 0 warnings, isolated per-file compile
+    clean for every file this round touched (the 43 warnings in
+    aldor-test/curry-howard-test/test-support are base-inherited,
+    their diffs against the base empty), parsecheck 36 .el + the
+    prelude's 265 forms (245 at the round's start, 263 for the
+    first draft), checkdoc multiset byte-identical to a fresh
+    `916ef38' base (356 normalized lines), loaddefs identical
+    modulo checkout paths with no prefix warnings, every new name
+    referenced beyond its definition.
+
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 
 - [x] **F1 kind 保持性检查器** — kind mirror of `tl-preserve-check`: freeze open
