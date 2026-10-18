@@ -315,12 +315,20 @@ They are fine everywhere else — the REPL, `termlisp-eval-file` and
 `termlisp-eval` all go through the reader instead. If you need either at
 the top level of a file, evaluate it through `termlisp-eval-file`.
 
+The same caveat reaches `provide` and `require`: they are termlisp
+builtins, and a top-level `(provide "name")` in a file loaded by
+`termlisp-load` would be read as **elisp's** `provide`, which wants a
+symbol. A library that carries a feature name is therefore written for
+the builtin route — which is also what `load` inside termlisp uses, so
+`require` and the REPL banner see it either way a program loads.
+
 A termlisp program does not go through `termlisp-load` at all: the
 `load` builtin reads its file with the termlisp reader, so both of
 these forms load from inside termlisp — an extension of a
 `(datatype open ...)` and a top-level `do`, in checked and unchecked
-environments alike. That path also journalled each load, which is what
-the `remove` builtin restores.
+environments alike. That path also journalled each load — with the
+feature `provide` stamped on it, if the file named itself — which is
+what the `remove` builtin restores and the `require` builtin reads.
 
 ### Patterns
 
@@ -643,7 +651,8 @@ API:
   `zero?`, `even?`, `odd?`, `absurd`, `factorial`, `floor`, `ceiling`,
   `round`, `sin`, `cos`, `tan`, `exp`, `log`, `sqrt`, `seq`, `first`,
   `rest`, `empty?`, `list`, `format`, `print`, `read-line`, `stdin`,
-  `string-join`, `string->list`, `list->string`, `load`, `remove`. `load`
+  `string-join`, `string->list`, `list->string`, `load`, `remove`,
+  `provide`, `require`. `load`
   takes a file name — a relative one expands against the host's
   `default-directory` — and evaluates the file's forms into the running
   environment as one batch, answering `Unit`; the definitions it makes
@@ -655,6 +664,23 @@ API:
   clauses, datatypes, types — so its names are unknown again; a file
   loaded inside another load comes out with that load rather than on
   its own.
+- `provide` / `require` — library names, elisp's `provide`/`require`
+  over the same machinery. A file that ends with
+  `(provide "geometry")` stamps that feature onto the record of the
+  load it ran inside; the per-environment journal of loads *is* the
+  `features` list, so `remove` deletes a feature with the record that
+  carried it and no separate unload step exists. `(require "geometry")`
+  answers `Unit` immediately if the environment already holds the
+  feature — idempotent, per environment — and otherwise appends `.tls`
+  to the name and searches `termlisp-load-path` (nil means the host's
+  `default-directory`, one directory per entry, no recursion) for the
+  first readable candidate, loading it as the same transaction `load`
+  runs. A file that loads without providing the feature is refused
+  before anything is journalled, a feature two loads would claim is an
+  error naming both files, a file requiring the feature it is being
+  loaded for is refused rather than loaded forever, and `remove` and
+  the REPL banner accept a feature name wherever they name a loaded
+  library.
 
 The prelude defines the booleans, pairs, `Either`/`Void`, lists, `Nat`,
 `Vec`, `Fin`, `Eq`, monads and type classes, the categorical tower —
@@ -693,7 +719,9 @@ file in `termlisp-repl-load-files` is loaded after the prelude. It
 greets you with what the environment actually holds —
 `Welcome to term-lisp (loaded: termlisp-prelude.tls, lib.tls).` for a
 prelude plus one library, `(empty environment)` for neither — followed
-by the options in force.
+by the options in force. A library that provided a feature is listed
+by that name (`(loaded: termlisp-prelude.tls, geometry)`), one that
+provided none by its file name.
 
 The buffer is only the front end: whether an input may be sent is the
 reader's answer (`termlisp-read-complete-p`), and evaluation goes through

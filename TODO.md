@@ -654,7 +654,8 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
   (`copy-sequence'), pinned by a remove-then-re-extend test that
   would see `Banana' resurrect had the snapshot shared the list.  The
   journal is a tree, not a list: a load performed while another is
-  running is recorded under the running one (`termlisp--load-parent'),
+  running is recorded under the running one (its record, reached
+  through the `termlisp--open-loads' chain P1-19 settled on),
   so removing the outer load drops the inner records with it --
   otherwise a later `(remove "b.tls")' would restore a
   mid-transaction state no load owns any more.  That tree also fixed
@@ -702,7 +703,7 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
     `loaddefs-generate' clean (prefix lines byte-identical to the
     previous round's output).
 
-- [ ] **P1-19 `provide'/`require': elisp-style library names for
+- [x] **P1-19 `provide'/`require': elisp-style library names for
   `.tls' files** -- the namespace 立项 was redirected
   ("namespace采用类似elisp的方案，复用基础设施，（provide and
   require）"), superseding the Akku manifest/lock sketch kept in
@@ -717,50 +718,78 @@ Status values: `[ ]` not started, `[~]` in progress, `[x]` done.
   survives nested loads, and its records are what `remove' deletes --
   so unload comes free, where elisp needs a separate
   `unload-feature').  One load slot, two builtins, one defcustom.
-  - [ ] `tl-load-record' gains a `features' slot (a list -- elisp
+  - [x] `tl-load-record' gains a `features' slot (a list -- elisp
     lets one file provide several).  A new builtin
     `(provide NAME : String -> Unit)' stamps NAME onto the record
-    whose transaction is open -- `termlisp--load-parent' is already
-    bound during any load, builtin or elisp-side, so this is one
-    append.  Provide outside any load is an error: a feature
-    outside a load has nothing `remove' could ever take away.  A
-    name another live record already carries is an error naming
-    both files -- silent ambiguity is what namespaces exist to
-    prevent; re-providing inside the same file is a no-op, as in
-    elisp.  Strings, not symbols: `load' takes Strings, a String
-    typechecks under `:type-check t' where a bare unknown name
-    does not, and the family stays `String -> Unit'.
-  - [ ] `(require NAME : String -> Unit)' -- if the env's journal
-    tree already carries NAME (top-level record or nested one; a
-    nested load did put its definitions in this env), it answers
-    Unit and loads nothing: idempotence, per environment.  Otherwise
-    it searches `termlisp-load-path' (new defcustom; nil means the
-    host's `default-directory'; one entry per directory, no
-    recursion, as `load-path') for `<NAME>.tls' and loads it
-    through `termlisp--load-tls-file' -- transaction, journal tree,
+    whose transaction is open -- the last element of
+    `termlisp--open-loads', the chain `termlisp--load-invoke' now
+    binds around every load's forms (the variable the nesting logic
+    kept as `termlisp--load-parent' folded into it), so this is one
+    append.  Provide outside any load is an error: a feature outside
+    a load has nothing `remove' could ever take away.  A name another
+    record already carries -- in the journal or still open -- is an
+    error naming both files: silent ambiguity is what namespaces
+    exist to prevent; re-providing inside the same file is a no-op,
+    as in elisp.  Strings, not symbols: `load' takes Strings, a
+    String typechecks under `:type-check t' where a bare unknown
+    name does not, and the family stays `String -> Unit'.  One
+    boundary the probe drew: on the elisp-macro load route a
+    top-level `(provide "x")' is read as elisp's own `provide' and
+    `(reduce (provide "x"))' normalizes without applying builtins
+    (`tl-reduce-term' reads its term, it does not evaluate), so
+    feature-stamped libraries are written for the builtin route --
+    recorded in the README's `.tls' caveat section.
+  - [x] `(require NAME : String -> Unit)' -- if the journal or a
+    load still open already carries NAME (top-level record or
+    nested one; a nested load did put its definitions in this env,
+    and elisp's `features' is readable the moment `provide' runs,
+    so the open chain counts too), it answers Unit and loads
+    nothing: idempotence, per environment, proven even twice inside
+    one enclosing load (one child record).  Otherwise it searches
+    `termlisp-load-path' (new defcustom; nil means the host's
+    `default-directory'; one entry per directory, no recursion, as
+    `load-path') for `<NAME>.tls' and loads it through
+    `termlisp--load-tls-file' -- transaction, journal tree,
     coverage isolation, remove support and atomic failure all
     arrive without new code.  A file that loads without providing
-    the feature is an error, after the transaction has already
-    rolled it back; no file on the path is an error naming the
-    path.  The suffix is appended blindly, as elisp does.
-  - [ ] `remove' learns to match feature names as well as expanded
-    paths: its journal walk gains one comparison, so
-    `(remove "geometry")' undoes whichever file provided it --
-    snapshot restored, record (and with it the feature) gone.
-  - [ ] The REPL banner says a record's feature when it has one and
-    its file name otherwise: what is loaded, the way `features'
-    says it and the way this project's journal says it.
-  - [ ] Orthogonal and parked: versions, digests, a manifest and a
+    the feature is an error, raised before the record is journalled
+    so the transaction rolls it back like any other failure; no
+    file on the path is an error naming the directories searched.
+    The suffix is appended blindly, as elisp does.  A file
+    requiring the feature it is being loaded to provide would load
+    itself forever, so `termlisp--requiring' refuses the recursion
+    by name -- elisp's `load' refuses the same thing the same way;
+    a file that stamps the feature first and only then requires it
+    is an ordinary satisfied require.
+  - [x] `remove' learns to match feature names as well as expanded
+    paths: the path search runs first and a load carrying the
+    feature answers after, so `(remove "geometry")' undoes
+    whichever file provided it -- snapshot restored, record (and
+    with it the feature) gone -- and a feature provided inside
+    another load comes out with that load by the same nesting
+    refusal a file name gets.
+  - [x] The REPL banner says a record's most recently stamped
+    feature when it has one and its file name otherwise: what is
+    loaded, the way `features' says it and the way this project's
+    journal says it.
+  - [x] Orthogonal and parked: versions, digests, a manifest and a
     lock -- the Akku layer (`03007c6') stays a later node; names
     come first, and the journal they stamp is the mount point that
     layer would use when it comes.
-  - [ ] Gates when built: the standing battery plus -- require is
-    idempotent (two requires, one record: the journal length is the
-    proof), require finds and loads through the search path,
-    double-provide errors naming both files, provide-outside-load
-    errors, a loaded-but-providing-nothing file leaves nothing
-    behind, remove by feature restores like remove by path, and the
-    prelude (which provides nothing) is untouched.
+  - [x] Gates: suite 685/685 (669 old + 16 new pins), red proven
+    with the three library files at their parent: all 16 new pins
+    fail and 24 old load/remove/banner pins stay green; green
+    selector 16/16.  `make compile' 0 warnings, isolated per-file
+    compile clean, parsecheck 36 .el + the prelude's 245 forms OK,
+    checkdoc multiset byte-identical to a fresh `7f98b96' base
+    (356 normalized lines -- after fixing the one new violation it
+    caught, an `env' argument missing from `termlisp--provide's
+    docstring), loaddefs identical modulo checkout paths with no
+    prefix warnings, zero orphans.  Probes beyond the pins: the
+    open chain answers a second require inside one load (one child
+    record, features `("dep")'), removing the outer load drops the
+    feature and a fresh require re-resolves through the path, and
+    a two-feature file answers `remove' by either name.
 
 ## 表二：System Fω 推进（F2 即 `tl-dpo-last-gluing` 的消费者）
 

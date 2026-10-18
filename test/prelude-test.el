@@ -636,6 +636,209 @@
                        (regexp-quote (file-name-nondirectory file)))
                (termlisp-repl--banner))))))
 
+;;; provide/require: libraries have names
+
+;; `provide' stamps a feature name onto the record of the load the
+;; file runs inside, and `require' answers from those stamps: the
+;; journal the load machinery already keeps is elisp's `features',
+;; per environment.  The tests build their own directories and bind
+;; `termlisp-load-path' around the evaluations that need the search
+;; path; most run in a `:type-check' environment, so the registered
+;; schemes are exercised along the way.
+
+(defun tl-test--library-dir (files)
+  "Make a temporary directory holding FILES and return its name.
+FILES is an alist of (NAME . CONTENT); each entry is written to a
+file called NAME."
+  (let ((dir (make-temp-file "tl-require" t)))
+    (dolist (spec files)
+      (with-temp-file (expand-file-name (car spec) dir)
+        (insert (cdr spec))))
+    dir))
+
+(ert-deftest tl-provide-stamps-the-load-record ()
+  "A finished load's record carries the feature its file provided."
+  (let* ((file (tl-test--tls-file
+                "(define (lib-id x) x)\n(provide \"lib-id\")"))
+         (env (tl-test--load-env)))
+    (termlisp-eval (format "(load %S)" file) env)
+    (should (equal (tl-load-record-features (car (tl-env-loads env)))
+                   '("lib-id")))))
+
+(ert-deftest tl-require-loads-through-the-search-path ()
+  "A required feature loads the file that provides it, from the load path."
+  (let* ((dir (tl-test--library-dir
+               '(("geom.tls" . "(define (area x) (* x x))\n(provide \"geom\")"))))
+         (termlisp-load-path (list dir))
+         (env (tl-test--load-env)))
+    (should (equal (tl-test--eval-render "(require \"geom\")" env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(area 6)" env) "36"))))
+
+(ert-deftest tl-require-falls-back-to-default-directory ()
+  "With no load path configured, a feature resolves in `default-directory'."
+  (let* ((dir (file-name-as-directory (make-temp-file "tl-require" t)))
+         (default-directory dir)
+         (termlisp-load-path nil)
+         (env (tl-test--load-env)))
+    (with-temp-file (expand-file-name "here.tls" dir)
+      (insert "(define (here-fn) 7)\n(provide \"here\")"))
+    (should (equal (tl-test--eval-render "(require \"here\")" env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(here-fn)" env) "7"))))
+
+(ert-deftest tl-require-is-idempotent ()
+  "Requiring twice loads once: the journal grows by a single record."
+  (let* ((dir (tl-test--library-dir
+               '(("twice.tls" . "(define (twice-fn) 1)\n(provide \"twice\")"))))
+         (termlisp-load-path (list dir))
+         (env (tl-test--load-env))
+         (before (length (tl-env-loads env))))
+    (should (equal (tl-test--eval-render "(require \"twice\")" env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render
+                    "(seq (require \"twice\") (twice-fn))" env)
+                   "1"))
+    (should (= (length (tl-env-loads env)) (1+ before)))))
+
+(ert-deftest tl-require-satisfied-by-a-plain-load ()
+  "A feature a `load' already brought in answers without the search path."
+  (let* ((file (tl-test--tls-file
+                "(define (direct-fn) 3)\n(provide \"direct\")"))
+         (termlisp-load-path (list "/nonexistent/tl-require-no-such-dir"))
+         (env (tl-test--load-env)))
+    (termlisp-eval (format "(load %S)" file) env)
+    (should (equal (tl-test--eval-render "(require \"direct\")" env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(direct-fn)" env) "3"))))
+
+(ert-deftest tl-provide-outside-a-load-errors ()
+  "A feature stamped outside any load is refused."
+  (let ((env (tl-test--load-env)))
+    (should (equal (tl-test--eval-render "(provide \"loose\")" env)
+                   "ERR:Term-lisp evaluation error: \"provide: loose: no load in progress\""))))
+
+(ert-deftest tl-provide-a-second-load-cannot-claim-a-live-feature ()
+  "A feature another load holds is an error naming that file."
+  (let* ((first (tl-test--tls-file "(define (who-a) 1)\n(provide \"who\")"))
+         (second (tl-test--tls-file "(define (who-b) 2)\n(provide \"who\")"))
+         (env (tl-test--load-env)))
+    (termlisp-eval (format "(load %S)" first) env)
+    (should (equal (tl-test--eval-render (format "(load %S)" second) env)
+                   (format
+                    "ERR:Term-lisp evaluation error: \"provide: who is already provided by %s\""
+                    (expand-file-name first))))
+    ;; The losing load was rolled back with its transaction...
+    (should (equal (tl-test--eval-render "(who-b)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: who-b\""))
+    ;; ...and the winner is untouched.
+    (should (equal (tl-test--eval-render "(who-a)" env) "1"))))
+
+(ert-deftest tl-provide-twice-in-one-file-is-a-no-op ()
+  "A file may stamp the same feature twice; the record carries it once."
+  (let* ((file (tl-test--tls-file
+                "(define (idem x) x)\n(provide \"idem\")\n(provide \"idem\")"))
+         (env (tl-test--load-env)))
+    (should (equal (tl-test--eval-render (format "(load %S)" file) env)
+                   "Unit"))
+    (should (equal (tl-load-record-features (car (tl-env-loads env)))
+                   '("idem")))))
+
+(ert-deftest tl-require-without-a-library-errors ()
+  "A name no file provides is an error listing the searched directories."
+  (let* ((termlisp-load-path (list "/nonexistent/tl-require-no-such-dir"))
+         (env (tl-test--load-env)))
+    (should (equal (tl-test--eval-render "(require \"nowhere\")" env)
+                   "ERR:Term-lisp evaluation error: \"require: nothing provides nowhere (searched: /nonexistent/tl-require-no-such-dir)\""))))
+
+(ert-deftest tl-require-a-file-that-provides-nothing-errors ()
+  "A file that loads without providing the feature is rolled back."
+  (let* ((dir (tl-test--library-dir
+               '(("mute.tls" . "(define (mute-fn) 5)"))))
+         (termlisp-load-path (list dir))
+         (env (tl-test--load-env)))
+    (should (equal (tl-test--eval-render "(require \"mute\")" env)
+                   (format
+                    "ERR:Term-lisp evaluation error: \"require: %s loaded without providing mute\""
+                    (expand-file-name "mute.tls" dir))))
+    (should (equal (tl-test--eval-render "(mute-fn)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: mute-fn\""))
+    ;; The failed require journalled nothing; the prelude is all there is.
+    (should (= (length (tl-env-loads env)) 1))))
+
+(ert-deftest tl-require-a-self-requiring-file-errors ()
+  "A file requiring the feature it is being loaded for is refused."
+  (let* ((dir (tl-test--library-dir
+               '(("loop.tls" . "(require \"loop\")\n(define (loop-fn) 9)"))))
+         (termlisp-load-path (list dir))
+         (env (tl-test--load-env)))
+    (should (equal (tl-test--eval-render "(require \"loop\")" env)
+                   "ERR:Term-lisp evaluation error: \"require: recursive load of loop\""))
+    (should (equal (tl-test--eval-render "(loop-fn)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: loop-fn\""))
+    (should (= (length (tl-env-loads env)) 1))))
+
+(ert-deftest tl-remove-undoes-a-feature ()
+  "A library may be removed by the feature it provided."
+  (let* ((file (tl-test--tls-file
+                "(define (by-name x) x)\n(provide \"by-name\")"))
+         (env (tl-test--load-env)))
+    (termlisp-eval (format "(load %S)" file) env)
+    (should (equal (tl-test--eval-render "(require \"by-name\")" env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(remove \"by-name\")" env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(remove \"by-name\")" env)
+                   "ERR:Term-lisp evaluation error: \"remove: by-name is not loaded\""))
+    (should (equal (tl-test--eval-render "(by-name 1)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: by-name\""))))
+
+(ert-deftest tl-remove-a-feature-names-the-enclosing-load-when-nested ()
+  "A feature provided inside another load comes out with that load."
+  (let* ((dir (tl-test--library-dir
+               '(("inner.tls" . "(define (inner-fn x) x)\n(provide \"inner\")")
+                 ("outer.tls" . "(require \"inner\")"))))
+         (outer (expand-file-name "outer.tls" dir))
+         (termlisp-load-path (list dir))
+         (env (tl-test--load-env)))
+    (termlisp-eval (format "(load %S)" outer) env)
+    (should (equal (tl-test--eval-render "(remove \"inner\")" env)
+                   (format
+                    "ERR:Term-lisp evaluation error: \"remove: inner was loaded inside %s; remove that file to undo them both\""
+                    outer)))
+    (should (equal (tl-test--eval-render (format "(remove %S)" outer) env)
+                   "Unit"))
+    (should (equal (tl-test--eval-render "(inner-fn 1)" env)
+                   "ERR:Term-lisp type error: \"Unknown symbol: inner-fn\""))))
+
+(ert-deftest tl-repl-banner-prefers-feature-names ()
+  "A library that provided a feature is listed by it."
+  (let* ((file (tl-test--tls-file
+                "(define (lib-id x) x)\n(provide \"geometry\")"))
+         (env (termlisp-make-env nil)))
+    (termlisp-load-prelude env)
+    (termlisp-eval (format "(load %S)" file) env)
+    (with-temp-buffer
+      (setq-local termlisp-repl--env env)
+      (setq-local termlisp-repl--options '(:type-check t))
+      (should (string-match-p
+               "(loaded: termlisp-prelude\\.tls, geometry)"
+               (termlisp-repl--banner))))))
+
+(ert-deftest tl-provide-non-string-argument-errors ()
+  "A non-String argument is a type error naming the builtin."
+  (let ((got (tl-test--render "(provide 42)" nil)))
+    (should (string-prefix-p "ERR:" got))
+    (should (string-match-p
+             (regexp-quote "provide expects a String, got 42") got))))
+
+(ert-deftest tl-require-non-string-argument-errors ()
+  "A non-String argument is a type error naming the builtin."
+  (let ((got (tl-test--render "(require 42)" nil)))
+    (should (string-prefix-p "ERR:" got))
+    (should (string-match-p
+             (regexp-quote "require expects a String, got 42") got))))
+
 ;;; Examples quoted in the README
 
 (tl-test-eval tl-readme-and-implies-or "(define (and-implies-or (Pair a b)) (Left a)) (and-implies-or (Pair 1 2))" "(Left 1)" '(:type-check t :elaborate t))
